@@ -7,8 +7,10 @@
 #include "ntdll.h"
 #include "timeutil.h"
 
+#include <algorithm>
 #include <cstring>
 #include <ctime>
+#include <limits>
 #include <sys/time.h>
 
 namespace {
@@ -69,6 +71,43 @@ void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
 	lpSystemInfo->dwActiveProcessorMask = computeSystemProcessorMask(cpuCount);
 
 	lpSystemInfo->dwAllocationGranularity = 0x10000;
+}
+
+BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer, PDWORD returnLength) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetLogicalProcessorInformation(%p, %p)\n", buffer, returnLength);
+	if (!returnLength) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+
+	long reported = sysconf(_SC_NPROCESSORS_ONLN);
+	unsigned int logicalCount = reported > 0 ? static_cast<unsigned int>(reported) : 1;
+	logicalCount = std::min(logicalCount, static_cast<unsigned int>(sizeof(ULONG_PTR) * 8));
+	const size_t recordCount = static_cast<size_t>(logicalCount) + 1;
+	const size_t requiredSize = recordCount * sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+	if (requiredSize > std::numeric_limits<DWORD>::max()) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+
+	const DWORD required = static_cast<DWORD>(requiredSize);
+	if (!buffer || *returnLength < required) {
+		*returnLength = required;
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+
+	std::memset(buffer, 0, required);
+	for (unsigned int index = 0; index < logicalCount; ++index) {
+		buffer[index].ProcessorMask = static_cast<ULONG_PTR>(1) << index;
+		buffer[index].Relationship = RelationProcessorCore;
+	}
+	buffer[logicalCount].ProcessorMask = computeSystemProcessorMask(logicalCount);
+	buffer[logicalCount].Relationship = RelationProcessorPackage;
+	*returnLength = required;
+	setLastError(ERROR_SUCCESS);
+	return TRUE;
 }
 
 void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime) {

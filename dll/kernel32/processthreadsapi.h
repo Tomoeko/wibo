@@ -70,6 +70,7 @@ HANDLE WINAPI GetCurrentProcess();
 DWORD WINAPI GetCurrentProcessId();
 DWORD WINAPI GetCurrentThreadId();
 HANDLE WINAPI GetCurrentThread();
+DWORD WINAPI GetThreadId(HANDLE Thread);
 BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature);
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask);
 BOOL WINAPI SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask);
@@ -89,6 +90,8 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 [[noreturn]] void WINAPI ExitThread(DWORD dwExitCode);
 BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode);
 BOOL WINAPI SetThreadPriority(HANDLE hThread, int nPriority);
+BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost);
+DWORD WINAPI SetThreadIdealProcessor(HANDLE hThread, DWORD dwIdealProcessor);
 int WINAPI GetThreadPriority(HANDLE hThread);
 DWORD WINAPI GetPriorityClass(HANDLE hProcess);
 BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *lpExitTime, FILETIME *lpKernelTime,

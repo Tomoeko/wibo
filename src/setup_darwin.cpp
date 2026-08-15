@@ -7,19 +7,75 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#ifdef WIBO_GUEST_64
+#include <pthread.h>
+#endif
 #include <mutex>
 
+#ifndef WIBO_GUEST_64
 #include <architecture/i386/table.h>
 #include <i386/user_ldt.h>
+#endif
 
 // https://github.com/apple/darwin-libpthread/blob/03c4628c8940cca6fd6a82957f683af804f62e7f/private/tsd_private.h#L92-L97
 #define _PTHREAD_TSD_SLOT_RESERVED_WIN64 6
 
+#ifdef WIBO_GUEST_64
+// MSVC emits direct GS:[0x58] accesses for static TLS. Wine's established
+// macOS x86_64 model mirrors this pointer into the corresponding native TSD
+// slot while retaining macOS's GS base. Slot 6 is reserved by macOS for the
+// Win64 TEB self pointer at GS:[0x30].
+constexpr uint32_t kWin64StaticTlsTsdSlot = 0x58 / sizeof(void *);
+
+// Darwin publishes this stable layout SPI for tools that need to translate a
+// pthread_t into its direct TSD base. Using it avoids Mach thread_info and
+// mach_port_deallocate traps in translated worker startup.
+struct PthreadLayoutOffsets {
+	uint16_t version;
+	uint16_t pthreadTsdBaseOffset;
+	uint16_t pthreadTsdBaseAddressOffset;
+	uint16_t pthreadTsdEntrySize;
+};
+extern "C" const PthreadLayoutOffsets pthread_layout_offsets;
+#endif
+
+#ifndef WIBO_GUEST_64
 // Implemented in setup.S
 extern "C" int installSelectors(TEB *teb);
+#endif
 
 namespace {
 
+inline void writeTsdSlot(uint32_t slot, uint64_t val) {
+	// mov qword ptr gs:[slot*8], val
+	*(volatile uint64_t __seg_gs *)(slot * sizeof(void *)) = val;
+}
+
+#ifdef WIBO_GUEST_64
+void *currentTsdBase() {
+	if (pthread_layout_offsets.pthreadTsdEntrySize != sizeof(void *)) {
+		return nullptr;
+	}
+	auto *self = reinterpret_cast<uint8_t *>(pthread_self());
+	if (pthread_layout_offsets.pthreadTsdBaseOffset != 0) {
+		return self + pthread_layout_offsets.pthreadTsdBaseOffset;
+	}
+	if (pthread_layout_offsets.pthreadTsdBaseAddressOffset != 0) {
+		return *reinterpret_cast<void **>(self + pthread_layout_offsets.pthreadTsdBaseAddressOffset);
+	}
+	return nullptr;
+}
+
+void writeTsdSlotAtBase(GUEST_PTR tsdBase, uint32_t slot, uint64_t value) {
+	if (!tsdBase) {
+		return;
+	}
+	auto *slots = reinterpret_cast<volatile uint64_t *>(static_cast<uintptr_t>(tsdBase));
+	slots[slot] = value;
+}
+#endif
+
+#ifndef WIBO_GUEST_64
 std::mutex g_tebSetupMutex;
 uint16_t g_codeSelector = 0;
 uint16_t g_dataSelector = 0;
@@ -61,11 +117,6 @@ inline ldt_entry createLdtEntry(uint32_t base, uint32_t size, bool code) {
 }
 
 constexpr int createSelector(int entryNumber) { return (entryNumber << 3) | 0x4 /* TI=1 */ | USER_PRIVILEGE; }
-
-inline void writeTsdSlot(uint32_t slot, uint64_t val) {
-	// mov qword ptr gs:[slot*8], val
-	*(volatile uint64_t __seg_gs *)(slot * sizeof(void *)) = val;
-}
 
 inline bool isLdtEntryValid(int entry) { return entry >= 0 && entry < kMaxLdtEntries; }
 
@@ -196,9 +247,53 @@ bool segmentSetupLocked(TEB *teb) {
 	teb->DataSelector = g_dataSelector;
 	return true;
 }
+#endif
 
 } // namespace
 
+#ifdef WIBO_GUEST_64
+bool tebThreadSetup(TEB *teb) {
+	if (!teb) {
+		return false;
+	}
+	if (!teb->HostTsdBase) {
+		teb->HostTsdBase = toGuestPtr(currentTsdBase());
+		if (!teb->HostTsdBase) {
+			return false;
+		}
+	}
+	writeTsdSlot(_PTHREAD_TSD_SLOT_RESERVED_WIN64, reinterpret_cast<uintptr_t>(teb));
+	writeTsdSlot(kWin64StaticTlsTsdSlot, static_cast<uint64_t>(teb->ThreadLocalStoragePointer));
+	return true;
+}
+
+bool tebThreadTeardown(TEB *teb) {
+	if (teb) {
+		writeTsdSlot(kWin64StaticTlsTsdSlot, 0);
+		writeTsdSlot(_PTHREAD_TSD_SLOT_RESERVED_WIN64, 0);
+		// The native pthread storage ceases to be a valid cross-thread target
+		// once this thread exits. TLS cleanup may occur later with handle cleanup.
+		teb->HostTsdBase = GUEST_NULL;
+	}
+	return true;
+}
+
+void tebThreadEmergencyTeardown() {
+	// GS always remains the native pthread base, including in signal handlers.
+	writeTsdSlot(kWin64StaticTlsTsdSlot, 0);
+	writeTsdSlot(_PTHREAD_TSD_SLOT_RESERVED_WIN64, 0);
+}
+
+void tebThreadTlsPointerChanged(TEB *teb) {
+	if (!teb) {
+		return;
+	}
+	writeTsdSlotAtBase(teb->HostTsdBase, kWin64StaticTlsTsdSlot,
+					   static_cast<uint64_t>(teb->ThreadLocalStoragePointer));
+}
+
+TEB *currentTebForGuestTransition() { return currentThreadTeb; }
+#else
 bool tebThreadSetup(TEB *teb) {
 	if (!teb) {
 		return false;
@@ -233,7 +328,8 @@ bool tebThreadSetup(TEB *teb) {
 		return false;
 	}
 	teb->CurrentFsSelector = createSelector(entryNumber);
-	DEBUG_LOG("setup_darwin: Installing cs %d, ds %d, fs %d\n", teb->CodeSelector, teb->DataSelector, teb->CurrentFsSelector);
+	DEBUG_LOG("setup_darwin: Installing cs %d, ds %d, fs %d\n", teb->CodeSelector, teb->DataSelector,
+			  teb->CurrentFsSelector);
 	installSelectors(teb);
 	return true;
 }
@@ -258,3 +354,4 @@ bool tebThreadTeardown(TEB *teb) {
 	teb->CurrentFsSelector = 0;
 	return true;
 }
+#endif

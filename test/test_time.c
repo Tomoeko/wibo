@@ -100,6 +100,25 @@ static void test_gettickcount_progresses(void) {
     TEST_CHECK_MSG(diff <= 5000, "GetTickCount diff too large: %lu", (unsigned long)diff);
 }
 
+static void test_performance_counter_progresses(void) {
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER start;
+    LARGE_INTEGER end;
+
+    TEST_CHECK(QueryPerformanceFrequency(&frequency));
+    TEST_CHECK_MSG(frequency.QuadPart > 0, "Invalid performance-counter frequency: %lld",
+                   (long long)frequency.QuadPart);
+    TEST_CHECK(QueryPerformanceCounter(&start));
+    Sleep(20);
+    TEST_CHECK(QueryPerformanceCounter(&end));
+
+    LONGLONG elapsed = end.QuadPart - start.QuadPart;
+    TEST_CHECK_MSG(elapsed > 0, "Performance counter did not advance: %lld", (long long)elapsed);
+    TEST_CHECK_MSG(elapsed < frequency.QuadPart * 5,
+                   "Performance counter advanced implausibly far: %lld at %lld Hz",
+                   (long long)elapsed, (long long)frequency.QuadPart);
+}
+
 static void test_setfiletime_roundtrip(void) {
     char temp_path[MAX_PATH];
     char temp_file[MAX_PATH];
@@ -187,8 +206,8 @@ int main(void) {
     test_filetime_known_timestamp();
     test_getsystemtimeasfiletime();
     test_gettickcount_progresses();
+    test_performance_counter_progresses();
     test_setfiletime_roundtrip();
     test_local_filetime_conversions();
     return 0;
 }
-

@@ -53,24 +53,24 @@ int CDECL lp_checkin() {
 
 #include "lmgr_trampolines.h"
 
-static void *resolveByOrdinal(uint16_t ordinal) {
+static const char *resolveNameByOrdinal(uint16_t ordinal) {
 	switch (ordinal) {
 	case 33:
-		return (void *)thunk_lmgr_lc_checkin;
+		return "lc_checkin";
 	case 34:
-		return (void *)thunk_lmgr_lc_checkout;
+		return "lc_checkout";
 	case 43:
-		return (void *)thunk_lmgr_lc_free_job;
+		return "lc_free_job";
 	case 61:
-		return (void *)thunk_lmgr_lc_set_attr;
+		return "lc_set_attr";
 	case 189:
-		return (void *)thunk_lmgr_lp_checkin;
+		return "lp_checkin";
 	case 190:
-		return (void *)thunk_lmgr_lp_checkout;
+		return "lp_checkout";
 	case 249:
-		return (void *)thunk_lmgr_lc_new_job;
+		return "lc_new_job";
 	}
-	return 0;
+	return nullptr;
 }
 
 extern const wibo::ModuleStub lib_lmgr = {
@@ -80,6 +80,6 @@ extern const wibo::ModuleStub lib_lmgr = {
 		"lmgr8c",
 		nullptr,
 	},
-	nullptr,
-	resolveByOrdinal,
+	lmgrThunkByName,
+	resolveNameByOrdinal,
 };

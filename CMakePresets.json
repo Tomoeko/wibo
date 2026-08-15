@@ -90,6 +90,40 @@
       }
     },
     {
+      "name": "debug64-macos",
+      "displayName": "Debug (x86-64 guest)",
+      "description": "Debug build for 64-bit Windows guests on macOS",
+      "inherits": ["ninja-base"],
+      "binaryDir": "${sourceDir}/build/debug64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/x86_64-darwin.cmake",
+        "WIBO_GUEST_ARCH": "x86_64"
+      }
+    },
+    {
+      "name": "release64-macos",
+      "displayName": "Release (x86-64 guest)",
+      "description": "Release build for 64-bit Windows guests on macOS",
+      "inherits": ["ninja-base"],
+      "binaryDir": "${sourceDir}/build/release64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/x86_64-darwin.cmake",
+        "WIBO_GUEST_ARCH": "x86_64"
+      }
+    },
+    {
       "name": "debug-clang",
       "displayName": "Debug (Clang)",
       "inherits": ["ninja-base", "clang-base"],
@@ -210,6 +244,20 @@
       "configuration": "Release"
     },
     {
+      "name": "debug64-macos",
+      "displayName": "Build (Debug, x86-64 guest)",
+      "configurePreset": "debug64-macos",
+      "targets": ["wibo", "wibo_test_fixtures"],
+      "configuration": "Debug"
+    },
+    {
+      "name": "release64-macos",
+      "displayName": "Build (Release, x86-64 guest)",
+      "configurePreset": "release64-macos",
+      "targets": ["wibo", "wibo_test_fixtures"],
+      "configuration": "Release"
+    },
+    {
       "name": "debug-clang",
       "displayName": "Build (Debug, Clang)",
       "configurePreset": "debug-clang",
@@ -287,6 +335,26 @@
       "name": "release-macos",
       "displayName": "Run tests (Release)",
       "configurePreset": "release-macos",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true,
+        "shortProgress": true
+      }
+    },
+    {
+      "name": "debug64-macos",
+      "displayName": "Run tests (Debug, x86-64 guest)",
+      "configurePreset": "debug64-macos",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true,
+        "shortProgress": true
+      }
+    },
+    {
+      "name": "release64-macos",
+      "displayName": "Run tests (Release, x86-64 guest)",
+      "configurePreset": "release64-macos",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true,

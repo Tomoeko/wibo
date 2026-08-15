@@ -48,12 +48,34 @@ int main(void) {
     const char msgReadFile[] = "pipe-read";
     write_bytes(writePipe, msgReadFile, strlen(msgReadFile));
 
+    DWORD bytesAvailable = 0;
+    DWORD bytesLeftInMessage = 123;
+    TEST_CHECK(PeekNamedPipe(readPipe, NULL, 0, NULL, &bytesAvailable, &bytesLeftInMessage));
+    TEST_CHECK_EQ((DWORD)strlen(msgReadFile), bytesAvailable);
+    TEST_CHECK_EQ(0u, bytesLeftInMessage);
+
+    HANDLE pipeWaitEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    TEST_CHECK(pipeWaitEvent != NULL);
+    HANDLE waitHandles[2] = {pipeWaitEvent, readPipe};
+    TEST_CHECK_EQ(WAIT_OBJECT_0 + 1, WaitForMultipleObjects(2, waitHandles, FALSE, 1000));
+
     char buffer[64];
     memset(buffer, 0, sizeof(buffer));
     DWORD bytesRead = 0;
     TEST_CHECK(ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, NULL));
     TEST_CHECK_EQ((DWORD)strlen(msgReadFile), bytesRead);
     TEST_CHECK(memcmp(buffer, msgReadFile, bytesRead) == 0);
+    TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForMultipleObjects(2, waitHandles, FALSE, 10));
+
+    bytesAvailable = 123;
+    TEST_CHECK(!PeekNamedPipe(writePipe, NULL, 0, NULL, &bytesAvailable, NULL));
+    TEST_CHECK_EQ(0u, bytesAvailable);
+    TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+
+    bytesAvailable = 123;
+    TEST_CHECK(!PeekNamedPipe(INVALID_HANDLE_VALUE, NULL, 0, NULL, &bytesAvailable, NULL));
+    TEST_CHECK_EQ(0u, bytesAvailable);
+    TEST_CHECK_EQ(ERROR_INVALID_HANDLE, GetLastError());
 
     const char msgNtRead[] = "ntread";
     write_bytes(writePipe, msgNtRead, strlen(msgNtRead));
@@ -73,6 +95,8 @@ int main(void) {
     TEST_CHECK(CloseHandle(writePipe));
     writePipe = NULL;
 
+    TEST_CHECK_EQ(WAIT_OBJECT_0 + 1, WaitForMultipleObjects(2, waitHandles, FALSE, 1000));
+
     bytesRead = 123;
     SetLastError(ERROR_GEN_FAILURE);
     TEST_CHECK(!ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, NULL));
@@ -87,6 +111,7 @@ int main(void) {
     TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForSingleObject(event, 0));
 
     TEST_CHECK(CloseHandle(event));
+    TEST_CHECK(CloseHandle(pipeWaitEvent));
     TEST_CHECK(CloseHandle(readPipe));
     if (writePipe) {
         TEST_CHECK(CloseHandle(writePipe));

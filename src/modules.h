@@ -12,7 +12,7 @@
 namespace wibo {
 
 using ResolveByName = void *(*)(const char *);
-using ResolveByOrdinal = void *(*)(uint16_t);
+using ResolveNameByOrdinal = const char *(*)(uint16_t);
 
 struct ResourceIdentifier;
 struct ResourceLocation;
@@ -20,7 +20,7 @@ struct ResourceLocation;
 struct ModuleStub {
 	const char **names;
 	ResolveByName byName = nullptr;
-	ResolveByOrdinal byOrdinal = nullptr;
+	ResolveNameByOrdinal nameByOrdinal = nullptr;
 	std::span<const uint8_t> dllData{};
 };
 
@@ -51,6 +51,8 @@ class Executable {
 	uint32_t rsrcSize = 0;
 	uintptr_t preferredImageBase = 0;
 	intptr_t relocationDelta = 0;
+	size_t stackReserveSize = 0;
+	size_t stackCommitSize = 0;
 	uint32_t exportDirectoryRVA = 0;
 	uint32_t exportDirectorySize = 0;
 	uint32_t relocationDirectoryRVA = 0;

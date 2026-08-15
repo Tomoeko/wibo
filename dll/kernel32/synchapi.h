@@ -47,7 +47,11 @@ struct RTL_CRITICAL_SECTION {
 	ULONG_PTR SpinCount;
 };
 
+#ifdef WIBO_GUEST_64
+static_assert(sizeof(RTL_CRITICAL_SECTION) == 40);
+#else
 static_assert(sizeof(RTL_CRITICAL_SECTION) == 24);
+#endif
 
 using PRTL_CRITICAL_SECTION = RTL_CRITICAL_SECTION *;
 using LPCRITICAL_SECTION = RTL_CRITICAL_SECTION *;
@@ -66,7 +70,11 @@ using LPINIT_ONCE = INIT_ONCE *;
 constexpr INIT_ONCE INIT_ONCE_STATIC_INIT{GUEST_NULL};
 
 union RTL_SRWLOCK {
+#ifdef WIBO_GUEST_64
+	ULONG_PTR Value;
+#else
 	ULONG Value;
+#endif
 };
 
 using SRWLOCK = RTL_SRWLOCK;
@@ -85,6 +93,8 @@ HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManual
 						   LPCSTR lpName);
 HANDLE WINAPI CreateEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState,
 						   LPCWSTR lpName);
+HANDLE WINAPI OpenEventA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpName);
+HANDLE WINAPI OpenEventW(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCWSTR lpName);
 BOOL WINAPI SetEvent(HANDLE hEvent);
 BOOL WINAPI ResetEvent(HANDLE hEvent);
 HANDLE WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,

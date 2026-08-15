@@ -28,6 +28,9 @@
 #endif
 
 #include <mimalloc.h>
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+#include <malloc/malloc.h>
+#endif
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -39,6 +42,9 @@ namespace {
 
 constexpr uintptr_t kLowMemoryStart = 0x00110000UL; // 1 MiB + 64 KiB
 constexpr uintptr_t kHeapMax = 0x70000000UL;
+#ifdef WIBO_GUEST_64
+constexpr uintptr_t kGuestAddressLimit = 0x0000800000000000ULL;
+#endif
 #ifdef __APPLE__
 // On macOS, our program is mapped at 0x7E001000
 constexpr uintptr_t kTopDownStart = 0x7D000000UL;
@@ -562,6 +568,17 @@ inline auto tryWithAnyArena(wibo::detail::HeapInternal &internal, CallbackFn &&c
 }
 
 void *doAlloc(wibo::detail::HeapInternal &internal, size_t size, bool zero) {
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	// A Win64 guest can consume native 64-bit pointers directly. Keeping its
+	// process heaps in Wibo's low-address mimalloc arenas is unnecessary and,
+	// under Rosetta, concurrent arena bitmap updates can strand the translated
+	// process in an uninterruptible state. Darwin's allocator already provides
+	// the process-wide, cross-thread semantics required by Win32 heaps. Explicit
+	// guest mappings (VirtualAlloc, image views, and stacks) continue to use the
+	// virtual-memory implementation below.
+	(void)internal;
+	return zero ? std::calloc(1, size) : std::malloc(size);
+#else
 	if (size >= kArenaMaxObjSize) {
 		DEBUG_LOG("heap: large malloc %zu bytes, using virtualAlloc\n", size);
 		void *addr = nullptr;
@@ -574,9 +591,22 @@ void *doAlloc(wibo::detail::HeapInternal &internal, size_t size, bool zero) {
 	return tryWithAnyArena(internal, [size, zero](mi_heap_t *heap, uint32_t) {
 		return (zero ? mi_heap_zalloc_aligned : mi_heap_malloc_aligned)(heap, size, 8);
 	});
+#endif
 }
 
 void *doRealloc(wibo::detail::HeapInternal &internal, void *ptr, size_t newSize, bool zero) {
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	(void)internal;
+	malloc_zone_t *zone = ptr ? malloc_zone_from_ptr(ptr) : nullptr;
+	if (zone) {
+		const size_t oldSize = malloc_size(ptr);
+		void *ret = std::realloc(ptr, newSize);
+		if (ret && zero && newSize > oldSize) {
+			std::memset(static_cast<uint8_t *>(ret) + oldSize, 0, newSize - oldSize);
+		}
+		return ret;
+	}
+#endif
 	bool isInHeap = mi_is_in_heap_region(ptr);
 	if (newSize >= kArenaMaxObjSize || !isInHeap) {
 		DEBUG_LOG("heap: large realloc %zu bytes, using virtualAlloc\n", newSize);
@@ -624,6 +654,12 @@ bool doFree(void *ptr) {
 	if (ptr == nullptr) {
 		return false;
 	}
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	if (malloc_zone_from_ptr(ptr)) {
+		std::free(ptr);
+		return true;
+	}
+#endif
 	if (mi_is_in_heap_region(ptr)) {
 		mi_free(ptr);
 	} else {
@@ -696,6 +732,11 @@ void *guestRealloc(void *ptr, std::size_t newSize, bool zero) { return doRealloc
 bool guestFree(void *ptr) { return doFree(ptr); }
 
 size_t guestSize(const void *ptr) {
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	if (ptr && malloc_zone_from_ptr(ptr)) {
+		return malloc_size(ptr);
+	}
+#endif
 	if (mi_is_in_heap_region(ptr)) {
 		return mi_usable_size(ptr);
 	} else {
@@ -840,7 +881,13 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 			if (length == 0) {
 				return VmStatus::InvalidParameter;
 			}
-			if (base >= kTwoGB || (base + length) > kTwoGB) {
+			if (
+#ifndef WIBO_GUEST_64
+				base >= kTwoGB || (base + length) > kTwoGB
+#else
+				base + length < base
+#endif
+			) {
 				return VmStatus::InvalidAddress;
 			}
 			if (overlapsExistingMappingLocked(base, length)) {
@@ -1092,7 +1139,11 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 
 	const std::size_t pageSize = systemPageSize();
 	uintptr_t request = address ? reinterpret_cast<uintptr_t>(address) : 0;
+#ifdef WIBO_GUEST_64
+	if (request >= kGuestAddressLimit) {
+#else
 	if (request >= kTwoGB) {
+#endif
 		return VmStatus::InvalidParameter;
 	}
 	uintptr_t pageBase = alignDown(request, pageSize);
@@ -1106,7 +1157,11 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 		if (next != g_virtualAllocations.end()) {
 			regionEnd = next->second.base;
 		} else {
+#ifdef WIBO_GUEST_64
+			regionEnd = kGuestAddressLimit;
+#else
 			regionEnd = kTwoGB;
+#endif
 		}
 		if (regionEnd <= regionStart) {
 			regionEnd = regionStart + pageSize;

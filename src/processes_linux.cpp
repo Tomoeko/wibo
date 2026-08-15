@@ -10,14 +10,13 @@
 #include <csignal>
 #include <cstring>
 #include <memory>
-#include <shared_mutex>
+#include <mutex>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <thread>
-#include <unordered_map>
 #include <unistd.h>
 
 #include <linux/sched.h>
@@ -46,16 +45,24 @@ class LinuxProcessManager final : public wibo::detail::ProcessManagerImpl {
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
+	struct Registration {
+		int pidfd = -1;
+		Pin<ProcessObject> process;
+	};
+	static constexpr size_t kMaxTrackedProcesses = 1024;
+
 	void runLoop();
 	void wake() const;
 	void checkPidfd(int pidfd);
+	bool registerProcess(int pidfd, const Pin<ProcessObject> &process);
+	Pin<ProcessObject> takeProcess(int pidfd);
 
-	mutable std::shared_mutex m;
+	mutable std::mutex m;
 	std::atomic<bool> mRunning{false};
 	std::thread mThread;
 	int mEpollFd = -1;
 	int mWakeFd = -1;
-	std::unordered_map<int, Pin<ProcessObject>> mReg;
+	std::array<Registration, kMaxTrackedProcesses> mReg{};
 };
 
 } // namespace
@@ -145,7 +152,10 @@ void LinuxProcessManager::shutdown() {
 		mThread.join();
 	}
 	std::lock_guard lk(m);
-	mReg.clear();
+	for (auto &entry : mReg) {
+		entry.process.reset();
+		entry.pidfd = -1;
+	}
 	if (mWakeFd >= 0) {
 		close(mWakeFd);
 		mWakeFd = -1;
@@ -154,6 +164,30 @@ void LinuxProcessManager::shutdown() {
 		close(mEpollFd);
 		mEpollFd = -1;
 	}
+}
+
+bool LinuxProcessManager::registerProcess(int pidfd, const Pin<ProcessObject> &process) {
+	std::lock_guard lk(m);
+	for (auto &entry : mReg) {
+		if (!entry.process) {
+			entry.pidfd = pidfd;
+			entry.process = process.clone();
+			return true;
+		}
+	}
+	return false;
+}
+
+Pin<ProcessObject> LinuxProcessManager::takeProcess(int pidfd) {
+	std::lock_guard lk(m);
+	for (auto &entry : mReg) {
+		if (entry.process && entry.pidfd == pidfd) {
+			auto process = std::move(entry.process);
+			entry.pidfd = -1;
+			return process;
+		}
+	}
+	return {};
 }
 
 bool LinuxProcessManager::addProcess(Pin<ProcessObject> po) {
@@ -169,15 +203,19 @@ bool LinuxProcessManager::addProcess(Pin<ProcessObject> po) {
 		if (pidfd < 0) {
 			return false;
 		}
-		if (!epollAdd(mEpollFd, pidfd)) {
-			close(pidfd);
-			po->pidfd = -1;
-			return false;
-		}
 	}
-	{
-		std::lock_guard lk(m);
-		mReg.emplace(pidfd, std::move(po));
+	// Publish before EPOLL_CTL_ADD so an immediately readable pidfd cannot be
+	// consumed by the monitor before it has an object to signal.
+	if (!registerProcess(pidfd, po)) {
+		DEBUG_LOG("ProcessManager: process registry is full\n");
+		return false;
+	}
+	if (!epollAdd(mEpollFd, pidfd)) {
+		takeProcess(pidfd);
+		std::lock_guard lk(po->m);
+		close(pidfd);
+		po->pidfd = -1;
+		return false;
 	}
 	DEBUG_LOG("ProcessManager: registered pid %d with pidfd %d\n", pid, pidfd);
 	wake();
@@ -234,15 +272,7 @@ void LinuxProcessManager::checkPidfd(int pidfd) {
 
 	DEBUG_LOG("ProcessManager: pidfd %d exited: code=%d status=%d\n", pidfd, si.si_code, si.si_status);
 
-	Pin<ProcessObject> po;
-	{
-		std::unique_lock lk(m);
-		auto it = mReg.find(pidfd);
-		if (it != mReg.end()) {
-			po = std::move(it->second);
-			mReg.erase(it);
-		}
-	}
+	Pin<ProcessObject> po = takeProcess(pidfd);
 	close(pidfd);
 	if (!po) {
 		return;

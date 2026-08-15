@@ -22,6 +22,16 @@ static DWORD WINAPI exit_thread_worker(LPVOID param) {
     return 0; /* unreachable */
 }
 
+static DWORD WINAPI large_stack_worker(LPVOID param) {
+    (void)param;
+    volatile BYTE buffer[640 * 1024];
+    for (SIZE_T offset = 0; offset < sizeof(buffer); offset += 4096) {
+        buffer[offset] = (BYTE)(offset >> 12);
+    }
+    buffer[sizeof(buffer) - 1] = 0x5a;
+    return buffer[sizeof(buffer) - 1] == 0x5a ? 0 : 1;
+}
+
 int main(void) {
     HANDLE readyEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     TEST_CHECK(readyEvent != NULL);
@@ -94,6 +104,17 @@ int main(void) {
     TEST_CHECK(GetExitCodeThread(exitThread, &exitCode));
     TEST_CHECK_EQ(secondExitCode, exitCode);
     TEST_CHECK(CloseHandle(exitThread));
+
+    /* Windows uses the image's stack reserve when dwStackSize is zero. This
+       deliberately exceeds Darwin's small translated pthread default. */
+    HANDLE largeStackThread = CreateThread(NULL, 0, large_stack_worker, NULL, 0, NULL);
+    TEST_CHECK(largeStackThread != NULL);
+    waitResult = WaitForSingleObject(largeStackThread, 5000);
+    TEST_CHECK_EQ(WAIT_OBJECT_0, waitResult);
+    exitCode = 1;
+    TEST_CHECK(GetExitCodeThread(largeStackThread, &exitCode));
+    TEST_CHECK_EQ(0, exitCode);
+    TEST_CHECK(CloseHandle(largeStackThread));
 
     TEST_CHECK(CloseHandle(goEvent));
     TEST_CHECK(CloseHandle(readyEvent));

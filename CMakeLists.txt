@@ -53,6 +53,18 @@ endif()
 option(WIBO_ENABLE_FIXTURE_TESTS "Enable Win32 fixture tests (requires i686-w64-mingw32)" ON)
 option(WIBO_ENABLE_LIBURING "Enable liburing for asynchronous I/O" OFF)
 option(WIBO_ENABLE_WINE_DLLS "Download Wine CRT DLLs from encounter/winedll by default" ON)
+set(WIBO_GUEST_ARCH "x86" CACHE STRING "Windows guest architecture (x86 or x86_64)")
+set_property(CACHE WIBO_GUEST_ARCH PROPERTY STRINGS x86 x86_64)
+if(WIBO_GUEST_ARCH STREQUAL "x86_64")
+    if(NOT WIBO_64)
+        message(FATAL_ERROR "x86_64 Windows guests require a 64-bit Wibo host")
+    endif()
+    set(WIBO_GUEST_64 ON)
+elseif(WIBO_GUEST_ARCH STREQUAL "x86")
+    set(WIBO_GUEST_64 OFF)
+else()
+    message(FATAL_ERROR "WIBO_GUEST_ARCH must be x86 or x86_64")
+endif()
 set(WIBO_ENABLE_LTO "AUTO" CACHE STRING "Enable link-time optimization (LTO)")
 set_property(CACHE WIBO_ENABLE_LTO PROPERTY STRINGS "AUTO" "ON" "OFF")
 
@@ -86,6 +98,14 @@ set(MI_BUILD_SHARED OFF CACHE BOOL "Build shared library" FORCE)
 set(MI_BUILD_STATIC OFF CACHE BOOL "Build static library" FORCE)
 set(MI_BUILD_OBJECT ON CACHE BOOL "Build object library" FORCE)
 set(MI_BUILD_TESTS OFF CACHE BOOL "Build test executables" FORCE)
+# Keep mimalloc as the explicit low-address guest-heap implementation, but do
+# not replace the host process allocator for Win64 guests under Rosetta. Host
+# loader bookkeeping and libc++ containers must remain on macOS's native
+# allocator; routing them through mimalloc has wedged translated workers inside
+# mimalloc's multithreaded bookkeeping and made the process uninterruptible.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND WIBO_GUEST_64)
+    set(MI_OVERRIDE OFF CACHE BOOL "Override the standard malloc interface" FORCE)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -141,6 +161,61 @@ if (WIBO_ENABLE_LIBURING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 set(WIBO_WINEDLL_RELEASE_TAG "2026-07-10")
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# The pinned encounter/winedll assets are PE32 and cannot be embedded into a
+# Win64 Wibo. Resolve the matching PE32+ Wine CRT set explicitly instead of
+# allowing a build that deterministically fails every 64-bit import.
+set(WIBO_WIN64_CRT_ROOT "" CACHE PATH "Directory containing x86-64 Wine CRT DLLs")
+if(WIBO_GUEST_64)
+    if(NOT WIBO_WIN64_CRT_ROOT AND DEFINED ENV{WIBO_WIN64_CRT_ROOT})
+        set(WIBO_WIN64_CRT_ROOT "$ENV{WIBO_WIN64_CRT_ROOT}")
+    endif()
+    if(NOT WIBO_WIN64_CRT_ROOT AND APPLE)
+        set(_wibo_wine_stable_crt
+            "/Applications/Wine Stable.app/Contents/Resources/wine/lib/wine/x86_64-windows")
+        if(EXISTS "${_wibo_wine_stable_crt}/msvcrt.dll")
+            set(WIBO_WIN64_CRT_ROOT "${_wibo_wine_stable_crt}")
+        endif()
+    endif()
+    if(NOT EXISTS "${WIBO_WIN64_CRT_ROOT}/msvcrt.dll" OR
+       NOT EXISTS "${WIBO_WIN64_CRT_ROOT}/ucrtbase.dll")
+        message(FATAL_ERROR
+            "Win64 Wibo requires PE32+ Wine CRTs; set WIBO_WIN64_CRT_ROOT to "
+            "an x86_64-windows Wine DLL directory")
+    endif()
+    set(WIBO_WIN64_CRT_ROOT "${WIBO_WIN64_CRT_ROOT}" CACHE PATH
+        "Directory containing x86-64 Wine CRT DLLs" FORCE)
+    foreach(_wibo_crt_var_file IN ITEMS
+            "MSVCRT_DLL;msvcrt.dll"
+            "MSVCIRT_DLL;msvcirt.dll"
+            "MSVCRT20_DLL;msvcrt20.dll"
+            "MSVCRT40_DLL;msvcrt40.dll"
+            "MSVCR71_DLL;msvcr71.dll"
+            "MSVCR90_DLL;msvcr90.dll"
+            "MSVCR100_DLL;msvcr100.dll"
+            "MSVCR120_DLL;msvcr120.dll"
+            "UCRTBASE_DLL;ucrtbase.dll")
+        list(GET _wibo_crt_var_file 0 _wibo_crt_var)
+        list(GET _wibo_crt_var_file 1 _wibo_crt_file)
+        if(NOT EXISTS "${WIBO_WIN64_CRT_ROOT}/${_wibo_crt_file}")
+            message(FATAL_ERROR
+                "Win64 Wine CRT is missing: ${WIBO_WIN64_CRT_ROOT}/${_wibo_crt_file}")
+        endif()
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pe_machine.py"
+                --machine x86_64 "${WIBO_WIN64_CRT_ROOT}/${_wibo_crt_file}"
+            RESULT_VARIABLE _wibo_crt_machine_result
+            ERROR_VARIABLE _wibo_crt_machine_error
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_STRIP_TRAILING_WHITESPACE)
+        if(NOT _wibo_crt_machine_result EQUAL 0)
+            message(FATAL_ERROR "${_wibo_crt_machine_error}")
+        endif()
+        set(${_wibo_crt_var} "${WIBO_WIN64_CRT_ROOT}/${_wibo_crt_file}")
+    endforeach()
+endif()
 
 function(configure_wine_dll VAR FILENAME SHA256)
     if (NOT DEFINED ${VAR})
@@ -214,6 +289,7 @@ add_executable(wibo
     dll/kernel32/synchapi.cpp
     dll/kernel32/sysinfoapi.cpp
     dll/kernel32/timezoneapi.cpp
+	dll/kernel32/toolhelp.cpp
     dll/kernel32/winbase.cpp
     dll/kernel32/wincon.cpp
     dll/kernel32/winnls.cpp
@@ -228,6 +304,7 @@ add_executable(wibo
     dll/user32.cpp
     dll/vcruntime.cpp
     dll/version.cpp
+    dll/winmm.cpp
     dll/ws2.cpp
     src/access.cpp
     src/async_io.cpp
@@ -244,6 +321,11 @@ add_executable(wibo
     src/strutil.cpp
     src/tls.cpp
 )
+
+if(WIBO_GUEST_64)
+    target_compile_definitions(wibo PRIVATE WIBO_GUEST_64=1)
+    set_target_properties(wibo PROPERTIES OUTPUT_NAME wibo64)
+endif()
 add_embedded_wine_dll(wibo dll/msvcrt.cpp WIBO_HAS_MSVCRT "${MSVCRT_DLL}")
 add_embedded_wine_dll(wibo dll/msvcirt.cpp WIBO_HAS_MSVCIRT "${MSVCIRT_DLL}")
 add_embedded_wine_dll(wibo dll/msvcrt20.cpp WIBO_HAS_MSVCRT20 "${MSVCRT20_DLL}")
@@ -314,8 +396,6 @@ if (HAVE_PTHREAD_GETTID_NP)
     target_compile_definitions(wibo PRIVATE -DHAVE_PTHREAD_GETTID_NP=1)
 endif()
 
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-
 # Track down libclang for trampoline generation.
 # find_package(Clang) ends up requiring too many dependencies,
 # so a quick-and-dirty manual search is done here instead.
@@ -360,6 +440,7 @@ function(wibo_codegen_module)
                 --headers ${module_HEADERS}
                 --namespace ${module_NAME}
                 --arch $<IF:$<BOOL:${WIBO_64}>,x86_64,x86>
+                --guest-arch ${WIBO_GUEST_ARCH}
                 --out-asm ${out_asm}
                 --out-hdr ${out_hdr}
                 -I ${CMAKE_CURRENT_SOURCE_DIR}
@@ -382,6 +463,7 @@ wibo_codegen_module(NAME bcrypt HEADERS dll/bcrypt.h)
 wibo_codegen_module(NAME entry HEADERS src/entry.h)
 wibo_codegen_module(NAME mscoree HEADERS dll/mscoree.h)
 wibo_codegen_module(NAME version HEADERS dll/version.h)
+wibo_codegen_module(NAME winmm HEADERS dll/winmm.h)
 wibo_codegen_module(NAME rpcrt4 HEADERS dll/rpcrt4.h)
 wibo_codegen_module(NAME shlwapi HEADERS dll/shlwapi.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
@@ -409,6 +491,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/synchapi.h
     dll/kernel32/sysinfoapi.h
     dll/kernel32/timezoneapi.h
+	dll/kernel32/toolhelp.h
     dll/kernel32/winbase.h
     dll/kernel32/wincon.h
     dll/kernel32/winnls.h
@@ -419,8 +502,13 @@ wibo_codegen_module(NAME kernel32 HEADERS
 if (WIBO_ENABLE_FIXTURE_TESTS)
     include(CTest)
 
-    find_program(WIBO_MINGW_CC i686-w64-mingw32-gcc)
-    find_program(WIBO_MINGW_WINDRES i686-w64-mingw32-windres)
+    if(WIBO_GUEST_64)
+        find_program(WIBO_MINGW_CC x86_64-w64-mingw32-gcc)
+        find_program(WIBO_MINGW_WINDRES x86_64-w64-mingw32-windres)
+    else()
+        find_program(WIBO_MINGW_CC i686-w64-mingw32-gcc)
+        find_program(WIBO_MINGW_WINDRES i686-w64-mingw32-windres)
+    endif()
 
     set(WIBO_HAVE_MINGW_TOOLCHAIN FALSE)
     if(WIBO_MINGW_CC AND WIBO_MINGW_WINDRES)
@@ -454,7 +542,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endfunction(wibo_add_fixture_dll)
 
         function(wibo_add_fixture_bin)
-            set(options)
+            set(options WILL_FAIL)
             set(oneValueArgs NAME)
             set(multiValueArgs SOURCES COMPILE_OPTIONS DEPENDS)
             cmake_parse_arguments(PARSE_ARGV 0 fixture "${options}" "${oneValueArgs}" "${multiValueArgs}")
@@ -477,37 +565,78 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             set_tests_properties(wibo.${fixture_NAME} PROPERTIES
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test
                 DEPENDS wibo.build_fixtures)
+            if(fixture_WILL_FAIL)
+                set_tests_properties(wibo.${fixture_NAME} PROPERTIES WILL_FAIL TRUE)
+            endif()
         endfunction(wibo_add_fixture_bin)
 
         # Define fixture tests
+        wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        if(APPLE)
+            wibo_add_fixture_bin(NAME test_missing_import_exit SOURCES test/test_missing_import_exit.c WILL_FAIL
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+            set_tests_properties(wibo.test_missing_import_exit PROPERTIES TIMEOUT 5)
+        endif()
+        # A synchronous guest fault can strand Rosetta in an unkillable UEs
+        # state on macOS. Keep these destructive teardown checks on native
+        # Linux hosts; ordinary Darwin validation must never poison later runs.
+        if(NOT APPLE)
+            wibo_add_fixture_bin(NAME test_fault_teardown SOURCES test/test_fault_teardown.c WILL_FAIL
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup)
+            wibo_add_fixture_bin(NAME test_fault_teardown_threads SOURCES test/test_fault_teardown_threads.c WILL_FAIL
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        endif()
+        if(WIBO_GUEST_64)
+            wibo_add_fixture_bin(NAME test_win64_peb_heap SOURCES test/test_win64_peb_heap.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+            wibo_add_fixture_bin(NAME test_win64_wgetmainargs SOURCES test/test_win64_wgetmainargs.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lmsvcrt -lkernel32)
+            wibo_add_fixture_bin(NAME test_win64_teb_import SOURCES test/test_win64_teb_import.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+            wibo_add_fixture_bin(NAME test_win64_image_headers SOURCES test/test_win64_image_headers.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        endif()
         wibo_add_fixture_bin(NAME test_external_dll SOURCES test/test_external_dll.c)
         wibo_add_fixture_bin(NAME test_dll_attach_failure SOURCES test/test_dll_attach_failure.c)
         wibo_add_fixture_bin(NAME test_thread_notifications SOURCES test/test_thread_notifications.c)
+        wibo_add_fixture_bin(NAME test_thread_notifications_stress SOURCES test/test_thread_notifications_stress.c)
         wibo_add_fixture_bin(NAME test_bcrypt SOURCES test/test_bcrypt.c COMPILE_OPTIONS -lbcrypt)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
         wibo_add_fixture_bin(NAME test_threading SOURCES test/test_threading.c)
+        wibo_add_fixture_bin(NAME test_thread_priority_boost SOURCES test/test_thread_priority_boost.c)
+        wibo_add_fixture_bin(NAME test_thread_ideal_processor SOURCES test/test_thread_ideal_processor.c)
+        wibo_add_fixture_bin(NAME test_raise_exception SOURCES test/test_raise_exception.c)
+        wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)
         wibo_add_fixture_bin(NAME test_gettempfilename SOURCES test/test_gettempfilename.c)
         wibo_add_fixture_bin(NAME test_getprocaddress SOURCES test/test_getprocaddress.c)
         wibo_add_fixture_bin(NAME test_getmodulehandleex SOURCES test/test_getmodulehandleex.c)
-        wibo_add_fixture_bin(NAME test_tls SOURCES test/test_tls.c)
-        wibo_add_fixture_bin(NAME test_tls_reloc SOURCES test/test_tls_reloc.c)
+        if(NOT WIBO_GUEST_64)
+            # These fixtures contain x86-specific inline FS/TLS assembly.
+            wibo_add_fixture_bin(NAME test_tls SOURCES test/test_tls.c)
+            wibo_add_fixture_bin(NAME test_tls_reloc SOURCES test/test_tls_reloc.c)
+        endif()
         wibo_add_fixture_bin(NAME test_fls SOURCES test/test_fls.c)
         wibo_add_fixture_bin(NAME test_fpu_state SOURCES test/test_fpu_state.c)
         wibo_add_fixture_bin(NAME test_handleapi SOURCES test/test_handleapi.c)
+        wibo_add_fixture_bin(NAME test_toolhelp SOURCES test/test_toolhelp.c)
         wibo_add_fixture_bin(NAME test_findfile SOURCES test/test_findfile.c)
         wibo_add_fixture_bin(NAME test_getfileattributesex SOURCES test/test_getfileattributesex.c)
         wibo_add_fixture_bin(NAME test_locale SOURCES test/test_locale.c)
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_critical_section SOURCES test/test_critical_section.c)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
+        wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
         wibo_add_fixture_bin(NAME test_processes SOURCES test/test_processes.c)
         wibo_add_fixture_bin(NAME test_heap SOURCES test/test_heap.c)
+        wibo_add_fixture_bin(NAME test_heap_cross_thread SOURCES test/test_heap_cross_thread.c)
         wibo_add_fixture_bin(NAME test_actctx SOURCES test/test_actctx.c)
         wibo_add_fixture_bin(NAME test_overlapped_io SOURCES test/test_overlapped_io.c)
         wibo_add_fixture_bin(NAME test_time SOURCES test/test_time.c)
+        wibo_add_fixture_bin(NAME test_logical_processor_information SOURCES test/test_logical_processor_information.c)
         wibo_add_fixture_bin(NAME test_ntdll_time SOURCES test/test_ntdll_time.c)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
@@ -532,6 +661,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_dll(NAME external_exports SOURCES test/external_exports.c)
         wibo_add_fixture_dll(NAME dll_attach_failure SOURCES test/dll_attach_failure.c)
         wibo_add_fixture_dll(NAME thread_notifications SOURCES test/thread_notifications.c)
+        wibo_add_fixture_dll(NAME thread_notifications_stress SOURCES test/thread_notifications_stress.c)
         wibo_add_fixture_dll(NAME tls_reloc SOURCES test/tls_reloc_dll.c)
 
         # Resources for test_resources

@@ -42,6 +42,7 @@ void destroyTib(TEB *tib);
 void initializeTibStackInfo(TEB *tib);
 bool installTibForCurrentThread(TEB *tib);
 void uninstallTebForCurrentThread();
+void prepareGuestWorkerSignalMask();
 
 void debug_log(const char *fmt, ...);
 

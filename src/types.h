@@ -27,12 +27,24 @@
 #define _In_reads_bytes_(n) WIBO_ANNOTATE("SAL:in_bcount(" #n ")")
 #define _Out_writes_bytes_(n) WIBO_ANNOTATE("SAL:out_bcount(" #n ")")
 
-// Codegen annotation for calling convention
+// Guest calling conventions. These macros are also used directly in callback
+// typedefs, so they must carry the real ABI in addition to the code-generator
+// annotation. A Win64 callback invoked with the host SysV ABI receives its
+// arguments in the wrong registers and can silently skip DLL initialization.
+#ifdef WIBO_GUEST_64
+#define _CC_CDECL WIBO_ANNOTATE("CC:cdecl") __attribute__((ms_abi))
+#define _CC_STDCALL WIBO_ANNOTATE("CC:stdcall") __attribute__((ms_abi))
+#else
 #define _CC_CDECL WIBO_ANNOTATE("CC:cdecl")
 #define _CC_STDCALL WIBO_ANNOTATE("CC:stdcall")
+#endif
 
 // Instructs codegen to convert between calling conventions
-#ifdef __x86_64__
+#ifdef WIBO_GUEST_64
+#define WINAPI _CC_STDCALL
+#define CDECL _CC_CDECL
+#define CDECL_NO_CONV _CC_CDECL
+#elif defined(__x86_64__)
 #define WINAPI _CC_STDCALL
 #define CDECL _CC_CDECL
 #define CDECL_NO_CONV _CC_CDECL __attribute__((force_align_arg_pointer))
@@ -43,12 +55,20 @@
 #endif
 
 // Used for host-to-guest calls
+#ifdef WIBO_GUEST_64
+#define GUEST_STDCALL __attribute__((ms_abi))
+#else
 #define GUEST_STDCALL __attribute__((stdcall))
+#endif
 
+#ifdef WIBO_GUEST_64
+typedef unsigned long long GUEST_PTR;
+#else
 typedef unsigned int GUEST_PTR;
+#endif
 constexpr GUEST_PTR GUEST_NULL = 0;
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(WIBO_GUEST_64)
 inline GUEST_PTR toGuestPtr(const void *addr) {
 	unsigned long long addr64 = reinterpret_cast<unsigned long long>(addr);
 	if (addr64 > 0xFFFFFFFF)
@@ -61,7 +81,11 @@ inline GUEST_PTR toGuestPtr(const void *addr) { return static_cast<GUEST_PTR>(re
 template <typename T = void> inline T *fromGuestPtr(GUEST_PTR addr) { return reinterpret_cast<T *>(addr); }
 
 using VOID = void;
+#ifdef WIBO_GUEST_64
+using HANDLE = long long;
+#else
 using HANDLE = int;
+#endif
 using HMODULE = HANDLE;
 using HGLOBAL = GUEST_PTR;
 using HLOCAL = GUEST_PTR;
@@ -87,9 +111,15 @@ using ULONG = unsigned int;
 using PULONG = ULONG *;
 using LONGLONG __attribute__((aligned(8))) = long long;
 using ULONGLONG __attribute__((aligned(8))) = unsigned long long;
+#ifdef WIBO_GUEST_64
+using LONG_PTR = long long;
+using ULONG_PTR = unsigned long long;
+using UINT_PTR = unsigned long long;
+#else
 using LONG_PTR = int;
 using ULONG_PTR = unsigned int;
 using UINT_PTR = unsigned int;
+#endif
 using DWORD_PTR = ULONG_PTR;
 using PDWORD_PTR = DWORD_PTR *;
 using SHORT = short;
@@ -416,6 +446,16 @@ typedef struct _PEB_LDR_DATA {
 typedef void(_CC_STDCALL *PS_POST_PROCESS_INIT_ROUTINE)();
 using PPS_POST_PROCESS_INIT_ROUTINE = PS_POST_PROCESS_INIT_ROUTINE *;
 
+#ifdef WIBO_GUEST_64
+typedef struct _PEB {
+	BYTE ReservedToLdr[0x18];
+	GUEST_PTR Ldr;
+	GUEST_PTR ProcessParameters;
+	GUEST_PTR SubSystemData;
+	GUEST_PTR ProcessHeap;
+	BYTE Reserved[0x300 - 0x38];
+} PEB;
+#else
 typedef struct _PEB {
 	BYTE Reserved1[2];
 	BYTE BeingDebugged;
@@ -437,6 +477,7 @@ typedef struct _PEB {
 	GUEST_PTR Reserved12[1];
 	ULONG SessionId;
 } PEB;
+#endif
 typedef GUEST_PTR PPEB;
 
 struct CLIENT_ID {
@@ -468,6 +509,39 @@ typedef struct _GDI_TEB_BATCH {
 	ULONG Buffer[GDI_BATCH_BUFFER_SIZE];
 } GDI_TEB_BATCH, *PGDI_TEB_BATCH;
 
+#ifdef WIBO_GUEST_64
+typedef struct _NT_TIB {
+	GUEST_PTR ExceptionList;
+	GUEST_PTR StackBase;
+	GUEST_PTR StackLimit;
+	GUEST_PTR SubSystemTib;
+	union {
+		GUEST_PTR FiberData;
+		DWORD Version;
+	} DUMMYUNIONNAME;
+	GUEST_PTR ArbitraryUserPointer;
+	GUEST_PTR Self;
+} NT_TIB, *PNT_TIB;
+
+typedef struct _TEB {
+	NT_TIB Tib;
+	GUEST_PTR EnvironmentPointer;
+	CLIENT_ID ClientId;
+	GUEST_PTR ActiveRpcHandle;
+	GUEST_PTR ThreadLocalStoragePointer;
+	PPEB Peb;
+	ULONG LastErrorValue;
+	BYTE ReservedToHostTsdBase[0x320 - 0x6C];
+	GUEST_PTR HostTsdBase;
+	BYTE ReservedToDeallocationStack[0x1478 - 0x328];
+	GUEST_PTR DeallocationStack;
+	GUEST_PTR TlsSlots[64];
+	LIST_ENTRY TlsLinks;
+	BYTE ReservedToTlsExpansionSlots[0x1780 - 0x1690];
+	GUEST_PTR TlsExpansionSlots;
+	void *CurrentStackPointer;
+} TEB;
+#else
 typedef struct _NT_TIB {
 	GUEST_PTR ExceptionList;
 	GUEST_PTR StackBase;
@@ -555,8 +629,22 @@ typedef struct _TEB {
 	WORD HostCodeSelector;
 #endif
 } TEB;
+#endif
 typedef GUEST_PTR PTEB;
 
+#ifdef WIBO_GUEST_64
+static_assert(offsetof(PEB, Ldr) == 0x18, "Win64 PEB loader-data offset mismatch");
+static_assert(offsetof(PEB, ProcessParameters) == 0x20, "Win64 PEB process-parameters offset mismatch");
+static_assert(offsetof(PEB, ProcessHeap) == 0x30, "Win64 PEB process-heap offset mismatch");
+static_assert(offsetof(NT_TIB, Self) == 0x30, "Win64 TEB self pointer offset mismatch");
+static_assert(offsetof(TEB, ThreadLocalStoragePointer) == 0x58, "Win64 TLS pointer offset mismatch");
+static_assert(offsetof(TEB, HostTsdBase) == 0x320, "Win64 host TSD base offset mismatch");
+static_assert(offsetof(TEB, Peb) == 0x60, "Win64 PEB pointer offset mismatch");
+static_assert(offsetof(TEB, LastErrorValue) == 0x68, "Win64 LastErrorValue offset mismatch");
+static_assert(offsetof(TEB, DeallocationStack) == 0x1478, "Win64 stack allocation offset mismatch");
+static_assert(offsetof(TEB, TlsSlots) == 0x1480, "Win64 TLS slots offset mismatch");
+static_assert(offsetof(TEB, TlsExpansionSlots) == 0x1780, "Win64 expanded TLS slots offset mismatch");
+#else
 static_assert(offsetof(NT_TIB, Self) == TEB_SELF, "Self pointer offset mismatch");
 static_assert(offsetof(TEB, ThreadLocalStoragePointer) == 0x2C, "TLS pointer offset mismatch");
 static_assert(offsetof(TEB, Peb) == 0x30, "PEB pointer offset mismatch");
@@ -584,6 +672,7 @@ static_assert(offsetof(TEB, HasFsGsBase) == TEB_HAS_FSGSBASE);
 #endif
 #ifdef TEB_HOST_CS_SEL
 static_assert(offsetof(TEB, HostCodeSelector) == TEB_HOST_CS_SEL);
+#endif
 #endif
 
 typedef struct _MEMORY_BASIC_INFORMATION {

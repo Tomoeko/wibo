@@ -3,6 +3,7 @@
 #include "entry_trampolines.h"
 #include "files.h"
 #include "heap.h"
+#include "kernel32/heapapi.h"
 #include "modules.h"
 #include "processes.h"
 #include "setup.h"
@@ -11,12 +12,18 @@
 #include "types.h"
 #include "version_info.h"
 
+#include <csignal>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+#include <fcntl.h>
+#include <sys/ucontext.h>
+#endif
+#include <unistd.h>
 
 char **wibo::argv;
 int wibo::argc;
@@ -29,6 +36,113 @@ unsigned int wibo::debugIndent = 0;
 int wibo::tibEntryNumber = -1;
 PEB *wibo::processPeb = nullptr;
 thread_local TEB *currentThreadTeb = nullptr;
+
+namespace {
+
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+int gDarwinCrashLogFd = -1;
+
+char *appendText(char *out, const char *end, const char *text) {
+	while (out != end && *text != '\0') {
+		*out++ = *text++;
+	}
+	return out;
+}
+
+char *appendHex(char *out, const char *end, uintptr_t value) {
+	static constexpr char kHex[] = "0123456789abcdef";
+	out = appendText(out, end, "0x");
+	bool emitted = false;
+	for (int shift = static_cast<int>(sizeof(value) * 8) - 4; shift >= 0 && out != end; shift -= 4) {
+		const unsigned digit = static_cast<unsigned>((value >> shift) & 0xf);
+		if (digit != 0 || emitted || shift == 0) {
+			*out++ = kHex[digit];
+			emitted = true;
+		}
+	}
+	return out;
+}
+
+void recordDarwinFatalSignal(int signalNumber, siginfo_t *info, void *rawContext) {
+	if (gDarwinCrashLogFd < 0) {
+		return;
+	}
+	auto *context = static_cast<ucontext_t *>(rawContext);
+	const uintptr_t instruction = context && context->uc_mcontext
+								  ? static_cast<uintptr_t>(context->uc_mcontext->__ss.__rip)
+								  : 0;
+	const uintptr_t faultAddress = info ? reinterpret_cast<uintptr_t>(info->si_addr) : 0;
+
+	char buffer[160];
+	char *out = buffer;
+	const char *end = buffer + sizeof(buffer);
+	out = appendText(out, end, "wibo64: pid=");
+	out = appendHex(out, end, static_cast<uintptr_t>(getpid()));
+	out = appendText(out, end, " signal=");
+	out = appendHex(out, end, static_cast<uintptr_t>(signalNumber));
+	out = appendText(out, end, " rip=");
+	out = appendHex(out, end, instruction);
+	out = appendText(out, end, " fault=");
+	out = appendHex(out, end, faultAddress);
+	if (out != end) {
+		*out++ = '\n';
+	}
+	(void)write(gDarwinCrashLogFd, buffer, static_cast<size_t>(out - buffer));
+}
+
+void installDarwinSignalPolicy() {
+	// GS remains Darwin's native TSD base for the entire process, so synchronous
+	// faults need no Wibo teardown. Preserve the kernel's default fatal-signal
+	// actions: unlike a user-space exit handler, they reliably reap every
+	// translated Rosetta thread.
+	// A closed diagnostic pipe is not a guest crash. Ignoring SIGPIPE makes the
+	// underlying write report EPIPE and prevents a bounded log consumer from
+	// terminating a long-running guest process.
+	struct sigaction pipeAction {};
+	pipeAction.sa_handler = SIG_IGN;
+	sigemptyset(&pipeAction.sa_mask);
+	(void)sigaction(SIGPIPE, &pipeAction, nullptr);
+
+	// Optional diagnostics retain the kernel's reliable fatal-signal teardown.
+	// SA_RESETHAND records the first synchronous fault, then returning retries
+	// the faulting instruction under the default action. No allocator, lock, or
+	// guest teardown runs from the signal handler.
+	const char *crashLogPath = std::getenv("WIBO_CRASH_LOG");
+	if (!crashLogPath || crashLogPath[0] == '\0') {
+		return;
+	}
+	// Multiple Wibo-hosted programs may share a diagnostic file. Append one
+	// atomic record per process so a later process cannot erase the first fault.
+	gDarwinCrashLogFd = open(crashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0600);
+	if (gDarwinCrashLogFd < 0) {
+		return;
+	}
+	struct sigaction faultAction {};
+	faultAction.sa_sigaction = recordDarwinFatalSignal;
+	sigemptyset(&faultAction.sa_mask);
+	faultAction.sa_flags = SA_SIGINFO | SA_RESETHAND;
+	for (const int signalNumber : {SIGBUS, SIGSEGV, SIGILL, SIGFPE}) {
+		(void)sigaction(signalNumber, &faultAction, nullptr);
+	}
+}
+#endif
+
+class MainTebScope {
+  public:
+	explicit MainTebScope(TEB *teb) : mTeb(teb) {}
+	MainTebScope(const MainTebScope &) = delete;
+	MainTebScope &operator=(const MainTebScope &) = delete;
+
+	~MainTebScope() {
+		wibo::uninstallTebForCurrentThread();
+		wibo::destroyTib(mTeb);
+	}
+
+  private:
+	TEB *mTeb;
+};
+
+} // namespace
 
 void wibo::debug_log(const char *fmt, ...) {
 	va_list args;
@@ -85,10 +199,10 @@ bool wibo::installTibForCurrentThread(TEB *tibPtr) {
 	if (!tibPtr) {
 		return false;
 	}
-	currentThreadTeb = tibPtr;
 	if (!tebThreadSetup(tibPtr)) {
 		return false;
 	}
+	currentThreadTeb = tibPtr;
 	initFpState();
 	return true;
 }
@@ -96,6 +210,11 @@ bool wibo::installTibForCurrentThread(TEB *tibPtr) {
 void wibo::uninstallTebForCurrentThread() {
 	TEB *teb = std::exchange(currentThreadTeb, nullptr);
 	tebThreadTeardown(teb);
+}
+
+void wibo::prepareGuestWorkerSignalMask() {
+	// Kept as a platform-neutral thread-start hook. Darwin Win64 no longer
+	// blocks termination signals now that guest transitions retain native GS.
 }
 
 static std::string getExeName(const char *argv0) {
@@ -323,6 +442,9 @@ int main(int argc, char **argv) {
 	// Create PEB
 	PEB *peb = reinterpret_cast<PEB *>(wibo::heap::guestMalloc(sizeof(PEB), true));
 	peb->ProcessParameters = toGuestPtr(wibo::heap::guestMalloc(sizeof(RTL_USER_PROCESS_PARAMETERS), true));
+#ifdef WIBO_GUEST_64
+	peb->ProcessHeap = static_cast<GUEST_PTR>(kernel32::GetProcessHeap());
+#endif
 
 	// Create TIB
 	TEB *tib = reinterpret_cast<TEB *>(wibo::heap::guestMalloc(sizeof(TEB), true));
@@ -333,8 +455,13 @@ int main(int argc, char **argv) {
 	wibo::initializeTibStackInfo(tib);
 	if (!wibo::installTibForCurrentThread(tib)) {
 		perror("Failed to setup x86 segments and TEB");
+		wibo::destroyTib(tib);
 		return 1;
 	}
+	MainTebScope mainTebScope(tib);
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	installDarwinSignalPolicy();
+#endif
 
 	// Determine the guest program name
 	auto guestArgs = wibo::splitCommandLine(cmdLine.c_str());
@@ -467,7 +594,16 @@ int main(int argc, char **argv) {
 
 	if (!wibo::mainModule->executable->resolveImports()) {
 		fprintf(stderr, "Failed to resolve imports for main module (DLL initialization failure?)\n");
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+		// abort() enters pthread_kill, where Rosetta can leave the translated
+		// process permanently uninterruptible. Import failure is an ordinary
+		// loader error: detach the native TEB and terminate without running guest
+		// destructors or signal machinery.
+		wibo::uninstallTebForCurrentThread();
+		_exit(127);
+#else
 		abort();
+#endif
 	}
 	if (!wibo::initializeModuleTls(*wibo::mainModule)) {
 		fprintf(stderr, "Failed to initialize TLS for main module\n");
@@ -481,7 +617,6 @@ int main(int argc, char **argv) {
 	call_EntryProc(entryPoint);
 	DEBUG_LOG("We came back\n");
 	wibo::shutdownModuleRegistry();
-	wibo::tls::cleanupTib(tib);
 
 	return 1;
 }

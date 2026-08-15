@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
-#include <optional>
 #include <sys/mman.h>
 
 using kernel32::HeapObject;
@@ -23,7 +22,7 @@ HeapObject *g_processHeapRecord = nullptr;
 
 void ensureProcessHeapInitialized() {
 	std::call_once(g_processHeapInitFlag, []() {
-		auto record = make_pin<HeapObject>(std::nullopt);
+		auto record = make_pin<HeapObject>();
 		if (!record) {
 			return;
 		}
@@ -48,8 +47,10 @@ LPVOID heapAllocFromRecord(HeapObject *record, DWORD dwFlags, SIZE_T dwBytes) {
 	}
 	const bool zeroMemory = (dwFlags & HEAP_ZERO_MEMORY) != 0;
 	const SIZE_T requestSize = std::max<SIZE_T>(1, dwBytes);
-	void *mem =
-		record->heap ? record->heap->malloc(requestSize, zeroMemory) : wibo::heap::guestMalloc(requestSize, zeroMemory);
+	// Win32 heaps are process objects, not thread-owned allocators. The backing
+	// allocator is deliberately selected per calling thread; mimalloc heaps are
+	// thread-affine while allocations and frees remain process-wide.
+	void *mem = wibo::heap::guestMalloc(requestSize, zeroMemory);
 	if (!mem) {
 		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return nullptr;
@@ -79,7 +80,7 @@ HANDLE WINAPI HeapCreate(DWORD flOptions, SIZE_T dwInitialSize, SIZE_T dwMaximum
 		return NO_HANDLE;
 	}
 
-	auto record = make_pin<HeapObject>(wibo::Heap());
+	auto record = make_pin<HeapObject>();
 	record->createFlags = flOptions;
 	record->initialSize = dwInitialSize;
 	record->maximumSize = dwMaximumSize;
@@ -90,11 +91,11 @@ BOOL WINAPI HeapDestroy(HANDLE hHeap) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("HeapDestroy(%p)\n", hHeap);
 	auto record = wibo::handles().getAs<HeapObject>(hHeap);
-	if (!record || !record->isOwner() || record->isProcessHeap) {
+	if (!record || !record->canAccess() || record->isProcessHeap) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	record->heap.reset();
+	record->active = false;
 	wibo::handles().release(hHeap);
 	return TRUE;
 }
@@ -194,8 +195,7 @@ LPVOID WINAPI HeapReAlloc(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem, SIZE_T dwBy
 		return lpMem;
 	}
 
-	void *ret = record->heap ? record->heap->realloc(lpMem, requestSize, zeroMemory)
-							 : wibo::heap::guestRealloc(lpMem, requestSize, zeroMemory);
+	void *ret = wibo::heap::guestRealloc(lpMem, requestSize, zeroMemory);
 	if (isExecutableHeap(record.get())) {
 		tryMarkExecutable(ret);
 	}
@@ -234,7 +234,7 @@ BOOL WINAPI HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	bool ret = record->heap ? record->heap->free(lpMem) : wibo::heap::guestFree(lpMem);
+	bool ret = wibo::heap::guestFree(lpMem);
 	if (!ret) {
 		VERBOSE_LOG("-> ERROR_INVALID_PARAMETER (not owned)\n");
 		setLastError(ERROR_INVALID_PARAMETER);
@@ -242,6 +242,26 @@ BOOL WINAPI HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem) {
 	}
 	VERBOSE_LOG("-> SUCCESS\n");
 	return TRUE;
+}
+
+BOOL WINAPI HeapValidate(HANDLE hHeap, DWORD dwFlags, LPCVOID lpMem) {
+	HOST_CONTEXT_GUARD();
+	VERBOSE_LOG("HeapValidate(%p, 0x%x, %p)\n", hHeap, dwFlags, lpMem);
+	(void)dwFlags;
+	auto record = wibo::handles().getAs<HeapObject>(hHeap);
+	if (!record || !record->canAccess()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+
+	// mimalloc validates ownership while reading its block metadata. Windows
+	// accepts NULL to validate the heap as a whole; Wibo's heap invariants are
+	// maintained internally, so a live heap record is the whole-heap check.
+	if (!lpMem || wibo::heap::guestSize(lpMem) != 0) {
+		return TRUE;
+	}
+	setLastError(ERROR_INVALID_PARAMETER);
+	return FALSE;
 }
 
 } // namespace kernel32

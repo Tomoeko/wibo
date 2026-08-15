@@ -83,6 +83,62 @@ struct PE32Header {
 	PEImageDataDirectory clrRuntimeHeader;
 	PEImageDataDirectory reserved;
 };
+#ifdef WIBO_GUEST_64
+struct PE64Header {
+	uint16_t magic; // 0x20B for PE32+
+	uint8_t majorLinkerVersion;
+	uint8_t minorLinkerVersion;
+	uint32_t sizeOfCode;
+	uint32_t sizeOfInitializedData;
+	uint32_t sizeOfUninitializedData;
+	uint32_t addressOfEntryPoint;
+	uint32_t baseOfCode;
+	uint64_t imageBase;
+	uint32_t sectionAlignment;
+	uint32_t fileAlignment;
+	uint16_t majorOperatingSystemVersion;
+	uint16_t minorOperatingSystemVersion;
+	uint16_t majorImageVersion;
+	uint16_t minorImageVersion;
+	uint16_t majorSubsystemVersion;
+	uint16_t minorSubsystemVersion;
+	uint32_t win32VersionValue;
+	uint32_t sizeOfImage;
+	uint32_t sizeOfHeaders;
+	uint32_t checkSum;
+	uint16_t subsystem;
+	uint16_t dllCharacteristics;
+	uint64_t sizeOfStackReserve;
+	uint64_t sizeOfStackCommit;
+	uint64_t sizeOfHeapReserve;
+	uint64_t sizeOfHeapCommit;
+	uint32_t loaderFlags;
+	uint32_t numberOfRvaAndSizes;
+	PEImageDataDirectory exportTable;
+	PEImageDataDirectory importTable;
+	PEImageDataDirectory resourceTable;
+	PEImageDataDirectory exceptionTable;
+	PEImageDataDirectory certificateTable;
+	PEImageDataDirectory baseRelocationTable;
+	PEImageDataDirectory debug;
+	PEImageDataDirectory architecture;
+	PEImageDataDirectory globalPtr;
+	PEImageDataDirectory tlsTable;
+	PEImageDataDirectory loadConfigTable;
+	PEImageDataDirectory boundImport;
+	PEImageDataDirectory iat;
+	PEImageDataDirectory delayImportDescriptor;
+	PEImageDataDirectory clrRuntimeHeader;
+	PEImageDataDirectory reserved;
+};
+using PEOptionalHeader = PE64Header;
+constexpr uint16_t kExpectedMachine = 0x8664;
+constexpr uint16_t kExpectedOptionalMagic = 0x20B;
+#else
+using PEOptionalHeader = PE32Header;
+constexpr uint16_t kExpectedMachine = 0x14C;
+constexpr uint16_t kExpectedOptionalMagic = 0x10B;
+#endif
 struct PESectionHeader {
 	char name[8];
 	uint32_t virtualSize;
@@ -125,6 +181,7 @@ struct PEBaseRelocationBlock {
 
 constexpr uint16_t IMAGE_REL_BASED_ABSOLUTE = 0;
 constexpr uint16_t IMAGE_REL_BASED_HIGHLOW = 3;
+constexpr uint16_t IMAGE_REL_BASED_DIR64 = 10;
 
 constexpr uint32_t IMAGE_SCN_MEM_EXECUTE = 0x20000000;
 constexpr uint32_t IMAGE_SCN_MEM_READ = 0x40000000;
@@ -315,6 +372,8 @@ void resetExecutableState(wibo::Executable &executable) {
 	executable.rsrcSize = 0;
 	executable.preferredImageBase = 0;
 	executable.relocationDelta = 0;
+	executable.stackReserveSize = 0;
+	executable.stackCommitSize = 0;
 	executable.exportDirectoryRVA = 0;
 	executable.exportDirectorySize = 0;
 	executable.relocationDirectoryRVA = 0;
@@ -366,7 +425,7 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 		DEBUG_LOG("loadPE: invalid PE signature\n");
 		return false;
 	}
-	if (header.machine != 0x14C) {
+	if (header.machine != kExpectedMachine) {
 		DEBUG_LOG("loadPE: unsupported machine 0x%x\n", header.machine);
 		return false;
 	}
@@ -376,20 +435,21 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	}
 	executable.isDll = !!(header.characteristics & IMAGE_FILE_DLL);
 
-	constexpr size_t kOptionalHeaderMinimumSize = offsetof(PE32Header, reserved) + sizeof(PEImageDataDirectory);
+	constexpr size_t kOptionalHeaderMinimumSize =
+		offsetof(PEOptionalHeader, reserved) + sizeof(PEImageDataDirectory);
 	if (header.sizeOfOptionalHeader < kOptionalHeaderMinimumSize) {
 		DEBUG_LOG("loadPE: optional header too small (%u bytes)\n", header.sizeOfOptionalHeader);
 		return false;
 	}
 
 	// IMAGE_OPTIONAL_HEADER32 layout: https://learn.microsoft.com/windows/win32/debug/pe-format
-	PE32Header header32{};
+	PEOptionalHeader header32{};
 	size_t optionalBytes = std::min<std::size_t>(sizeof(header32), header.sizeOfOptionalHeader);
 	if (!source.read(offsetToPE + sizeof(header), &header32, optionalBytes)) {
 		DEBUG_LOG("loadPE: failed to read optional header\n");
 		return false;
 	}
-	if (header32.magic != 0x10B) {
+	if (header32.magic != kExpectedOptionalMagic) {
 		DEBUG_LOG("loadPE: unsupported optional header magic 0x%x\n", header32.magic);
 		return false;
 	}
@@ -405,13 +465,18 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	}
 
 	DEBUG_LOG("Sections: %u / Size of optional header: %x\n", header.numberOfSections, header.sizeOfOptionalHeader);
-	DEBUG_LOG("Image Base: %x / Size: %x\n", header32.imageBase, header32.sizeOfImage);
+	DEBUG_LOG("Image Base: %llx / Size: %x\n", static_cast<unsigned long long>(header32.imageBase),
+			  header32.sizeOfImage);
 
 	long pageSize = sysconf(_SC_PAGE_SIZE);
 	const size_t pageSizeValue = pageSize > 0 ? static_cast<size_t>(pageSize) : static_cast<size_t>(4096);
 	DEBUG_LOG("Page size: %x\n", static_cast<unsigned int>(pageSizeValue));
 
 	executable.preferredImageBase = header32.imageBase;
+	executable.stackReserveSize = static_cast<size_t>(std::min<uint64_t>(
+		static_cast<uint64_t>(header32.sizeOfStackReserve), std::numeric_limits<size_t>::max()));
+	executable.stackCommitSize = static_cast<size_t>(std::min<uint64_t>(
+		static_cast<uint64_t>(header32.sizeOfStackCommit), std::numeric_limits<size_t>::max()));
 	executable.exportDirectoryRVA = header32.exportTable.virtualAddress;
 	executable.exportDirectorySize = header32.exportTable.size;
 	executable.relocationDirectoryRVA = header32.baseRelocationTable.virtualAddress;
@@ -451,8 +516,13 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	std::unique_ptr<void, ImageMemoryDeleter> imageGuard(allocatedBase);
 	executable.imageBase = allocatedBase;
 	executable.relocationDelta = static_cast<intptr_t>(reinterpret_cast<uintptr_t>(executable.imageBase) -
-													   static_cast<uintptr_t>(header32.imageBase));
+												   static_cast<uintptr_t>(header32.imageBase));
 	std::memset(executable.imageBase, 0, header32.sizeOfImage);
+	if (header32.sizeOfHeaders > header32.sizeOfImage ||
+		!source.read(0, executable.imageBase, header32.sizeOfHeaders)) {
+		DEBUG_LOG("loadPE: headers exceed available image or source data\n");
+		return false;
+	}
 	executable.sections.clear();
 
 	uintptr_t imageBaseAddr = reinterpret_cast<uintptr_t>(executable.imageBase);
@@ -574,6 +644,15 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 					continue;
 				uintptr_t target = reinterpret_cast<uintptr_t>(executable.imageBase) + block->virtualAddress + offset;
 				switch (type) {
+				case IMAGE_REL_BASED_DIR64: {
+#ifdef WIBO_GUEST_64
+					auto *addr = reinterpret_cast<uint64_t *>(target);
+					*addr += static_cast<uint64_t>(executable.relocationDelta);
+#else
+					DEBUG_LOG("Unexpected 64-bit relocation at %08x\n", block->virtualAddress + offset);
+#endif
+					break;
+				}
 				case IMAGE_REL_BASED_HIGHLOW: {
 					auto *addr = reinterpret_cast<uint32_t *>(target);
 					*addr += static_cast<uint32_t>(executable.relocationDelta);
@@ -682,8 +761,8 @@ bool wibo::Executable::resolveImports() {
 		// Older PEs (NT 3.5-era) omit the ILT and only ship the IAT, which
 		// on disk holds the hint/name RVAs that later get overwritten.
 		uint32_t iltRVA = dir->importLookupTable ? dir->importLookupTable : dir->importAddressTable;
-		uint32_t *lookupTable = fromRVA<uint32_t>(iltRVA);
-		uint32_t *addressTable = fromRVA<uint32_t>(dir->importAddressTable);
+		GUEST_PTR *lookupTable = fromRVA<GUEST_PTR>(iltRVA);
+		GUEST_PTR *addressTable = fromRVA<GUEST_PTR>(dir->importAddressTable);
 
 		ModuleInfo *module = loadModule(dllName);
 		if (!module && kernel32::getLastError() != ERROR_MOD_NOT_FOUND) {
@@ -695,8 +774,9 @@ bool wibo::Executable::resolveImports() {
 		}
 
 		while (*lookupTable) {
-			uint32_t lookup = *lookupTable;
-			if (lookup & 0x80000000) {
+			GUEST_PTR lookup = *lookupTable;
+			constexpr GUEST_PTR kOrdinalFlag = static_cast<GUEST_PTR>(1) << (sizeof(GUEST_PTR) * 8 - 1);
+			if (lookup & kOrdinalFlag) {
 				// Import by ordinal
 				uint16_t ordinal = lookup & 0xFFFF;
 				DEBUG_LOG("  Ordinal: %d\n", ordinal);
@@ -706,7 +786,7 @@ bool wibo::Executable::resolveImports() {
 				*addressTable = reinterpret_cast<uintptr_t>(func);
 			} else {
 				// Import by name
-				PEHintNameTableEntry *hintName = fromRVA<PEHintNameTableEntry>(lookup);
+				PEHintNameTableEntry *hintName = fromRVA<PEHintNameTableEntry>(static_cast<uint32_t>(lookup));
 				DEBUG_LOG("  Name: %s (IAT=%p)\n", hintName->name, addressTable);
 				void *func = module ? resolveFuncByName(module, hintName->name)
 									: resolveMissingImportByName(dllName, hintName->name);

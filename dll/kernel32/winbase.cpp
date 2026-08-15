@@ -48,6 +48,115 @@ constexpr ATOM kMaxIntegerAtom = 0xBFFF;
 constexpr ATOM kMinStringAtom = 0xC000;
 constexpr ATOM kMaxStringAtom = 0xFFFF;
 
+bool memoryProtectionAllowsRead(DWORD protect) {
+	if ((protect & PAGE_GUARD) != 0) {
+		return false;
+	}
+	switch (protect & 0xff) {
+	case PAGE_READONLY:
+	case PAGE_READWRITE:
+	case PAGE_WRITECOPY:
+	case PAGE_EXECUTE_READ:
+	case PAGE_EXECUTE_READWRITE:
+	case PAGE_EXECUTE_WRITECOPY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool memoryProtectionAllowsWrite(DWORD protect) {
+	if ((protect & PAGE_GUARD) != 0) {
+		return false;
+	}
+	switch (protect & 0xff) {
+	case PAGE_READWRITE:
+	case PAGE_WRITECOPY:
+	case PAGE_EXECUTE_READWRITE:
+	case PAGE_EXECUTE_WRITECOPY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool queryAccessibleSpan(const void *address, bool write, uintptr_t &spanEnd) {
+	MEMORY_BASIC_INFORMATION info{};
+	if (wibo::heap::virtualQuery(address, &info) != wibo::heap::VmStatus::Success || info.State != MEM_COMMIT ||
+		(write ? !memoryProtectionAllowsWrite(info.Protect) : !memoryProtectionAllowsRead(info.Protect))) {
+		return false;
+	}
+
+	const uintptr_t start = reinterpret_cast<uintptr_t>(address);
+	const uintptr_t regionBase = static_cast<uintptr_t>(info.BaseAddress);
+	if (info.RegionSize > std::numeric_limits<uintptr_t>::max() - regionBase) {
+		spanEnd = std::numeric_limits<uintptr_t>::max();
+	} else {
+		spanEnd = regionBase + static_cast<uintptr_t>(info.RegionSize);
+	}
+	return start >= regionBase && start < spanEnd;
+}
+
+bool isBadMemoryRange(const void *address, UINT_PTR size, bool write) {
+	if (size == 0) {
+		return false;
+	}
+	if (!address) {
+		return true;
+	}
+
+	uintptr_t current = reinterpret_cast<uintptr_t>(address);
+	if (size > std::numeric_limits<uintptr_t>::max() - current) {
+		return true;
+	}
+	const uintptr_t requestedEnd = current + static_cast<uintptr_t>(size);
+	while (current < requestedEnd) {
+		uintptr_t spanEnd = 0;
+		if (!queryAccessibleSpan(reinterpret_cast<const void *>(current), write, spanEnd)) {
+			return true;
+		}
+		current = std::min(spanEnd, requestedEnd);
+	}
+	return false;
+}
+
+template <typename Char> bool isBadString(const Char *string, UINT_PTR maxCharacters) {
+	if (maxCharacters == 0) {
+		return false;
+	}
+	if (!string || maxCharacters > std::numeric_limits<uintptr_t>::max() / sizeof(Char)) {
+		return true;
+	}
+
+	uintptr_t current = reinterpret_cast<uintptr_t>(string);
+	UINT_PTR remaining = maxCharacters;
+	while (remaining != 0) {
+		uintptr_t spanEnd = 0;
+		if (!queryAccessibleSpan(reinterpret_cast<const void *>(current), false, spanEnd)) {
+			return true;
+		}
+		const uintptr_t availableBytes = spanEnd - current;
+		const UINT_PTR availableCharacters = static_cast<UINT_PTR>(availableBytes / sizeof(Char));
+		const UINT_PTR inspectCount = std::min(remaining, availableCharacters);
+		if (inspectCount == 0) {
+			return true;
+		}
+
+		const auto *characters = reinterpret_cast<const Char *>(current);
+		for (UINT_PTR index = 0; index < inspectCount; ++index) {
+			if (characters[index] == 0) {
+				return false;
+			}
+		}
+		remaining -= inspectCount;
+		if (inspectCount > (std::numeric_limits<uintptr_t>::max() - current) / sizeof(Char)) {
+			return true;
+		}
+		current += inspectCount * sizeof(Char);
+	}
+	return false;
+}
+
 SIZE_T clampToSizeT(uint64_t value) {
 	constexpr uint64_t kMaxSizeT = static_cast<uint64_t>(std::numeric_limits<SIZE_T>::max());
 	return value > kMaxSizeT ? static_cast<SIZE_T>(kMaxSizeT) : static_cast<SIZE_T>(value);
@@ -87,7 +196,7 @@ bool queryHostMemory(MemorySnapshot &out) {
 	if (host_page_size(mach_host_self(), &pageSize) != KERN_SUCCESS || pageSize == 0) {
 		return false;
 	}
-	vm_statistics64_data_t vmstat {};
+	vm_statistics64_data_t vmstat{};
 	mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
 	if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vmstat), &count) !=
 		KERN_SUCCESS) {
@@ -770,20 +879,26 @@ void tryMarkExecutable(void *mem) {
 
 BOOL WINAPI IsBadReadPtr(LPCVOID lp, UINT_PTR ucb) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: IsBadReadPtr(ptr=%p, size=%zu)\n", lp, static_cast<size_t>(ucb));
-	if (!lp) {
-		return TRUE;
-	}
-	return FALSE;
+	DEBUG_LOG("IsBadReadPtr(ptr=%p, size=%zu)\n", lp, static_cast<size_t>(ucb));
+	return isBadMemoryRange(lp, ucb, false) ? TRUE : FALSE;
 }
 
 BOOL WINAPI IsBadWritePtr(LPVOID lp, UINT_PTR ucb) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: IsBadWritePtr(ptr=%p, size=%zu)\n", lp, static_cast<size_t>(ucb));
-	if (!lp && ucb != 0) {
-		return TRUE;
-	}
-	return FALSE;
+	DEBUG_LOG("IsBadWritePtr(ptr=%p, size=%zu)\n", lp, static_cast<size_t>(ucb));
+	return isBadMemoryRange(lp, ucb, true) ? TRUE : FALSE;
+}
+
+BOOL WINAPI IsBadStringPtrA(LPCSTR lpsz, UINT_PTR ucchMax) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsBadStringPtrA(ptr=%p, max=%zu)\n", lpsz, static_cast<size_t>(ucchMax));
+	return isBadString(lpsz, ucchMax) ? TRUE : FALSE;
+}
+
+BOOL WINAPI IsBadStringPtrW(LPCWSTR lpsz, UINT_PTR ucchMax) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsBadStringPtrW(ptr=%p, max=%zu)\n", lpsz, static_cast<size_t>(ucchMax));
+	return isBadString(lpsz, ucchMax) ? TRUE : FALSE;
 }
 
 BOOL WINAPI GetComputerNameA(LPSTR lpBuffer, LPDWORD nSize) {
@@ -1242,7 +1357,7 @@ BOOL WINAPI GetDiskFreeSpaceA(LPCSTR lpRootPathName, LPDWORD lpSectorsPerCluster
 							  LPDWORD lpNumberOfFreeClusters, LPDWORD lpTotalNumberOfClusters) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetDiskFreeSpaceA(%s)\n", lpRootPathName ? lpRootPathName : "(null)");
-	struct statvfs buf{};
+	struct statvfs buf {};
 	std::string resolvedPath;
 	if (!resolveDiskFreeSpaceStat(lpRootPathName, buf, resolvedPath)) {
 		return FALSE;
@@ -1301,7 +1416,7 @@ BOOL WINAPI GetDiskFreeSpaceExA(LPCSTR lpDirectoryName, PULARGE_INTEGER lpFreeBy
 								PULARGE_INTEGER lpTotalNumberOfBytes, PULARGE_INTEGER lpTotalNumberOfFreeBytes) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetDiskFreeSpaceExA(%s)\n", lpDirectoryName ? lpDirectoryName : "(null)");
-	struct statvfs buf{};
+	struct statvfs buf {};
 	std::string resolvedPath;
 	if (!resolveDiskFreeSpaceStat(lpDirectoryName, buf, resolvedPath)) {
 		return FALSE;

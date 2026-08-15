@@ -27,11 +27,28 @@ struct RTL_OSVERSIONINFOW {
 	WCHAR szCSDVersion[128];
 };
 
+enum WINE_DEBUG_CLASS {
+	WINE_DBCL_FIXME,
+	WINE_DBCL_ERR,
+	WINE_DBCL_WARN,
+	WINE_DBCL_TRACE,
+	WINE_DBCL_INIT = 7,
+};
+
+struct WINE_DEBUG_CHANNEL {
+	BYTE flags;
+	char name[15];
+};
+
 using PRTL_OSVERSIONINFOW = RTL_OSVERSIONINFOW *;
 
 namespace ntdll {
 
 PVOID CDECL memset(PVOID dest, int ch, SIZE_T count);
+BYTE CDECL __wine_dbg_get_channel_flags(WINE_DEBUG_CHANNEL *channel);
+int CDECL __wine_dbg_header(WINE_DEBUG_CLASS debugClass, WINE_DEBUG_CHANNEL *channel, const char *function);
+int CDECL __wine_dbg_output(const char *str);
+const char *CDECL __wine_dbg_strdup(const char *str);
 NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
 						   PIO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length, PLARGE_INTEGER ByteOffset,
 						   PULONG Key);

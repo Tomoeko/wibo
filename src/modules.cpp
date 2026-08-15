@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kernel32/errhandlingapi.h"
 #include "kernel32/internal.h"
+#include "setup.h"
 #include "strutil.h"
 #include "tls.h"
 #include "types.h"
@@ -66,10 +67,23 @@ extern const wibo::ModuleStub lib_shlwapi;
 extern const wibo::ModuleStub lib_user32;
 extern const wibo::ModuleStub lib_vcruntime;
 extern const wibo::ModuleStub lib_version;
+extern const wibo::ModuleStub lib_winmm;
 extern const wibo::ModuleStub lib_ws2;
 
 // setup.S
+#ifdef WIBO_GUEST_64
+template <size_t Index> void __attribute__((ms_abi)) stubThunk() {
+#if defined(__APPLE__)
+	TEB *teb = enterHostContext();
+#endif
+	entry::stubBase(Index);
+#if defined(__APPLE__)
+	enterGuestContext(teb);
+#endif
+}
+#else
 template <size_t Index> void stubThunk();
+#endif
 
 namespace {
 
@@ -117,7 +131,11 @@ struct PEExportDirectory {
 	uint32_t addressOfNameOrdinals;
 };
 
+#ifdef WIBO_GUEST_64
+using StubFuncType = void(__attribute__((ms_abi)) *)();
+#else
 using StubFuncType = void (*)();
+#endif
 constexpr size_t MAX_STUBS = 0x100;
 size_t stubIndex = 0;
 std::array<std::string, MAX_STUBS> stubDlls;
@@ -125,6 +143,11 @@ std::array<std::string, MAX_STUBS> stubFuncNames;
 std::unordered_map<std::string, StubFuncType> stubCache;
 std::unordered_map<HANDLE, std::shared_ptr<wibo::ModuleInfo>> g_modules;
 HANDLE g_nextStubHandle = 1;
+
+// Windows serializes loader notifications, but the data-structure lock that
+// protects the module maps must never be held while guest TLS callbacks or
+// DllMain execute. Guest code is allowed to query and recursively load modules.
+std::recursive_mutex g_loaderNotificationMutex;
 
 std::string makeStubKey(const char *dllName, const char *funcName) {
 	std::string key;
@@ -142,7 +165,7 @@ std::string makeStubKey(const char *dllName, const char *funcName) {
 }
 
 template <size_t... Indices>
-constexpr std::array<void (*)(void), sizeof...(Indices)> makeStubTable(std::index_sequence<Indices...>) {
+constexpr std::array<StubFuncType, sizeof...(Indices)> makeStubTable(std::index_sequence<Indices...>) {
 	return {{stubThunk<Indices>...}};
 }
 
@@ -260,6 +283,21 @@ struct LockedRegistry {
 };
 
 void registerBuiltinModule(ModuleRegistry &reg, const wibo::ModuleStub *module);
+bool shouldDeliverThreadNotifications(const wibo::ModuleInfo &info);
+
+using ThreadNotificationSnapshot = std::shared_ptr<const std::vector<wibo::ModulePtr>>;
+ThreadNotificationSnapshot g_threadNotificationSnapshot;
+
+void publishThreadNotificationSnapshot(ModuleRegistry &reg) {
+	auto targets = std::make_shared<std::vector<wibo::ModulePtr>>();
+	targets->reserve(reg.modulesByKey.size());
+	for (auto &pair : reg.modulesByKey) {
+		if (pair.second && shouldDeliverThreadNotifications(*pair.second)) {
+			targets->push_back(pair.second);
+		}
+	}
+	g_threadNotificationSnapshot = std::move(targets);
+}
 
 LockedRegistry registry() {
 	static ModuleRegistry reg;
@@ -269,7 +307,7 @@ LockedRegistry registry() {
 		const wibo::ModuleStub *builtins[] = {
 			&lib_advapi32, &lib_bcrypt, &lib_kernel32, &lib_lmgr,	   &lib_mscoree, &lib_ntdll,
 			&lib_ole32,	   &lib_rpcrt4, &lib_shlwapi, &lib_user32,	   &lib_vcruntime, &lib_version,
-			&lib_ws2,
+			&lib_winmm,	   &lib_ws2,
 #if WIBO_HAS_MSVCRT
 			&lib_msvcrt,
 #endif
@@ -305,6 +343,8 @@ LockedRegistry registry() {
 	}
 	return {reg, std::move(guard)};
 }
+
+ThreadNotificationSnapshot snapshotThreadNotificationModules() { return g_threadNotificationSnapshot; }
 
 DWORD allocateModuleTlsSlot(ModuleRegistry &reg, wibo::ModuleInfo &module) {
 	for (DWORD i = 0; i < static_cast<DWORD>(reg.tlsModuleSlots.size()); ++i) {
@@ -378,16 +418,16 @@ std::string normalizedBaseKey(const ParsedModuleName &parsed) {
 	return normalizeAlias(base);
 }
 
-struct ImageTlsDirectory32 {
-	uint32_t StartAddressOfRawData;
-	uint32_t EndAddressOfRawData;
-	uint32_t AddressOfIndex;
-	uint32_t AddressOfCallBacks;
+struct ImageTlsDirectory {
+	GUEST_PTR StartAddressOfRawData;
+	GUEST_PTR EndAddressOfRawData;
+	GUEST_PTR AddressOfIndex;
+	GUEST_PTR AddressOfCallBacks;
 	uint32_t SizeOfZeroFill;
 	uint32_t Characteristics;
 };
 
-constexpr size_t kMinTlsDirectorySize = offsetof(ImageTlsDirectory32, SizeOfZeroFill);
+constexpr size_t kMinTlsDirectorySize = offsetof(ImageTlsDirectory, SizeOfZeroFill);
 
 uintptr_t resolveModuleAddress(const wibo::Executable &exec, uintptr_t address) {
 	if (address == 0) {
@@ -434,15 +474,31 @@ bool allocateModuleTlsForThread(wibo::ModuleInfo &module, TEB *tib) {
 		block = toGuestPtr(ptr);
 	}
 	info.threadAllocations.emplace(tib, block);
-	if (!wibo::tls::setValue(tib, info.index, block)) {
+	const bool apiSlotPublished = wibo::tls::setValue(tib, info.index, block);
+	if (!apiSlotPublished) {
 		DEBUG_LOG("  allocateModuleTlsForThread: failed to publish TLS pointer for %s (index %u)\n",
 				  module.originalName.c_str(), info.index);
 	}
+	bool loaderSlotPublished = true;
 	if (info.loaderIndex != wibo::tls::kInvalidTlsIndex) {
-		if (!wibo::tls::setModulePointer(tib, info.loaderIndex, block)) {
+		loaderSlotPublished = wibo::tls::setModulePointer(tib, info.loaderIndex, block);
+		if (!loaderSlotPublished) {
 			DEBUG_LOG("  allocateModuleTlsForThread: failed to update module pointer for %s (slot %u)\n",
 					  module.originalName.c_str(), info.loaderIndex);
 		}
+	}
+	if (!apiSlotPublished || !loaderSlotPublished) {
+		if (apiSlotPublished) {
+			wibo::tls::setValue(tib, info.index, GUEST_NULL);
+		}
+		if (loaderSlotPublished && info.loaderIndex != wibo::tls::kInvalidTlsIndex) {
+			wibo::tls::clearModulePointer(tib, info.loaderIndex);
+		}
+		info.threadAllocations.erase(tib);
+		if (block) {
+			wibo::heap::guestFree(fromGuestPtr(block));
+		}
+		return false;
 	}
 	return true;
 }
@@ -877,7 +933,17 @@ void stubBase(SIZE_T index) {
 	const char *dll = stubDlls[index].empty() ? "<unknown>" : stubDlls[index].c_str();
 	fprintf(stderr, "wibo: call reached missing import %s from %s\n", func, dll);
 	fflush(stderr);
+#if defined(__APPLE__)
+	// abort() raises SIGABRT through pthread_kill. Rosetta can wedge that call
+	// indefinitely when a translated guest worker owns the fault, leaving every
+	// sibling alive and the process unkillable. We are already in host context;
+	// clear this thread's translated TEB state and let the kernel terminate the
+	// process directly instead of delivering a synchronous signal.
+	wibo::uninstallTebForCurrentThread();
+	_exit(127);
+#else
 	abort();
+#endif
 }
 
 } // namespace entry
@@ -944,14 +1010,25 @@ ModuleInfo *registerProcessModule(std::unique_ptr<Executable> executable, std::f
 	pinAlias(storageKey);
 	pinAlias(normalizeAlias(raw->originalName));
 	pinAlias(normalizedName);
+	publishThreadNotificationSnapshot(*reg);
 
 	return raw;
 }
 
 void shutdownModuleRegistry() {
-	auto reg = registry();
-	for (auto &pair : reg->modulesByKey) {
-		ModuleInfo *info = pair.second.get();
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	std::vector<ModulePtr> targets;
+	{
+		auto reg = registry();
+		targets.reserve(reg->modulesByKey.size());
+		for (auto &pair : reg->modulesByKey) {
+			if (pair.second && !pair.second->moduleStub) {
+				targets.push_back(pair.second);
+			}
+		}
+	}
+	for (const ModulePtr &target : targets) {
+		ModuleInfo *info = target.get();
 		if (!info || info->moduleStub) {
 			continue;
 		}
@@ -964,10 +1041,15 @@ void shutdownModuleRegistry() {
 		}
 		releaseModuleTls(*info);
 	}
-	reg->modulesByKey.clear();
-	reg->modulesByAlias.clear();
-	reg->dllDirectory.reset();
-	reg->initialized = false;
+	{
+		auto reg = registry();
+		reg->modulesByKey.clear();
+		reg->modulesByAlias.clear();
+		reg->dllDirectory.reset();
+		reg->initialized = false;
+		g_threadNotificationSnapshot.reset();
+	}
+	g_modules.clear();
 }
 
 ModuleInfo *moduleInfoFromHandle(HMODULE module) {
@@ -1018,6 +1100,7 @@ ModuleInfo *moduleInfoFromAddress(void *addr) {
 }
 
 bool initializeModuleTls(ModuleInfo &module) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (module.tlsInfo.hasTls) {
 		return true;
 	}
@@ -1032,8 +1115,8 @@ bool initializeModuleTls(ModuleInfo &module) {
 	if (!tlsDirectoryRaw) {
 		return false;
 	}
-	ImageTlsDirectory32 tlsDirectory{};
-	// TLS directory may be smaller than ImageTlsDirectory32; remaining fields are zero-initialized
+	ImageTlsDirectory tlsDirectory{};
+	// Older images can provide a shorter directory; absent trailing fields remain zero-initialized.
 	size_t copySize = std::min<size_t>(exec.tlsDirectorySize, sizeof(tlsDirectory));
 	std::memcpy(&tlsDirectory, tlsDirectoryRaw, copySize);
 
@@ -1057,10 +1140,15 @@ bool initializeModuleTls(ModuleInfo &module) {
 	info.allocationSize = info.templateSize + info.zeroFillSize;
 	info.threadAllocations.clear();
 
-	auto reg = registry();
-	DWORD loaderIndex = allocateModuleTlsSlot(*reg, module);
-	size_t requiredModuleCapacity = reg->tlsModuleSlots.size();
+	DWORD loaderIndex = tls::kInvalidTlsIndex;
+	size_t requiredModuleCapacity = 0;
+	{
+		auto reg = registry();
+		loaderIndex = allocateModuleTlsSlot(*reg, module);
+		requiredModuleCapacity = reg->tlsModuleSlots.size();
+	}
 	if (!wibo::tls::ensureModulePointerCapacity(requiredModuleCapacity)) {
+		auto reg = registry();
 		releaseModuleTlsSlot(*reg, loaderIndex);
 		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return false;
@@ -1072,6 +1160,7 @@ bool initializeModuleTls(ModuleInfo &module) {
 
 	DWORD apiIndex = tls::reserveSlot();
 	if (apiIndex == tls::kInvalidTlsIndex) {
+		auto reg = registry();
 		releaseModuleTlsSlot(*reg, loaderIndex);
 		info.loaderIndex = tls::kInvalidTlsIndex;
 		if (info.indexLocation) {
@@ -1114,7 +1203,10 @@ bool initializeModuleTls(ModuleInfo &module) {
 		info.threadAllocations.clear();
 		wibo::tls::releaseSlot(info.index);
 		info.index = tls::kInvalidTlsIndex;
-		releaseModuleTlsSlot(*reg, loaderIndex);
+		{
+			auto reg = registry();
+			releaseModuleTlsSlot(*reg, loaderIndex);
+		}
 		info.loaderIndex = tls::kInvalidTlsIndex;
 		info.hasTls = false;
 		if (info.indexLocation) {
@@ -1129,6 +1221,7 @@ bool initializeModuleTls(ModuleInfo &module) {
 }
 
 void releaseModuleTls(ModuleInfo &module) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (!module.tlsInfo.hasTls) {
 		return;
 	}
@@ -1160,16 +1253,24 @@ void releaseModuleTls(ModuleInfo &module) {
 }
 
 void notifyDllThreadAttach() {
-	auto reg = registry();
-	std::vector<wibo::ModuleInfo *> targets;
-	targets.reserve(reg->modulesByKey.size());
-	for (auto &pair : reg->modulesByKey) {
-		wibo::ModuleInfo *info = pair.second.get();
-		if (info && shouldDeliverThreadNotifications(*info)) {
-			targets.push_back(info);
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	// The process image has no DllMain, but its PE static TLS and TLS callbacks
+	// participate in every thread attach just like a DLL. Keep it separate from
+	// the DLL notification snapshot so callDllMain ordering remains explicit.
+	if (wibo::mainModule && wibo::mainModule->tlsInfo.hasTls) {
+		if (!allocateModuleTlsForThread(*wibo::mainModule, currentThreadTeb)) {
+			DEBUG_LOG("notifyDllThreadAttach: failed to allocate TLS for process image %s\n",
+					  wibo::mainModule->originalName.c_str());
 		}
+		runModuleTlsCallbacks(*wibo::mainModule, TLS_THREAD_ATTACH);
 	}
-	for (wibo::ModuleInfo *info : targets) {
+	auto targets = snapshotThreadNotificationModules();
+	if (!targets) {
+		kernel32::setLastError(ERROR_SUCCESS);
+		return;
+	}
+	for (const ModulePtr &target : *targets) {
+		ModuleInfo *info = target.get();
 		if (info && info->tlsInfo.hasTls) {
 			if (!allocateModuleTlsForThread(*info, currentThreadTeb)) {
 				DEBUG_LOG("notifyDllThreadAttach: failed to allocate TLS for %s\n", info->originalName.c_str());
@@ -1177,39 +1278,42 @@ void notifyDllThreadAttach() {
 			runModuleTlsCallbacks(*info, TLS_THREAD_ATTACH);
 		}
 	}
-	for (wibo::ModuleInfo *info : targets) {
+	for (const ModulePtr &target : *targets) {
+		ModuleInfo *info = target.get();
 		callDllMain(*info, DLL_THREAD_ATTACH, nullptr);
 	}
 	kernel32::setLastError(ERROR_SUCCESS);
 }
 
 void notifyDllThreadDetach() {
-	auto reg = registry();
-	std::vector<wibo::ModuleInfo *> targets;
-	targets.reserve(reg->modulesByKey.size());
-	for (auto &pair : reg->modulesByKey) {
-		wibo::ModuleInfo *info = pair.second.get();
-		if (info && shouldDeliverThreadNotifications(*info)) {
-			targets.push_back(info);
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto targets = snapshotThreadNotificationModules();
+	if (targets) {
+		for (auto it = targets->rbegin(); it != targets->rend(); ++it) {
+			ModuleInfo *info = it->get();
+			if (info && info->tlsInfo.hasTls) {
+				runModuleTlsCallbacks(*info, TLS_THREAD_DETACH);
+			}
+		}
+		for (auto it = targets->rbegin(); it != targets->rend(); ++it) {
+			callDllMain(**it, DLL_THREAD_DETACH, nullptr);
+		}
+		for (auto it = targets->rbegin(); it != targets->rend(); ++it) {
+			ModuleInfo *info = it->get();
+			if (info && info->tlsInfo.hasTls) {
+				freeModuleTlsForThread(*info, currentThreadTeb);
+			}
 		}
 	}
-	for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-		if (*it && (*it)->tlsInfo.hasTls) {
-			runModuleTlsCallbacks(**it, TLS_THREAD_DETACH);
-		}
-	}
-	for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-		callDllMain(**it, DLL_THREAD_DETACH, nullptr);
-	}
-	for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-		if (*it && (*it)->tlsInfo.hasTls) {
-			freeModuleTlsForThread(**it, currentThreadTeb);
-		}
+	if (wibo::mainModule && wibo::mainModule->tlsInfo.hasTls) {
+		runModuleTlsCallbacks(*wibo::mainModule, TLS_THREAD_DETACH);
+		freeModuleTlsForThread(*wibo::mainModule, currentThreadTeb);
 	}
 	kernel32::setLastError(ERROR_SUCCESS);
 }
 
 BOOL disableThreadNotifications(ModuleInfo *info) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (!info) {
 		return FALSE;
 	}
@@ -1217,9 +1321,11 @@ BOOL disableThreadNotifications(ModuleInfo *info) {
 		DEBUG_LOG("disableThreadNotifications: %s uses static TLS\n", info->originalName.c_str());
 		return FALSE;
 	}
-	auto reg = registry();
-	(void)reg;
 	info->threadNotificationsEnabled = false;
+	{
+		auto reg = registry();
+		publishThreadNotificationSnapshot(*reg);
+	}
 	return TRUE;
 }
 
@@ -1306,8 +1412,9 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 				diskError = kernel32::getLastError();
 				return nullptr;
 			}
+			BOOL attached = callDllMain(*raw, DLL_PROCESS_ATTACH, nullptr);
 			reg.lock.lock();
-			if (!callDllMain(*raw, DLL_PROCESS_ATTACH, nullptr)) {
+			if (!attached) {
 				DEBUG_LOG("  DllMain failed for %s\n", raw->originalName.c_str());
 				releaseModuleTls(*raw);
 				// runPendingOnExit(*raw);
@@ -1324,6 +1431,7 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 				kernel32::setLastError(ERROR_DLL_INIT_FAILED);
 				return nullptr;
 			}
+			publishThreadNotificationSnapshot(*reg);
 		}
 		return raw;
 	};
@@ -1405,6 +1513,7 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 }
 
 ModuleInfo *loadModule(const char *dllName) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (!dllName || *dllName == '\0') {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return nullptr;
@@ -1445,24 +1554,27 @@ ModuleInfo *loadModule(const char *dllName) {
 }
 
 void freeModule(ModuleInfo *info) {
-	auto reg = registry();
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (!info || info->refCount == UINT_MAX) {
 		return;
 	}
-	if (info->refCount == 0) {
-		return;
-	}
-	info->refCount--;
-	if (info->refCount == 0) {
-		// runPendingOnExit(*info);
-		if (info->tlsInfo.hasTls) {
-			runModuleTlsCallbacks(*info, TLS_PROCESS_DETACH);
+	ModulePtr owner;
+	{
+		auto reg = registry();
+		if (info->refCount == 0) {
+			return;
 		}
-		callDllMain(*info, DLL_PROCESS_DETACH, nullptr);
-		releaseModuleTls(*info);
+		info->refCount--;
+		if (info->refCount != 0) {
+			return;
+		}
 		std::string key = info->resolvedPath.empty() ? storageKeyForBuiltin(info->normalizedName)
 													 : storageKeyForPath(info->resolvedPath);
-		reg->modulesByKey.erase(key);
+		auto moduleIt = reg->modulesByKey.find(key);
+		if (moduleIt != reg->modulesByKey.end() && moduleIt->second.get() == info) {
+			owner = moduleIt->second;
+			reg->modulesByKey.erase(moduleIt);
+		}
 		for (auto it = reg->modulesByAlias.begin(); it != reg->modulesByAlias.end();) {
 			if (it->second == info) {
 				it = reg->modulesByAlias.erase(it);
@@ -1470,7 +1582,24 @@ void freeModule(ModuleInfo *info) {
 				++it;
 			}
 		}
+		publishThreadNotificationSnapshot(*reg);
 	}
+	if (!owner) {
+		auto handleIt = g_modules.find(info->handle);
+		if (handleIt != g_modules.end() && handleIt->second.get() == info) {
+			owner = handleIt->second;
+		}
+	}
+	if (!owner) {
+		return;
+	}
+	// runPendingOnExit(*info);
+	if (info->tlsInfo.hasTls) {
+		runModuleTlsCallbacks(*info, TLS_PROCESS_DETACH);
+	}
+	callDllMain(*info, DLL_PROCESS_DETACH, nullptr);
+	releaseModuleTls(*info);
+	g_modules.erase(info->handle);
 }
 
 void *findExportByName(ModuleInfo *info, const char *funcName) {
@@ -1495,10 +1624,13 @@ void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal) {
 	if (!info) {
 		return nullptr;
 	}
-	if (info->moduleStub && info->moduleStub->byOrdinal) {
-		void *func = info->moduleStub->byOrdinal(ordinal);
-		if (func) {
-			return func;
+	if (info->moduleStub && info->moduleStub->nameByOrdinal) {
+		const char *name = info->moduleStub->nameByOrdinal(ordinal);
+		if (name && info->moduleStub->byName) {
+			void *func = info->moduleStub->byName(name);
+			if (func) {
+				return func;
+			}
 		}
 	}
 	ensureExportsInitialized(*info);

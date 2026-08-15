@@ -62,7 +62,7 @@ struct timespec accessTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_atim;
 #else
-	struct timespec ts{};
+	struct timespec ts {};
 	ts.tv_sec = st.st_atime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -75,7 +75,7 @@ struct timespec modifyTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_mtim;
 #else
-	struct timespec ts{};
+	struct timespec ts {};
 	ts.tv_sec = st.st_mtime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -88,7 +88,7 @@ struct timespec changeTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_ctim;
 #else
-	struct timespec ts{};
+	struct timespec ts {};
 	ts.tv_sec = st.st_ctime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -306,7 +306,7 @@ template <typename FindData> void populateFromStat(const FindSearchEntry &entry,
 template <typename FindData> void populateFindData(const FindSearchEntry &entry, FindData &out) {
 	resetFindDataStruct(out);
 	std::string nativePath = entry.fullPath.empty() ? std::string() : entry.fullPath.string();
-	struct stat st{};
+	struct stat st {};
 	if (!nativePath.empty() && stat(nativePath.c_str(), &st) == 0) {
 		populateFromStat(entry, st, out);
 	} else {
@@ -635,7 +635,7 @@ BOOL WINAPI GetFileAttributesExA(LPCSTR lpFileName, GET_FILEEX_INFO_LEVELS fInfo
 		return TRUE;
 	}
 
-	struct stat st{};
+	struct stat st {};
 	if (stat(hostPathStr.c_str(), &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1125,7 +1125,7 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		return INVALID_HANDLE_VALUE;
 	}
 
-	struct stat st{};
+	struct stat st {};
 	if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
 		isDirectory = true;
 	}
@@ -1403,20 +1403,42 @@ DWORD WINAPI GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh) {
 		DEBUG_LOG("-> INVALID_FILE_SIZE (ERROR_INVALID_HANDLE)\n");
 		return INVALID_FILE_SIZE;
 	}
-	const auto size = lseek(file->fd, 0, SEEK_END);
-	if (size < 0) {
+	struct stat status {};
+	if (fstat(file->fd, &status) != 0 || status.st_size < 0) {
 		if (lpFileSizeHigh) {
 			*lpFileSizeHigh = 0;
 		}
+		setLastErrorFromErrno();
 		DEBUG_LOG("-> INVALID_FILE_SIZE\n");
 		return INVALID_FILE_SIZE;
 	}
-	DEBUG_LOG("-> %lld\n", size);
-	uint64_t uSize = static_cast<uint64_t>(size);
+	DEBUG_LOG("-> %lld\n", static_cast<long long>(status.st_size));
+	uint64_t uSize = static_cast<uint64_t>(status.st_size);
 	if (lpFileSizeHigh) {
 		*lpFileSizeHigh = static_cast<DWORD>(uSize >> 32);
 	}
 	return static_cast<DWORD>(uSize & 0xFFFFFFFFu);
+}
+
+BOOL WINAPI GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetFileSizeEx(%p, %p)\n", hFile, lpFileSize);
+	if (!lpFileSize) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	auto file = wibo::handles().getAs<FileObject>(hFile);
+	if (!file || !file->valid()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	struct stat status {};
+	if (fstat(file->fd, &status) != 0 || status.st_size < 0) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	lpFileSize->QuadPart = static_cast<LONGLONG>(status.st_size);
+	return TRUE;
 }
 
 BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLastAccessTime,
@@ -1436,7 +1458,7 @@ BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLa
 	}
 #endif
 
-	struct stat st{};
+	struct stat st {};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1483,7 +1505,7 @@ BOOL WINAPI SetFileTime(HANDLE hFile, const FILETIME *lpCreationTime, const FILE
 	if (!changeAccess && !changeWrite) {
 		return TRUE;
 	}
-	struct stat st{};
+	struct stat st {};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1545,7 +1567,7 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 		return FALSE;
 	}
 	// TODO access check
-	struct stat st{};
+	struct stat st {};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1578,7 +1600,7 @@ DWORD WINAPI GetFileType(HANDLE hFile) {
 		DEBUG_LOG("-> ERROR_INVALID_HANDLE\n");
 		return FILE_TYPE_UNKNOWN;
 	}
-	struct stat st{};
+	struct stat st {};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		DEBUG_LOG("-> fstat error\n");

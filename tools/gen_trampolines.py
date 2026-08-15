@@ -151,7 +151,7 @@ class VarInfo:
 
 
 def parse_tu(
-    headers: List[str], include_dirs: List[str], target: str
+    headers: List[str], include_dirs: List[str], target: str, defines: List[str]
 ) -> TranslationUnit:
     # Construct a tiny TU that includes the requested headers
     tu_source = "\n".join([f'#include "{h}"' for h in headers]) + "\n"
@@ -165,7 +165,9 @@ def parse_tu(
             "-target",
             target,
             "-DWIBO_CODEGEN=1",
-        ] + [arg for inc in include_dirs for arg in ("-I", inc)]
+        ] + [f"-D{define}" for define in defines] + [
+            arg for inc in include_dirs for arg in ("-I", inc)
+        ]
 
         index = Index.create()
         tu = index.parse(
@@ -975,6 +977,8 @@ def emit_header_mapping(
     typedefs: Iterable[TypedefInfo],
     variables: Iterable[VarInfo],
     arch: Arch,
+    guest_arch: Arch,
+    headers: Iterable[str],
 ) -> str:
     guard = f"WIBO_GEN_{dll.upper()}_THUNKS_H"
     lines: List[str] = []
@@ -983,6 +987,85 @@ def emit_header_mapping(
     lines.append(f"#define {guard}")
     lines.append("#include <stddef.h>")
     lines.append("#include <string.h>")
+
+    if guest_arch == Arch.X86_64:
+        lines.append('#include "setup.h"')
+        for header in headers:
+            include_path = header
+            if include_path.startswith("dll/") or include_path.startswith("src/"):
+                include_path = include_path.split("/", 1)[1]
+            lines.append(f'#include "{include_path}"')
+
+        for td in typedefs:
+            if td.variadic:
+                continue
+            params = [f"{td.name} fn"]
+            arg_names = []
+            for i, arg in enumerate(td.args):
+                type_str = _type_to_string(arg.type)
+                params.append(f"{type_str} arg{i}")
+                arg_names.append(f"arg{i}")
+            param_list = ", ".join(params)
+            call_args = ", ".join(arg_names)
+            return_type = _type_to_string(td.return_type.type)
+            lines.append(f"static inline {return_type} call_{td.name}({param_list}) {{")
+            lines.append("\tTEB *teb = currentTebForGuestTransition();")
+            lines.append("\tenterGuestContext(teb);")
+            if td.return_type.type.get_canonical().kind == TypeKind.VOID:
+                lines.append(f"\tfn({call_args});")
+                lines.append("\tenterHostContext();")
+            else:
+                lines.append(f"\tauto result = fn({call_args});")
+                lines.append("\tenterHostContext();")
+                lines.append("\treturn result;")
+            lines.append("}")
+
+        for f in funcs:
+            if f.variadic:
+                continue
+            qualified = f.name
+            params = []
+            arg_names = []
+            for i, arg in enumerate(f.args):
+                type_str = _type_to_string(arg.type)
+                params.append(f"{type_str} arg{i}")
+                arg_names.append(f"arg{i}")
+            param_list = ", ".join(params)
+            call_args = ", ".join(arg_names)
+            return_type = _type_to_string(f.return_type.type)
+            thunk = f"wibo_guest_to_host_{dll}_{f.name}"
+            if f.qualified_ns:
+                lines.append(f"namespace {f.qualified_ns} {{")
+            lines.append(
+                f"static {return_type} __attribute__((ms_abi)) {thunk}({param_list}) {{"
+            )
+            lines.append("\tTEB *teb = enterHostContext();")
+            if f.return_type.type.get_canonical().kind == TypeKind.VOID:
+                lines.append(f"\t{qualified}({call_args});")
+                lines.append("\tenterGuestContext(teb);")
+            else:
+                lines.append(f"\tauto result = {qualified}({call_args});")
+                lines.append("\tenterGuestContext(teb);")
+                lines.append("\treturn result;")
+            lines.append("}")
+            if f.qualified_ns:
+                lines.append(f"}} // namespace {f.qualified_ns}")
+
+        lines.append("")
+        lines.append("static inline void *%sThunkByName(const char *name) {" % dll)
+        for f in funcs:
+            qualified = f"{f.qualified_ns}::{f.name}" if f.qualified_ns else f.name
+            thunk = f"wibo_guest_to_host_{dll}_{f.name}"
+            target = qualified if f.variadic else (f"{f.qualified_ns}::{thunk}" if f.qualified_ns else thunk)
+            lines.append(f'\tif (strcmp(name, "{f.name}") == 0) return (void*)&{target};')
+        for v in variables:
+            qualified = f"{v.qualified_ns}::{v.name}" if v.qualified_ns else v.name
+            lines.append(f'\tif (strcmp(name, "{v.name}") == 0) return (void*)&{qualified};')
+        lines.append("\treturn NULL;")
+        lines.append("}")
+        lines.append(f"#endif /* {guard} */\n")
+        return "\n".join(lines)
+
     lines.append('#ifdef __cplusplus\nextern "C" {\n#endif')
 
     # Guest-to-host thunk functions
@@ -1069,6 +1152,7 @@ def main() -> int:
         "--namespace", dest="ns", default=None, help="Namespace filter, e.g. kernel32"
     )
     ap.add_argument("--arch", choices=["x86", "x86_64"], default="x86")
+    ap.add_argument("--guest-arch", choices=["x86", "x86_64"], default="x86")
     ap.add_argument(
         "--out-asm", type=Path, required=True, help="Output assembly file (.S)"
     )
@@ -1090,7 +1174,9 @@ def main() -> int:
     else:
         raise ValueError(f"Unsupported architecture: {args.arch}")
 
-    tu = parse_tu(args.headers, args.incs, target)
+    guest_arch = Arch(args.guest_arch)
+    defines = ["WIBO_GUEST_64=1"] if guest_arch == Arch.X86_64 else []
+    tu = parse_tu(args.headers, args.incs, target, defines)
     funcs = collect_functions(tu, args.ns, arch)
     typedefs = collect_typedefs(tu, arch)
     variables = collect_variables(tu, args.ns)
@@ -1104,11 +1190,12 @@ def main() -> int:
     lines.append('#include "macros.S"')
     lines.append(".text")
 
-    emit_guest_to_host_thunks(lines, args.dll, funcs, arch)
-    emit_host_to_guest_thunks(lines, typedefs, arch)
+    if guest_arch == Arch.X86:
+        emit_guest_to_host_thunks(lines, args.dll, funcs, arch)
+        emit_host_to_guest_thunks(lines, typedefs, arch)
 
     asm = "\n".join(lines) + "\n"
-    hdr = emit_header_mapping(args.dll, funcs, typedefs, variables, arch)
+    hdr = emit_header_mapping(args.dll, funcs, typedefs, variables, arch, guest_arch, args.headers)
 
     args.out_asm.parent.mkdir(parents=True, exist_ok=True)
     args.out_hdr.parent.mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <poll.h>
 #include <pthread.h>
 #include <string>
 #include <sys/wait.h>
@@ -33,8 +34,8 @@
 
 namespace {
 
-constexpr DWORD kSrwLockExclusive = 0x1u;
-constexpr DWORD kSrwLockSharedIncrement = 0x2u;
+constexpr ULONG_PTR kSrwLockExclusive = 0x1u;
+constexpr ULONG_PTR kSrwLockSharedIncrement = 0x2u;
 constexpr GUEST_PTR kInitOnceStateMask = 0x3u;
 constexpr GUEST_PTR kInitOnceCompletedFlag = 0x2u;
 constexpr GUEST_PTR kInitOnceReservedMask = (1u << INIT_ONCE_CTX_RESERVED_BITS) - 1;
@@ -335,13 +336,14 @@ struct WaitBlock {
 	explicit WaitBlock(bool waitAllIn, DWORD count) : waitAll(waitAllIn != FALSE), satisfied(count, false) {}
 
 	static void notify(void *context, WaitableObject *obj, DWORD index, bool abandoned) {
+		(void)obj;
 		auto *self = static_cast<WaitBlock *>(context);
 		if (self) {
-			self->handleSignal(obj, index, abandoned, true);
+			self->handleSignal(index, abandoned);
 		}
 	}
 
-	void noteInitial(WaitableObject *obj, DWORD index, bool abandoned) { handleSignal(obj, index, abandoned, false); }
+	void noteInitial(DWORD index, bool abandoned) { handleSignal(index, abandoned); }
 
 	bool isCompleted(DWORD &outResult) {
 		std::lock_guard lk(mutex);
@@ -367,10 +369,7 @@ struct WaitBlock {
 		return true;
 	}
 
-	void handleSignal(WaitableObject *obj, DWORD index, bool abandoned, bool fromWaiter) {
-		if (!obj) {
-			return;
-		}
+	void handleSignal(DWORD index, bool abandoned) {
 		bool notify = false;
 		{
 			std::lock_guard lk(mutex);
@@ -397,13 +396,6 @@ struct WaitBlock {
 					notify = true;
 				}
 			}
-		}
-		// Always unregister once we've observed a signal for this waiter.
-		if (fromWaiter) {
-			obj->unregisterWaiter(this);
-		} else if (!waitAll || satisfied[index]) {
-			// Initial state satisfaction can drop registration immediately.
-			obj->unregisterWaiter(this);
 		}
 		if (notify) {
 			cv.notify_all();
@@ -609,6 +601,39 @@ HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManual
 	makeWideNameFromAnsi(lpName, wideName);
 	return CreateEventW(lpEventAttributes, bManualReset, bInitialState,
 						lpName ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
+}
+
+HANDLE WINAPI OpenEventW(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCWSTR lpName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenEventW(0x%x, %d, %s)\n", dwDesiredAccess, static_cast<int>(bInheritHandle),
+			  wideStringToString(lpName).c_str());
+	if (!lpName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	auto object = wibo::g_namespace.get(makeU16String(lpName));
+	if (!object) {
+		setLastError(ERROR_FILE_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	auto event = std::move(object).downcast<EventObject>();
+	if (!event) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return NO_HANDLE;
+	}
+	const uint32_t handleFlags = bInheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	HANDLE handle = wibo::handles().alloc(std::move(event), dwDesiredAccess, handleFlags);
+	DEBUG_LOG("-> %p\n", handle);
+	return handle;
+}
+
+HANDLE WINAPI OpenEventA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenEventA -> ");
+	std::vector<uint16_t> wideName;
+	makeWideNameFromAnsi(lpName, wideName);
+	return OpenEventW(dwDesiredAccess, bInheritHandle,
+					lpName ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
 }
 
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
@@ -832,56 +857,142 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 		return WAIT_FAILED;
 	}
 
-	std::vector<Pin<WaitableObject>> objects(nCount);
+	struct WaitTarget {
+		Pin<> pin;
+		WaitableObject *waitable = nullptr;
+		FileObject *pipe = nullptr;
+		short pipeEvents = 0;
+	};
+	std::vector<WaitTarget> targets(nCount);
+	bool hasPipe = false;
 	for (DWORD i = 0; i < nCount; ++i) {
 		HandleMeta meta{};
-		auto obj = wibo::handles().getAs<WaitableObject>(lpHandles[i], &meta);
-		if (!obj) {
+		auto pin = wibo::handles().get(lpHandles[i], &meta);
+		if (!pin) {
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		objects[i] = std::move(obj);
+		if (auto *waitable = detail::castTo<WaitableObject>(pin.get())) {
+			targets[i].waitable = waitable;
+		} else if (auto *file = detail::castTo<FileObject>(pin.get()); file && file->valid() && file->isPipe) {
+			targets[i].pipe = file;
+			targets[i].pipeEvents =
+				(meta.grantedAccess & FILE_READ_DATA) != 0 ? POLLIN : static_cast<short>(POLLOUT);
+			hasPipe = true;
+		} else {
+			setLastError(ERROR_INVALID_HANDLE);
+			return WAIT_FAILED;
+		}
+		targets[i].pin = std::move(pin);
 	}
 
 	WaitBlock block(bWaitAll, nCount);
-	for (DWORD i = 0; i < objects.size(); ++i) {
-		objects[i]->registerWaiter(&block, i, &WaitBlock::notify);
-	}
-
-	for (DWORD i = 0; i < objects.size(); ++i) {
-		auto *obj = objects[i].get();
-		bool isSignaled = obj->signaled;
-		bool isAbandoned = false;
-		if (auto *mu = detail::castTo<MutexObject>(obj)) {
-			isAbandoned = mu->abandoned;
-		}
-		if (isSignaled) {
-			block.noteInitial(obj, i, isAbandoned);
-		}
-	}
-
 	DWORD waitResult = WAIT_TIMEOUT;
-	if (!block.isCompleted(waitResult)) {
-		if (dwMilliseconds == 0) {
-			waitResult = WAIT_TIMEOUT;
-		} else {
-			std::optional<std::chrono::steady_clock::time_point> deadline;
-			if (dwMilliseconds != INFINITE) {
-				deadline =
-					std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
-			}
-			DWORD signaledResult = WAIT_TIMEOUT;
-			bool completed = block.waitUntil(deadline, signaledResult);
-			if (completed) {
-				waitResult = signaledResult;
-			} else {
-				waitResult = WAIT_TIMEOUT;
+	if (!hasPipe) {
+		for (DWORD i = 0; i < targets.size(); ++i) {
+			targets[i].waitable->registerWaiter(&block, i, &WaitBlock::notify);
+		}
+		for (DWORD i = 0; i < targets.size(); ++i) {
+			auto *obj = targets[i].waitable;
+			std::lock_guard objectLock(obj->m);
+			if (obj->signaled) {
+				auto *mu = detail::castTo<MutexObject>(obj);
+				block.noteInitial(i, mu && mu->abandoned);
 			}
 		}
-	}
+		if (!block.isCompleted(waitResult)) {
+			if (dwMilliseconds == 0) {
+				waitResult = WAIT_TIMEOUT;
+			} else {
+				std::optional<std::chrono::steady_clock::time_point> deadline;
+				if (dwMilliseconds != INFINITE) {
+					deadline = std::chrono::steady_clock::now() +
+							   std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
+				}
+				DWORD signaledResult = WAIT_TIMEOUT;
+				waitResult = block.waitUntil(deadline, signaledResult) ? signaledResult : WAIT_TIMEOUT;
+			}
+		}
+		for (const auto &target : targets) {
+			target.waitable->unregisterWaiter(&block);
+		}
+	} else {
+		// A Windows pipe handle is waitable when data can be read/written or the
+		// peer closes. Host condition variables cannot observe descriptor state,
+		// so mixed waits poll the descriptors in short bounded slices and inspect
+		// ordinary waitables under their own locks. This preserves handle ordering
+		// and avoids a helper thread per pipe.
+		std::vector<pollfd> pollFds;
+		for (DWORD i = 0; i < targets.size(); ++i) {
+			if (targets[i].pipe) {
+				pollFds.push_back({targets[i].pipe->fd, targets[i].pipeEvents, 0});
+			}
+		}
+		const auto start = std::chrono::steady_clock::now();
+		const auto deadline = dwMilliseconds == INFINITE
+							  ? std::chrono::steady_clock::time_point::max()
+							  : start + std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
+		bool firstScan = true;
+		for (;;) {
+			int timeoutMs = 0;
+			if (!firstScan && dwMilliseconds != 0) {
+				if (dwMilliseconds == INFINITE) {
+					timeoutMs = 10;
+				} else {
+					auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+						deadline - std::chrono::steady_clock::now());
+					if (remaining.count() <= 0) {
+						break;
+					}
+					timeoutMs = static_cast<int>(std::min<int64_t>(10, remaining.count()));
+				}
+			}
+			firstScan = false;
+			for (auto &fd : pollFds) {
+				fd.revents = 0;
+			}
+			int pollResult;
+			do {
+				pollResult = poll(pollFds.data(), pollFds.size(), timeoutMs);
+			} while (pollResult < 0 && errno == EINTR);
+			if (pollResult < 0) {
+				setLastErrorFromErrno();
+				waitResult = WAIT_FAILED;
+				break;
+			}
 
-	for (const auto &object : objects) {
-		object->unregisterWaiter(&block);
+			size_t pipeIndex = 0;
+			for (DWORD i = 0; i < targets.size(); ++i) {
+				auto &target = targets[i];
+				bool signaled = false;
+				bool abandoned = false;
+				if (target.waitable) {
+					std::lock_guard objectLock(target.waitable->m);
+					signaled = target.waitable->signaled;
+					if (auto *mu = detail::castTo<MutexObject>(target.waitable)) {
+						abandoned = mu->abandoned;
+					}
+				} else {
+					short revents = pollFds[pipeIndex++].revents;
+					signaled = (revents & (target.pipeEvents | POLLHUP | POLLERR)) != 0;
+					if ((revents & POLLNVAL) != 0) {
+						setLastError(ERROR_INVALID_HANDLE);
+						waitResult = WAIT_FAILED;
+						break;
+					}
+				}
+				if (signaled) {
+					block.noteInitial(i, abandoned);
+				}
+				if (block.isCompleted(waitResult)) {
+					break;
+				}
+			}
+			if (waitResult == WAIT_FAILED || block.isCompleted(waitResult) || dwMilliseconds == 0 ||
+				(dwMilliseconds != INFINITE && std::chrono::steady_clock::now() >= deadline)) {
+				break;
+			}
+		}
 	}
 
 	if (waitResult == WAIT_TIMEOUT) {
@@ -893,7 +1004,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 	}
 
 	auto consume = [&](DWORD index) {
-		if (index < nCount) {
+		if (index < nCount && targets[index].waitable) {
 			WaitForSingleObject(lpHandles[index], 0);
 		}
 	};
@@ -1326,13 +1437,13 @@ void WINAPI AcquireSRWLockShared(PSRWLOCK SRWLock) {
 	}
 	auto *value = &SRWLock->Value;
 	while (true) {
-		ULONG current = __atomic_load_n(value, __ATOMIC_ACQUIRE);
+		ULONG_PTR current = __atomic_load_n(value, __ATOMIC_ACQUIRE);
 		if (current & kSrwLockExclusive) {
-			ULONG observed = current;
+			ULONG_PTR observed = current;
 			kernel32::WaitOnAddress(reinterpret_cast<VOID volatile *>(value), &observed, sizeof(observed), INFINITE);
 			continue;
 		}
-		ULONG desired = current + kSrwLockSharedIncrement;
+		ULONG_PTR desired = current + kSrwLockSharedIncrement;
 		if (__atomic_compare_exchange_n(value, &current, desired, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 			return;
 		}
@@ -1346,8 +1457,8 @@ void WINAPI ReleaseSRWLockShared(PSRWLOCK SRWLock) {
 		return;
 	}
 	auto *value = &SRWLock->Value;
-	ULONG previous = __atomic_fetch_sub(value, kSrwLockSharedIncrement, __ATOMIC_ACQ_REL);
-	ULONG newValue = previous - kSrwLockSharedIncrement;
+	ULONG_PTR previous = __atomic_fetch_sub(value, kSrwLockSharedIncrement, __ATOMIC_ACQ_REL);
+	ULONG_PTR newValue = previous - kSrwLockSharedIncrement;
 	if (newValue == 0) {
 		kernel32::WakeByAddressAll(value);
 	}
@@ -1361,7 +1472,7 @@ void WINAPI AcquireSRWLockExclusive(PSRWLOCK SRWLock) {
 	}
 	auto *value = &SRWLock->Value;
 	while (true) {
-		ULONG expected = 0;
+		ULONG_PTR expected = 0;
 		if (__atomic_compare_exchange_n(value, &expected, kSrwLockExclusive, false, __ATOMIC_ACQ_REL,
 										__ATOMIC_ACQUIRE)) {
 			return;
@@ -1386,7 +1497,7 @@ BOOLEAN WINAPI TryAcquireSRWLockExclusive(PSRWLOCK SRWLock) {
 	if (!SRWLock) {
 		return FALSE;
 	}
-	ULONG expected = 0;
+	ULONG_PTR expected = 0;
 	if (__atomic_compare_exchange_n(&SRWLock->Value, &expected, kSrwLockExclusive, false, __ATOMIC_ACQ_REL,
 									__ATOMIC_ACQUIRE)) {
 		return TRUE;
@@ -1400,9 +1511,9 @@ BOOLEAN WINAPI TryAcquireSRWLockShared(PSRWLOCK SRWLock) {
 	if (!SRWLock) {
 		return FALSE;
 	}
-	ULONG current = __atomic_load_n(&SRWLock->Value, __ATOMIC_ACQUIRE);
+	ULONG_PTR current = __atomic_load_n(&SRWLock->Value, __ATOMIC_ACQUIRE);
 	while (!(current & kSrwLockExclusive)) {
-		ULONG desired = current + kSrwLockSharedIncrement;
+		ULONG_PTR desired = current + kSrwLockSharedIncrement;
 		if (__atomic_compare_exchange_n(&SRWLock->Value, &current, desired, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 			return TRUE;
 		}

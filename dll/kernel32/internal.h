@@ -2,11 +2,9 @@
 
 #include "common.h"
 #include "handles.h"
-#include "heap.h"
 #include "types.h"
 
 #include <condition_variable>
-#include <optional>
 #include <pthread.h>
 
 namespace kernel32 {
@@ -88,6 +86,7 @@ struct ThreadObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Thread;
 
 	pthread_t thread;
+	DWORD threadId = 0;
 	DWORD exitCode = STILL_ACTIVE;
 	unsigned int suspendCount = 0;
 	TEB *tib = nullptr;
@@ -154,20 +153,17 @@ struct SemaphoreObject final : WaitableObject {
 struct HeapObject : public ObjectBase {
 	static constexpr ObjectType kType = ObjectType::Heap;
 
-	std::optional<wibo::Heap> heap;
-	const pthread_t owner;
+	bool active = true;
 	DWORD createFlags = 0;
 	SIZE_T initialSize = 0;
 	SIZE_T maximumSize = 0;
 	DWORD compatibility = 0;
 	bool isProcessHeap = false;
 
-	explicit HeapObject(std::optional<wibo::Heap> heap)
-		: ObjectBase(kType), heap(std::move(heap)), owner(pthread_self()) {}
+	HeapObject() : ObjectBase(kType) {}
 	~HeapObject() override;
 
-	[[nodiscard]] inline bool isOwner() const { return pthread_equal(owner, pthread_self()); }
-	[[nodiscard]] inline bool canAccess() const { return isProcessHeap || (isOwner() && heap.has_value()); }
+	[[nodiscard]] inline bool canAccess() const { return active; }
 };
 
 inline constexpr HANDLE kPseudoCurrentProcessHandleValue = static_cast<HANDLE>(-1);

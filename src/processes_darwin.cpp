@@ -4,7 +4,6 @@
 #include "handles.h"
 #include "kernel32/internal.h"
 
-#include <array>
 #include <atomic>
 #include <cerrno>
 #include <csignal>
@@ -12,15 +11,12 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
 #include <spawn.h>
 #include <system_error>
 #include <string>
-#include <sys/event.h>
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <thread>
-#include <unordered_map>
+#include <pthread.h>
 #include <unistd.h>
 
 #define ENUM_DYLD_BOOL
@@ -72,17 +68,45 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
-	void runLoop();
-	void wake() const;
-	void handleExit(pid_t pid);
-
-	mutable std::shared_mutex m;
 	std::atomic<bool> mRunning{false};
-	std::thread mThread;
-	int mKqueueFd = -1;
-	uintptr_t mWakeIdent = 1;
-	std::unordered_map<pid_t, Pin<ProcessObject>> mReg;
 };
+
+void completeProcess(Pin<ProcessObject> process, int status) {
+	{
+		std::lock_guard lk(process->m);
+		process->signaled = true;
+		process->pidfd = -1;
+		if (!process->forcedExitCode) {
+			process->exitCode = decodeExitStatus(status);
+		}
+	}
+	process->cv.notify_all();
+	process->notifyWaiters(false);
+}
+
+struct ReaperContext {
+	pid_t pid;
+	Pin<ProcessObject> process;
+};
+
+void *reapProcess(void *rawContext) {
+	std::unique_ptr<ReaperContext> context(static_cast<ReaperContext *>(rawContext));
+	int status = 0;
+	for (;;) {
+		pid_t result = waitpid(context->pid, &status, 0);
+		if (result == context->pid) {
+			completeProcess(std::move(context->process), status);
+			return nullptr;
+		}
+		if (result < 0 && errno == EINTR) {
+			continue;
+		}
+		if (result < 0) {
+			DEBUG_LOG("ProcessManager: waitpid(%d) failed: %s\n", context->pid, strerror(errno));
+		}
+		return nullptr;
+	}
+}
 
 } // namespace
 
@@ -121,49 +145,17 @@ int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info)
 } // namespace wibo::detail
 
 bool DarwinProcessManager::init() {
-	if (mRunning.load(std::memory_order_acquire)) {
-		return true;
-	}
-
-	mKqueueFd = kqueue();
-	if (mKqueueFd < 0) {
-		perror("kqueue");
-		return false;
-	}
-
-	struct kevent kev;
-	EV_SET(&kev, mWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
-	if (kevent(mKqueueFd, &kev, 1, nullptr, 0, nullptr) < 0) {
-		perror("kevent(EV_ADD user)");
-		close(mKqueueFd);
-		mKqueueFd = -1;
-		return false;
-	}
-
 	mRunning.store(true, std::memory_order_release);
-	mThread = std::thread(&DarwinProcessManager::runLoop, this);
 	DEBUG_LOG("ProcessManager (Darwin) initialized\n");
 	return true;
 }
 
 void DarwinProcessManager::shutdown() {
-	if (!mRunning.exchange(false, std::memory_order_acq_rel)) {
-		return;
-	}
-	wake();
-	if (mThread.joinable()) {
-		mThread.join();
-	}
-	std::lock_guard lk(m);
-	mReg.clear();
-	if (mKqueueFd >= 0) {
-		close(mKqueueFd);
-		mKqueueFd = -1;
-	}
+	mRunning.store(false, std::memory_order_release);
 }
 
 bool DarwinProcessManager::addProcess(Pin<ProcessObject> po) {
-	if (!po) {
+	if (!po || !mRunning.load(std::memory_order_acquire)) {
 		return false;
 	}
 	pid_t pid;
@@ -171,108 +163,15 @@ bool DarwinProcessManager::addProcess(Pin<ProcessObject> po) {
 		std::lock_guard lk(po->m);
 		pid = po->pid;
 	}
-	struct kevent kev;
-	EV_SET(&kev, static_cast<uintptr_t>(pid), EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT | NOTE_EXITSTATUS, 0, nullptr);
-	if (kevent(mKqueueFd, &kev, 1, nullptr, 0, nullptr) < 0) {
-		int err = errno;
-		DEBUG_LOG("ProcessManager: kevent add for pid %d failed: %s\n", pid, strerror(err));
-		if (err == ESRCH) {
-			int status = 0;
-			pid_t waited = waitpid(pid, &status, WNOHANG);
-			if (waited <= 0) {
-				waitpid(pid, &status, 0);
-			}
-			{
-				std::lock_guard lk(po->m);
-				po->signaled = true;
-				po->pidfd = -1;
-				if (!po->forcedExitCode) {
-					po->exitCode = decodeExitStatus(status);
-				}
-			}
-			po->cv.notify_all();
-			po->notifyWaiters(false);
-			return true;
-		}
+	auto *context = new ReaperContext{pid, std::move(po)};
+	pthread_t thread;
+	int result = pthread_create(&thread, nullptr, reapProcess, context);
+	if (result != 0) {
+		DEBUG_LOG("ProcessManager: failed to start reaper for pid %d: %s\n", pid, strerror(result));
+		delete context;
 		return false;
 	}
-	{
-		std::lock_guard lk(m);
-		mReg.emplace(pid, std::move(po));
-	}
+	pthread_detach(thread);
 	DEBUG_LOG("ProcessManager: registered pid %d\n", pid);
-	wake();
 	return true;
-}
-
-void DarwinProcessManager::runLoop() {
-	constexpr int kMaxEvents = 64;
-	std::array<struct kevent, kMaxEvents> events{};
-	while (mRunning.load(std::memory_order_acquire)) {
-		int n = kevent(mKqueueFd, nullptr, 0, events.data(), kMaxEvents, nullptr);
-		if (n < 0) {
-			if (errno == EINTR) {
-				continue;
-			}
-			perror("kevent");
-			break;
-		}
-		for (int i = 0; i < n; ++i) {
-			const auto &ev = events[i];
-			if (ev.filter == EVFILT_USER) {
-				continue;
-			}
-			if (ev.filter == EVFILT_PROC && (ev.fflags & NOTE_EXIT)) {
-				handleExit(static_cast<pid_t>(ev.ident));
-			}
-		}
-	}
-}
-
-void DarwinProcessManager::wake() const {
-	if (mKqueueFd < 0) {
-		return;
-	}
-	struct kevent kev;
-	EV_SET(&kev, mWakeIdent, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
-	kevent(mKqueueFd, &kev, 1, nullptr, 0, nullptr);
-}
-
-void DarwinProcessManager::handleExit(pid_t pid) {
-	Pin<ProcessObject> po;
-	{
-		std::unique_lock lk(m);
-		auto it = mReg.find(pid);
-		if (it != mReg.end()) {
-			po = std::move(it->second);
-			mReg.erase(it);
-		}
-	}
-	if (!po) {
-		// Might be a race with registration; still ensure we reap the child.
-		int status = 0;
-		waitpid(pid, &status, WNOHANG);
-		return;
-	}
-	int status = 0;
-	pid_t waited = waitpid(pid, &status, WNOHANG);
-	if (waited == 0) {
-		// Child still around; block to reap.
-		waited = waitpid(pid, &status, 0);
-	}
-	if (waited < 0) {
-		int err = errno;
-		DEBUG_LOG("ProcessManager: waitpid(%d) failed: %s\n", pid, strerror(err));
-		status = 0;
-	}
-	{
-		std::lock_guard lk(po->m);
-		po->signaled = true;
-		po->pidfd = -1;
-		if (!po->forcedExitCode) {
-			po->exitCode = decodeExitStatus(status);
-		}
-	}
-	po->cv.notify_all();
-	po->notifyWaiters(false);
 }

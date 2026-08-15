@@ -135,8 +135,27 @@ static void test_semaphore_waits(void) {
 	TEST_CHECK(CloseHandle(limited));
 }
 
+static void test_open_event(void) {
+	const char *name = "Local\\wibo-test-open-event";
+	HANDLE created = CreateEventA(NULL, TRUE, FALSE, name);
+	TEST_CHECK(created != NULL);
+
+	HANDLE opened = OpenEventA(EVENT_MODIFY_STATE | SYNCHRONIZE, TRUE, name);
+	TEST_CHECK(opened != NULL);
+	TEST_CHECK(SetEvent(opened));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(created, 0));
+
+	SetLastError(ERROR_SUCCESS);
+	TEST_CHECK(OpenEventA(EVENT_MODIFY_STATE, FALSE, "Local\\wibo-test-missing-event") == NULL);
+	TEST_CHECK_EQ(ERROR_FILE_NOT_FOUND, GetLastError());
+
+	TEST_CHECK(CloseHandle(opened));
+	TEST_CHECK(CloseHandle(created));
+}
+
 int main(void) {
 	test_mutex_contention();
 	test_semaphore_waits();
+	test_open_event();
 	return EXIT_SUCCESS;
 }

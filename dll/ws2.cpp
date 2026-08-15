@@ -129,20 +129,20 @@ int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, c
 
 #include "ws2_trampolines.h"
 
-static void *resolveByOrdinal(uint16_t ordinal) {
+static const char *resolveNameByOrdinal(uint16_t ordinal) {
 	// GHS 5.3.22 imports WS2_32.dll with the legacy winsock ordinal table.
 	// Keep these mappings tied to observed call sites rather than modern WS2_32 export ordinals.
 	switch (ordinal) {
 	case 18:
-		return (void *)thunk_ws2_select;
+		return "select";
 	case 52:
-		return (void *)thunk_ws2_gethostbyname;
+		return "gethostbyname";
 	case 57:
-		return (void *)thunk_ws2_gethostname;
+		return "gethostname";
 	case 115:
-		return (void *)thunk_ws2_WSAStartup;
+		return "WSAStartup";
 	case 116:
-		return (void *)thunk_ws2_WSACleanup;
+		return "WSACleanup";
 	}
 	return nullptr;
 }
@@ -153,5 +153,5 @@ extern const wibo::ModuleStub lib_ws2 = {
 		nullptr,
 	},
 	ws2ThunkByName,
-	resolveByOrdinal,
+	resolveNameByOrdinal,
 };

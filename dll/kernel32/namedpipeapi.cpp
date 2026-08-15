@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
@@ -382,6 +383,79 @@ BOOL WINAPI CreatePipe(PHANDLE hReadPipe, PHANDLE hWritePipe, LPSECURITY_ATTRIBU
 	writeObj->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
 	*hReadPipe = wibo::handles().alloc(std::move(readObj), FILE_GENERIC_READ, 0);
 	*hWritePipe = wibo::handles().alloc(std::move(writeObj), FILE_GENERIC_WRITE, 0);
+	return TRUE;
+}
+
+BOOL WINAPI PeekNamedPipe(HANDLE hNamedPipe, LPVOID lpBuffer, DWORD nBufferSize, LPDWORD lpBytesRead,
+						  LPDWORD lpTotalBytesAvail, LPDWORD lpBytesLeftThisMessage) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PeekNamedPipe(%p, %p, %u, %p, %p, %p)\n", hNamedPipe, lpBuffer, nBufferSize, lpBytesRead,
+			  lpTotalBytesAvail, lpBytesLeftThisMessage);
+
+	if (lpBytesRead) {
+		*lpBytesRead = 0;
+	}
+	if (lpTotalBytesAvail) {
+		*lpTotalBytesAvail = 0;
+	}
+	if (lpBytesLeftThisMessage) {
+		*lpBytesLeftThisMessage = 0;
+	}
+	if (nBufferSize != 0 && !lpBuffer) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+
+	HandleMeta meta{};
+	auto pipe = wibo::handles().getAs<FileObject>(hNamedPipe, &meta);
+	if (!pipe || !pipe->valid() || !pipe->isPipe) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if ((meta.grantedAccess & FILE_READ_DATA) == 0) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+
+	std::lock_guard lock(pipe->m);
+	int available = 0;
+	if (ioctl(pipe->fd, FIONREAD, &available) != 0) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	if (available < 0) {
+		available = 0;
+	}
+
+	DWORD bytesRead = 0;
+	if (lpBuffer && nBufferSize != 0 && available != 0) {
+		// Named duplex pipes use socketpairs, which provide a true non-consuming
+		// peek.  A Unix FIFO has no equivalent operation; consuming and writing
+		// bytes back would reorder the stream when another writer is active.
+		size_t requested = std::min<size_t>(nBufferSize, static_cast<size_t>(available));
+		requested = std::min<size_t>(requested, SSIZE_MAX);
+		ssize_t rc;
+		do {
+			rc = recv(pipe->fd, lpBuffer, requested, MSG_PEEK);
+		} while (rc < 0 && errno == EINTR);
+		if (rc < 0) {
+			setLastError(errno == ENOTSOCK ? ERROR_NOT_SUPPORTED : wibo::winErrorFromErrno(errno));
+			return FALSE;
+		}
+		bytesRead = static_cast<DWORD>(rc);
+	}
+
+	if (lpBytesRead) {
+		*lpBytesRead = bytesRead;
+	}
+	if (lpTotalBytesAvail) {
+		*lpTotalBytesAvail = static_cast<DWORD>(available);
+	}
+	// Wibo's named-pipe transport is byte-stream based. There is therefore no
+	// remainder in a discrete message to report.
+	if (lpBytesLeftThisMessage) {
+		*lpBytesLeftThisMessage = 0;
+	}
 	return TRUE;
 }
 

@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,8 @@ class ProcessManager {
 
   private:
 	std::unique_ptr<detail::ProcessManagerImpl> mImpl;
+	std::once_flag mInitOnce;
+	bool mInitialized = false;
 };
 
 ProcessManager &processes();

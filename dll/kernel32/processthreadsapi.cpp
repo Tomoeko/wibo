@@ -15,6 +15,7 @@
 #include "tls.h"
 #include "types.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -98,6 +99,37 @@ struct ThreadStartData {
 	void *userData;
 };
 
+size_t defaultThreadStackReserve() {
+	constexpr size_t kWindowsDefaultStackReserve = 1024 * 1024;
+	if (wibo::mainModule && wibo::mainModule->executable && wibo::mainModule->executable->stackReserveSize != 0) {
+		return wibo::mainModule->executable->stackReserveSize;
+	}
+	return kWindowsDefaultStackReserve;
+}
+
+size_t pthreadStackReserve(SIZE_T requestedSize, DWORD creationFlags) {
+	constexpr DWORD STACK_SIZE_PARAM_IS_A_RESERVATION = 0x00010000;
+	size_t reserve = defaultThreadStackReserve();
+	if (requestedSize != 0) {
+		if ((creationFlags & STACK_SIZE_PARAM_IS_A_RESERVATION) != 0) {
+			reserve = requestedSize;
+		} else {
+			// Windows interprets this form as the initial commit size while
+			// retaining at least the image's default reserve.
+			reserve = std::max(reserve, static_cast<size_t>(requestedSize));
+		}
+	}
+#ifdef PTHREAD_STACK_MIN
+	reserve = std::max(reserve, static_cast<size_t>(PTHREAD_STACK_MIN));
+#endif
+	long reportedPageSize = sysconf(_SC_PAGESIZE);
+	size_t pageSize = reportedPageSize > 0 ? static_cast<size_t>(reportedPageSize) : 4096;
+	if (reserve > std::numeric_limits<size_t>::max() - (pageSize - 1)) {
+		return 0;
+	}
+	return (reserve + pageSize - 1) & ~(pageSize - 1);
+}
+
 void threadCleanup(void *param) {
 	ThreadObject *obj = static_cast<ThreadObject *>(param);
 	if (!obj) {
@@ -118,6 +150,8 @@ void threadCleanup(void *param) {
 }
 
 void *threadTrampoline(void *param) {
+	wibo::prepareGuestWorkerSignalMask();
+
 	// We ref'd the ThreadObject when constructing ThreadStartData,
 	// so we need to deref it when done. (Either normal exit or via pthread_cleanup)
 	ThreadStartData *dataPtr = static_cast<ThreadStartData *>(param);
@@ -210,6 +244,20 @@ HANDLE WINAPI GetCurrentThread() {
 	return pseudoHandle;
 }
 
+DWORD WINAPI GetThreadId(HANDLE Thread) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetThreadId(%p)\n", Thread);
+	if (isPseudoCurrentThreadHandle(Thread)) {
+		return wibo::getThreadId();
+	}
+	Pin<ThreadObject> obj = wibo::handles().getAs<ThreadObject>(Thread);
+	if (!obj) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	return obj->threadId;
+}
+
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetProcessAffinityMask(%p, %p, %p)\n", hProcess, lpProcessAffinityMask, lpSystemAffinityMask);
@@ -300,6 +348,10 @@ DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinit
 [[noreturn]] void exitInternal(DWORD exitCode) {
 	DEBUG_LOG("exitInternal(%u)\n", exitCode);
 	wibo::handles().clear();
+	// On macOS this also clears Rosetta's reserved Win64 GS/TSD slot. Leaving a
+	// guest TEB installed while the host process exits can strand the translated
+	// process in an uninterruptible exiting state.
+	wibo::uninstallTebForCurrentThread();
 	_exit(static_cast<int>(exitCode));
 }
 
@@ -492,17 +544,29 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 	ThreadStartData *startData = new ThreadStartData{obj.get(), lpStartAddress, lpParameter};
 
 	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	if (dwStackSize != 0) {
-#ifdef PTHREAD_STACK_MIN
-		dwStackSize = std::max(dwStackSize, static_cast<SIZE_T>(PTHREAD_STACK_MIN));
-#endif
-		// TODO: should we just ignore this?
-		pthread_attr_setstacksize(&attr, dwStackSize);
+	int rc = pthread_attr_init(&attr);
+	if (rc != 0) {
+		delete startData;
+		detail::deref(obj.get());
+		setLastError(wibo::winErrorFromErrno(rc));
+		return INVALID_HANDLE_VALUE;
+	}
+	size_t stackReserve = pthreadStackReserve(dwStackSize, dwCreationFlags);
+	rc = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if (rc == 0 && stackReserve != 0) {
+		rc = pthread_attr_setstacksize(&attr, stackReserve);
+	} else if (rc == 0) {
+		rc = EINVAL;
+	}
+	if (rc != 0) {
+		pthread_attr_destroy(&attr);
+		delete startData;
+		detail::deref(obj.get());
+		setLastError(wibo::winErrorFromErrno(rc));
+		return INVALID_HANDLE_VALUE;
 	}
 
-	int rc = pthread_create(&obj->thread, &attr, threadTrampoline, startData);
+	rc = pthread_create(&obj->thread, &attr, threadTrampoline, startData);
 	pthread_attr_destroy(&attr);
 	if (rc != 0) {
 		// Clean up
@@ -512,9 +576,10 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 		return INVALID_HANDLE_VALUE;
 	}
 
+	std::size_t hashed = std::hash<pthread_t>{}(obj->thread);
+	obj->threadId = static_cast<DWORD>(hashed & 0xffffffffu);
 	if (lpThreadId) {
-		std::size_t hashed = std::hash<pthread_t>{}(obj->thread);
-		*lpThreadId = static_cast<DWORD>(hashed & 0xffffffffu);
+		*lpThreadId = obj->threadId;
 	}
 
 	return wibo::handles().alloc(std::move(obj), 0 /* TODO */, 0);
@@ -563,6 +628,42 @@ BOOL WINAPI SetThreadPriority(HANDLE hThread, int nPriority) {
 	return TRUE;
 }
 
+BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetThreadPriorityBoost(%p, %d)\n", hThread, bDisablePriorityBoost);
+	(void)bDisablePriorityBoost;
+	if (!isPseudoCurrentThreadHandle(hThread) && !wibo::handles().getAs<ThreadObject>(hThread)) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	setLastError(ERROR_SUCCESS);
+	return TRUE;
+}
+
+DWORD WINAPI SetThreadIdealProcessor(HANDLE hThread, DWORD dwIdealProcessor) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetThreadIdealProcessor(%p, %u)\n", hThread, dwIdealProcessor);
+	if (!isPseudoCurrentThreadHandle(hThread) && !wibo::handles().getAs<ThreadObject>(hThread)) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return static_cast<DWORD>(-1);
+	}
+
+	long reported = sysconf(_SC_NPROCESSORS_ONLN);
+	DWORD logicalCount = reported > 0 ? static_cast<DWORD>(reported) : 1;
+	if (dwIdealProcessor >= logicalCount) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return static_cast<DWORD>(-1);
+	}
+
+	static thread_local DWORD currentIdealProcessor = static_cast<DWORD>(-1);
+	DWORD previous = currentIdealProcessor;
+	if (isPseudoCurrentThreadHandle(hThread)) {
+		currentIdealProcessor = dwIdealProcessor;
+	}
+	setLastError(ERROR_SUCCESS);
+	return previous;
+}
+
 int WINAPI GetThreadPriority(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("STUB: GetThreadPriority(%p)\n", hThread);
@@ -602,7 +703,7 @@ BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *l
 	}
 
 #ifdef __linux__
-	struct rusage usage{};
+	struct rusage usage {};
 	if (getrusage(RUSAGE_THREAD, &usage) == 0) {
 		*lpKernelTime = fileTimeFromTimeval(usage.ru_stime);
 		*lpUserTime = fileTimeFromTimeval(usage.ru_utime);
@@ -610,7 +711,7 @@ BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *l
 	}
 #endif
 
-	struct timespec cpuTime{};
+	struct timespec cpuTime {};
 	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuTime) == 0) {
 		*lpKernelTime = fileTimeFromDuration(0);
 		*lpUserTime = fileTimeFromTimespec(cpuTime);

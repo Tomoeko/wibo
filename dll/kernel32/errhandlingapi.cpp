@@ -7,6 +7,9 @@
 
 namespace {
 
+constexpr DWORD kMsVcThreadNameException = 0x406D1388;
+constexpr DWORD kExceptionNoncontinuable = 0x1;
+
 LPTOP_LEVEL_EXCEPTION_FILTER g_topLevelExceptionFilter = nullptr;
 UINT g_processErrorMode = 0;
 
@@ -37,6 +40,14 @@ void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD 
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RaiseException(0x%x, 0x%x, %u, %p)\n", dwExceptionCode, dwExceptionFlags, nNumberOfArguments,
 			  lpArguments);
+	// Visual C++ uses this continuable exception as an out-of-band debugger
+	// notification for naming a thread. It is intentionally raised inside an
+	// SEH guard and is not a process-termination request. Wibo does not yet
+	// dispatch guest SEH frames, so consume the notification and let execution
+	// continue exactly as the guarded Windows call does.
+	if (dwExceptionCode == kMsVcThreadNameException && (dwExceptionFlags & kExceptionNoncontinuable) == 0) {
+		return;
+	}
 	(void)dwExceptionFlags;
 	(void)nNumberOfArguments;
 	(void)lpArguments;

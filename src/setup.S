@@ -19,6 +19,30 @@ ASM_GLOBAL(initFpState, @function)
 	ret
 ASM_END(initFpState)
 
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+
+# TEB *enterHostContext()
+#
+# Win64 guests and the host share macOS's native GS base. The TEB self pointer
+# is published in macOS's reserved Win64 TSD slot at GS:[0x30], so crossing the
+# ABI boundary requires no Mach trap and cannot strand Rosetta in an
+# uninterruptible thread_set_tsd_base syscall.
+ASM_GLOBAL(enterHostContext, @function)
+	mov rax, qword ptr gs:[TEB_SELF]
+	ret
+ASM_END(enterHostContext)
+
+# void enterGuestContext(TEB *teb)
+#
+# GS remains the native macOS TSD base. The argument is intentionally unused;
+# it keeps one generated wrapper contract across Darwin and other hosts.
+ASM_GLOBAL(enterGuestContext, @function)
+	ret
+ASM_END(enterGuestContext)
+
+#endif
+
+#ifndef WIBO_GUEST_64
 #if defined(__x86_64__) && defined(__linux__)
 
 # void installSelectors(TEB *teb)
@@ -361,3 +385,4 @@ stubThunkX 253
 stubThunkX 254
 stubThunkX 255
 stubThunkX 256
+#endif

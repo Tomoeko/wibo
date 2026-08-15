@@ -27,6 +27,31 @@ Available presets:
 - `release64`: Release Linux x86_64
 - `debug-macos`: Debug macOS x86_64
 - `release-macos`: Release macOS x86_64
+- `debug64-macos`: Debug macOS host for x86-64 Windows guests
+- `release64-macos`: Release macOS host for x86-64 Windows guests
+
+Build the matching runner for the Windows executable's guest architecture.
+Both runners can coexist, so a workflow that uses a mixture of PE32 and PE32+
+command-line programs does not need separate source trees:
+
+```sh
+cmake --preset release-macos
+cmake --build --preset release-macos --parallel 12
+cmake --preset release64-macos
+cmake --build --preset release64-macos --parallel 12
+./build/release/wibo path/to/program32.exe
+./build/release64/wibo64 path/to/program64.exe
+```
+
+Win64 Wibo embeds PE32+ Wine CRT modules. The build automatically discovers
+Wine Stable's `x86_64-windows` directory on macOS; another installation can be
+selected without invoking Wine by setting `WIBO_WIN64_CRT_ROOT` during CMake
+configuration. The configuration rejects the upstream 32-bit-only CRT assets
+for a Win64 guest.
+
+Callers that require bounded execution should launch each Wibo instance in its
+own process group. They can then terminate the complete group on timeout,
+including any guest-created child processes.
 
 ## Usage
 
@@ -50,6 +75,16 @@ wibo path [subcommand options] <path> [path...]
 | `-D, --debug`      | Enable debug logging (same as `WIBO_DEBUG=1`)                                                                    |
 | `--cmdline STRING` | Use `STRING` as the exact guest command line (must include the program name, e.g. `"test.exe a b c"`)            |
 | `--`               | Stop option parsing; following arguments are used verbatim as the guest command line, including the program name |
+
+### Environment
+
+| Variable         | Description |
+| ---------------- | ----------- |
+| `WIBO_C_DRIVE`   | Host directory exposed as the guest `C:` drive; unset preserves the historical host-root mapping |
+| `WIBO_PATH`      | Host path list searched for guest executables and DLLs before compatible fallback paths |
+| `WIBO_DEBUG`     | Enable runtime diagnostics when set |
+| `WIBO_DEBUG_HEAP` | Enable guest-heap diagnostics when set |
+| `WIBO_CRASH_LOG` | Append a minimal fatal-signal record on supported macOS PE32+ builds |
 
 ### Subcommands
 

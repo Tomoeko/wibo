@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -27,6 +29,7 @@ enum class ObjectType : uint16_t {
 	RegistryKey,
 	NamedPipe,
 	NamedPipeState,
+	ToolhelpSnapshot,
 };
 
 enum ObjectFlags : uint16_t {
@@ -59,9 +62,16 @@ struct WaitableObject : ObjectBase {
 		WaiterCallback callback = nullptr;
 		void *context = nullptr;
 		DWORD index = 0;
+		std::mutex mutex;
+		std::condition_variable cv;
+		bool active = true;
+		size_t callbacksInFlight = 0;
+
+		Waiter(WaiterCallback callbackIn, void *contextIn, DWORD indexIn)
+			: callback(callbackIn), context(contextIn), index(indexIn) {}
 	};
 	std::mutex waitersMutex;
-	std::vector<Waiter> waiters;
+	std::vector<std::shared_ptr<Waiter>> waiters;
 
 	explicit WaitableObject(ObjectType t) : ObjectBase(t) { flags |= Of_Waitable; }
 

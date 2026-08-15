@@ -25,7 +25,7 @@ inline HANDLE makeHandle(uint32_t index) noexcept {
 	return static_cast<HANDLE>(v);
 }
 
-inline bool isPseudo(HANDLE h) noexcept { return reinterpret_cast<int32_t>(h) < 0; }
+inline bool isPseudo(HANDLE h) noexcept { return static_cast<LONG_PTR>(h) < 0; }
 
 } // namespace
 
@@ -255,25 +255,51 @@ void WaitableObject::registerWaiter(void *context, DWORD index, WaiterCallback c
 		return;
 	}
 	std::lock_guard lk(waitersMutex);
-	waiters.emplace_back(cb, context, index);
+	waiters.push_back(std::make_shared<Waiter>(cb, context, index));
 }
 
 void WaitableObject::unregisterWaiter(void *context) {
-	std::lock_guard lk(waitersMutex);
-	waiters.erase(
-		std::remove_if(waiters.begin(), waiters.end(), [context](const Waiter &w) { return w.context == context; }),
-		waiters.end());
+	std::vector<std::shared_ptr<Waiter>> removed;
+	{
+		std::lock_guard lk(waitersMutex);
+		auto firstRemoved = std::remove_if(waiters.begin(), waiters.end(), [&](const auto &waiter) {
+			if (waiter->context != context) {
+				return false;
+			}
+			removed.push_back(waiter);
+			return true;
+		});
+		waiters.erase(firstRemoved, waiters.end());
+	}
+	for (const auto &waiter : removed) {
+		std::unique_lock lk(waiter->mutex);
+		waiter->active = false;
+		waiter->cv.wait(lk, [&] { return waiter->callbacksInFlight == 0; });
+	}
 }
 
 void WaitableObject::notifyWaiters(bool abandoned) {
-	std::vector<Waiter> snapshot;
-	{
-		std::lock_guard lk(waitersMutex);
-		snapshot = waiters;
-	}
-	for (const auto &w : snapshot) {
-		if (w.callback) {
-			w.callback(w.context, this, w.index, abandoned);
+	// WaitBlock callbacks only update their owning wait state; they never
+	// register or unregister waiters. Holding the registration lock across the
+	// callback therefore gives unregisterWaiter a strict lifetime barrier and
+	// avoids allocating/copying a shared_ptr vector in ReleaseSemaphore's hot
+	// path (and during allocator/bootstrap notifications).
+	std::lock_guard registrationsLock(waitersMutex);
+	for (const auto &waiter : waiters) {
+		{
+			std::lock_guard lk(waiter->mutex);
+			if (!waiter->active || !waiter->callback) {
+				continue;
+			}
+			++waiter->callbacksInFlight;
+		}
+		waiter->callback(waiter->context, this, waiter->index, abandoned);
+		{
+			std::lock_guard lk(waiter->mutex);
+			--waiter->callbacksInFlight;
+			if (!waiter->active && waiter->callbacksInFlight == 0) {
+				waiter->cv.notify_all();
+			}
 		}
 	}
 }

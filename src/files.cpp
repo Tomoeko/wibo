@@ -9,6 +9,7 @@
 #include <climits>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdio>
 #include <mutex>
 #include <optional>
@@ -125,9 +126,20 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 		str.erase(0, 4);
 	}
 
-	// Remove the drive letter
-	if (str.rfind("z:/", 0) == 0 || str.rfind("Z:/", 0) == 0 || str.rfind("c:/", 0) == 0 || str.rfind("C:/", 0) == 0) {
+	std::filesystem::path driveRoot;
+	// Z: exposes the host root. C: keeps the historical host-root default, but
+	// callers may provide an isolated Windows drive for tools with hard-coded
+	// absolute paths via WIBO_C_DRIVE.
+	if (str.rfind("z:/", 0) == 0 || str.rfind("Z:/", 0) == 0) {
 		str.erase(0, 2);
+	} else if (str.rfind("c:/", 0) == 0 || str.rfind("C:/", 0) == 0) {
+		str.erase(0, 2);
+		if (const char *configuredRoot = std::getenv("WIBO_C_DRIVE"); configuredRoot && configuredRoot[0]) {
+			driveRoot = configuredRoot;
+			while (!str.empty() && str.front() == '/') {
+				str.erase(str.begin());
+			}
+		}
 	}
 
 	// Apply Windows trailing-dot normalization per path component.
@@ -135,7 +147,8 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 
 	// Return as-is if it exists, else traverse the filesystem looking for
 	// a path that matches case insensitively
-	std::filesystem::path path = std::filesystem::path(str).lexically_normal();
+	std::filesystem::path path = driveRoot.empty() ? std::filesystem::path(str).lexically_normal()
+											 : (driveRoot / std::filesystem::path(str)).lexically_normal();
 	if (std::filesystem::exists(path)) {
 		return path;
 	}

@@ -16,15 +16,85 @@ static DWORD parse_exit_code(const char *value) {
 
 static int child_main(int argc, char **argv) {
 	TEST_CHECK(argc >= 2);
-	(void)argv;
+	DWORD desiredExit = 0;
+	if (argc >= 3 && strcmp(argv[1], "child") == 0) {
+		desiredExit = parse_exit_code(argv[2]);
+	} else {
+		char exitBuffer[16];
+		DWORD exitLen = GetEnvironmentVariableA("WIBO_TEST_PROC_EXIT", exitBuffer, sizeof(exitBuffer));
+		TEST_CHECK(exitLen > 0 && exitLen < sizeof(exitBuffer));
+		desiredExit = parse_exit_code(exitBuffer);
+	}
 
-	char exitBuffer[16];
-	DWORD exitLen = GetEnvironmentVariableA("WIBO_TEST_PROC_EXIT", exitBuffer, sizeof(exitBuffer));
-	TEST_CHECK(exitLen > 0 && exitLen < sizeof(exitBuffer));
-	DWORD desiredExit = parse_exit_code(exitBuffer);
-
-	Sleep(200);
+	if (argc < 4 || strcmp(argv[3], "instant") != 0) {
+		Sleep(200);
+	}
 	return (int)desiredExit;
+}
+
+typedef struct ConcurrentSpawnContext {
+	const char *modulePath;
+	HANDLE startEvent;
+	DWORD desiredExit;
+	BOOL succeeded;
+} ConcurrentSpawnContext;
+
+static DWORD WINAPI concurrent_spawn_worker(LPVOID parameter) {
+	ConcurrentSpawnContext *context = (ConcurrentSpawnContext *)parameter;
+	if (WaitForSingleObject(context->startEvent, 5000) != WAIT_OBJECT_0) {
+		return 1;
+	}
+
+	char commandLine[MAX_PATH + 64];
+	snprintf(commandLine, sizeof(commandLine), "\"%s\" child %lu instant", context->modulePath,
+			 (unsigned long)context->desiredExit);
+
+	STARTUPINFOA si;
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	ZeroMemory(&pi, sizeof(pi));
+	if (!CreateProcessA(context->modulePath, commandLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+		return 2;
+	}
+
+	BOOL succeeded = WaitForSingleObject(pi.hProcess, 10000) == WAIT_OBJECT_0;
+	DWORD exitCode = 0;
+	succeeded = succeeded && GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode == context->desiredExit;
+	if (pi.hThread) {
+		CloseHandle(pi.hThread);
+	}
+	CloseHandle(pi.hProcess);
+	context->succeeded = succeeded;
+	return succeeded ? 0 : 3;
+}
+
+static void test_concurrent_createprocess_first_use(const char *modulePath) {
+	enum { WORKER_COUNT = 8 };
+	HANDLE startEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+	TEST_CHECK(startEvent != NULL);
+
+	ConcurrentSpawnContext contexts[WORKER_COUNT];
+	HANDLE workers[WORKER_COUNT];
+	for (DWORD i = 0; i < WORKER_COUNT; ++i) {
+		contexts[i].modulePath = modulePath;
+		contexts[i].startEvent = startEvent;
+		contexts[i].desiredExit = 40u + i;
+		contexts[i].succeeded = FALSE;
+		workers[i] = CreateThread(NULL, 0, concurrent_spawn_worker, &contexts[i], 0, NULL);
+		TEST_CHECK(workers[i] != NULL);
+	}
+
+	TEST_CHECK(SetEvent(startEvent));
+	for (DWORD i = 0; i < WORKER_COUNT; ++i) {
+		TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(workers[i], 15000));
+		DWORD workerExit = 0;
+		TEST_CHECK(GetExitCodeThread(workers[i], &workerExit));
+		TEST_CHECK_EQ(0, workerExit);
+		TEST_CHECK(contexts[i].succeeded);
+		TEST_CHECK(CloseHandle(workers[i]));
+	}
+	TEST_CHECK(CloseHandle(startEvent));
 }
 
 static void test_createprocess_failure(void) {
@@ -49,15 +119,11 @@ static int parent_main(void) {
 	char modulePath[MAX_PATH];
 	DWORD pathLen = GetModuleFileNameA(NULL, modulePath, (DWORD)sizeof(modulePath));
 	TEST_CHECK(pathLen > 0 && pathLen < sizeof(modulePath));
+	test_concurrent_createprocess_first_use(modulePath);
 
 	const DWORD childExitCode = 0x24u;
-	char commandLine[256];
-	snprintf(commandLine, sizeof(commandLine), "child placeholder %lu", (unsigned long)childExitCode);
-
-	char exitEnv[16];
-	snprintf(exitEnv, sizeof(exitEnv), "%lu", (unsigned long)childExitCode);
-	TEST_CHECK(SetEnvironmentVariableA("WIBO_TEST_PROC_EXIT", exitEnv));
-	TEST_CHECK(SetEnvironmentVariableA("WIBO_TEST_PROC_ROLE", "child"));
+	char commandLine[MAX_PATH + 64];
+	snprintf(commandLine, sizeof(commandLine), "\"%s\" child %lu", modulePath, (unsigned long)childExitCode);
 
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
@@ -68,8 +134,6 @@ static int parent_main(void) {
 
 	TEST_CHECK(CreateProcessA(modulePath, commandLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi));
 	TEST_CHECK(pi.hProcess != NULL);
-	SetEnvironmentVariableA("WIBO_TEST_PROC_EXIT", NULL);
-	SetEnvironmentVariableA("WIBO_TEST_PROC_ROLE", NULL);
 
 	HANDLE processHandle = NULL;
 	TEST_CHECK(DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &processHandle, 0, FALSE,

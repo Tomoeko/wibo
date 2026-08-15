@@ -6,6 +6,8 @@
 namespace kernel32 {
 
 BOOL WINAPI CreatePipe(PHANDLE hReadPipe, PHANDLE hWritePipe, LPSECURITY_ATTRIBUTES lpPipeAttributes, DWORD nSize);
+BOOL WINAPI PeekNamedPipe(HANDLE hNamedPipe, LPVOID lpBuffer, DWORD nBufferSize, LPDWORD lpBytesRead,
+						  LPDWORD lpTotalBytesAvail, LPDWORD lpBytesLeftThisMessage);
 HANDLE WINAPI CreateNamedPipeA(LPCSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances,
 								 DWORD nOutBufferSize, DWORD nInBufferSize, DWORD nDefaultTimeOut,
 								 LPSECURITY_ATTRIBUTES lpSecurityAttributes);

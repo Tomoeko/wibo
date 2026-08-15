@@ -61,6 +61,18 @@ BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE hConsoleOutput, CONSOLE_SCREEN_BUF
 	return TRUE;
 }
 
+BOOL WINAPI SetConsoleTextAttribute(HANDLE hConsoleOutput, WORD wAttributes) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetConsoleTextAttribute(%p, 0x%x)\n", hConsoleOutput, wAttributes);
+	(void)wAttributes;
+	auto file = wibo::handles().getAs<FileObject>(hConsoleOutput);
+	if (!file || (file->fd != STDOUT_FILENO && file->fd != STDERR_FILENO)) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	return TRUE;
+}
+
 BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumberOfCharsToWrite,
 						  LPDWORD lpNumberOfCharsWritten, LPVOID lpReserved) {
 	HOST_CONTEXT_GUARD();

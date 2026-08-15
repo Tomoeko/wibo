@@ -1,8 +1,13 @@
 #pragma once
 
+#ifdef WIBO_GUEST_64
+#define TEB_SELF 0x30 // NT_TIB.Self in the Win64 TEB
+#define TEB_HOST_TSD_BASE 0x320
+#else
 #define TEB_SELF 0x18	 // Self
 #define TEB_FS_SEL 0xf98 // CurrentFsSelector
 #define TEB_GS_SEL 0xf9a // CurrentGsSelector
+#endif
 
 #ifdef __i386__
 
@@ -10,7 +15,7 @@
 
 #endif // __i386__
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(WIBO_GUEST_64)
 
 #define TEB_CS_SEL 0xf9c	   // CodeSelector
 #define TEB_DS_SEL 0xf9e	   // DataSelector

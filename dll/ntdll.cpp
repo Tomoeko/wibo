@@ -199,6 +199,41 @@ PVOID CDECL memset(PVOID dest, int ch, SIZE_T count) {
 	return std::memset(dest, ch, count);
 }
 
+BYTE CDECL __wine_dbg_get_channel_flags(WINE_DEBUG_CHANNEL *channel) {
+	if (channel) {
+		channel->flags = 0;
+	}
+	return 0;
+}
+
+int CDECL __wine_dbg_header(WINE_DEBUG_CLASS debugClass, WINE_DEBUG_CHANNEL *channel, const char *function) {
+	(void)debugClass;
+	(void)function;
+	if (channel) {
+		channel->flags = 0;
+	}
+	return -1;
+}
+
+int CDECL __wine_dbg_output(const char *str) {
+	return str ? static_cast<int>(std::strlen(str)) : 0;
+}
+
+const char *CDECL __wine_dbg_strdup(const char *str) {
+	if (!str) {
+		return nullptr;
+	}
+
+	constexpr size_t kBufferCount = 32;
+	constexpr size_t kBufferSize = 1024;
+	thread_local char buffers[kBufferCount][kBufferSize];
+	thread_local size_t nextBuffer = 0;
+	char *buffer = buffers[nextBuffer++ % kBufferCount];
+	std::strncpy(buffer, str, kBufferSize - 1);
+	buffer[kBufferSize - 1] = '\0';
+	return buffer;
+}
+
 NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
 						   PIO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length, PLARGE_INTEGER ByteOffset,
 						   PULONG Key) {
@@ -431,7 +466,7 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 		return STATUS_ACCESS_VIOLATION;
 	}
 
-	if (reinterpret_cast<int32_t>(FileHandle) < 0) {
+	if (static_cast<LONG_PTR>(FileHandle) < 0) {
 		IoStatusBlock->Status = STATUS_OBJECT_TYPE_MISMATCH;
 		DEBUG_LOG("-> 0x%x\n", STATUS_OBJECT_TYPE_MISMATCH);
 		return STATUS_OBJECT_TYPE_MISMATCH;

@@ -15,12 +15,24 @@ int main(void) {
     HMODULE mod = LoadLibraryA("external_exports.dll");
     TEST_CHECK_MSG(mod != NULL, "LoadLibraryA failed: %lu", (unsigned long)GetLastError());
 
-    FARPROC raw_add_numbers = GetProcAddress(mod, "add_numbers@8");
-    FARPROC raw_was_attached = GetProcAddress(mod, "was_attached@0");
-    FARPROC raw_observed_main = GetProcAddress(mod, "observed_main_module@0");
-    TEST_CHECK_MSG(raw_add_numbers != NULL, "GetProcAddress(add_numbers@8) failed: %lu", (unsigned long)GetLastError());
-    TEST_CHECK_MSG(raw_was_attached != NULL, "GetProcAddress(was_attached@0) failed: %lu", (unsigned long)GetLastError());
-    TEST_CHECK_MSG(raw_observed_main != NULL, "GetProcAddress(observed_main_module@0) failed: %lu", (unsigned long)GetLastError());
+#ifdef _WIN64
+    const char *add_name = "add_numbers";
+    const char *attached_name = "was_attached";
+    const char *main_name = "observed_main_module";
+#else
+    const char *add_name = "add_numbers@8";
+    const char *attached_name = "was_attached@0";
+    const char *main_name = "observed_main_module@0";
+#endif
+    FARPROC raw_add_numbers = GetProcAddress(mod, add_name);
+    FARPROC raw_was_attached = GetProcAddress(mod, attached_name);
+    FARPROC raw_observed_main = GetProcAddress(mod, main_name);
+    TEST_CHECK_MSG(raw_add_numbers != NULL, "GetProcAddress(%s) failed: %lu", add_name,
+                   (unsigned long)GetLastError());
+    TEST_CHECK_MSG(raw_was_attached != NULL, "GetProcAddress(%s) failed: %lu", attached_name,
+                   (unsigned long)GetLastError());
+    TEST_CHECK_MSG(raw_observed_main != NULL, "GetProcAddress(%s) failed: %lu", main_name,
+                   (unsigned long)GetLastError());
 
     add_numbers_fn add_numbers = (add_numbers_fn)(uintptr_t)raw_add_numbers;
     was_attached_fn was_attached = (was_attached_fn)(uintptr_t)raw_was_attached;

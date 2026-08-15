@@ -1,6 +1,7 @@
 #include "tls.h"
 #include "common.h"
 #include "heap.h"
+#include "setup.h"
 #include "types.h"
 
 #include <algorithm>
@@ -205,6 +206,9 @@ bool ensureModuleArrayCapacityLocked(size_t required) {
 	for (auto &entry : pending) {
 		g_moduleArrays[entry.tib] = entry.newArray;
 		entry.tib->ThreadLocalStoragePointer = toGuestPtr(entry.newArray->slots);
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+		tebThreadTlsPointerChanged(entry.tib);
+#endif
 		if (entry.oldArray) {
 			queueOldModuleArray(entry.tib, entry.oldArray);
 		}
@@ -243,6 +247,13 @@ void initializeTib(TEB *tib) {
 		return;
 	}
 	g_activeTibs.push_back(tib);
+	// Windows exposes a valid static-TLS vector through TEB::ThreadLocalStoragePointer
+	// even when the image has no TLS directory. CRT startup code may read GS:[0x58]
+	// before the first module TLS index is assigned, so keep one zeroed slot alive
+	// from the moment a TEB becomes observable to guest code.
+	if (g_moduleArrayCapacity == 0) {
+		g_moduleArrayCapacity = 1;
+	}
 	if (g_expansionCapacity > 0 && !getExpansionArray(tib)) {
 		if (auto *arr = allocateTlsArray(g_expansionCapacity)) {
 			setExpansionArray(tib, arr);
@@ -252,6 +263,9 @@ void initializeTib(TEB *tib) {
 		if (auto *arr = allocateTlsArray(g_moduleArrayCapacity)) {
 			g_moduleArrays[tib] = arr;
 			tib->ThreadLocalStoragePointer = toGuestPtr(arr->slots);
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+			tebThreadTlsPointerChanged(tib);
+#endif
 		} else {
 			DEBUG_LOG("initializeTib: failed to allocate module TLS array for %p\n", tib);
 		}
@@ -278,6 +292,9 @@ void cleanupTib(TEB *tib) {
 		g_moduleGarbage.erase(garbageIt);
 	}
 	tib->ThreadLocalStoragePointer = GUEST_NULL;
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	tebThreadTlsPointerChanged(tib);
+#endif
 	auto it = std::find(g_activeTibs.begin(), g_activeTibs.end(), tib);
 	if (it != g_activeTibs.end()) {
 		g_activeTibs.erase(it);
@@ -399,6 +416,9 @@ bool setModulePointer(TEB *tib, size_t index, GUEST_PTR value) {
 	}
 	array->slots[index] = value;
 	tib->ThreadLocalStoragePointer = toGuestPtr(array->slots);
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	tebThreadTlsPointerChanged(tib);
+#endif
 	return true;
 }
 
