@@ -30,6 +30,7 @@
 
 extern const wibo::ModuleStub lib_advapi32;
 extern const wibo::ModuleStub lib_bcrypt;
+extern const wibo::ModuleStub lib_dbghelp;
 extern const wibo::ModuleStub lib_kernel32;
 extern const wibo::ModuleStub lib_lmgr;
 extern const wibo::ModuleStub lib_mscoree;
@@ -63,6 +64,7 @@ extern const wibo::ModuleStub lib_ucrtbase;
 extern const wibo::ModuleStub lib_ntdll;
 extern const wibo::ModuleStub lib_rpcrt4;
 extern const wibo::ModuleStub lib_ole32;
+extern const wibo::ModuleStub lib_psapi;
 extern const wibo::ModuleStub lib_shlwapi;
 extern const wibo::ModuleStub lib_user32;
 extern const wibo::ModuleStub lib_vcruntime;
@@ -206,8 +208,7 @@ wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName) {
 	std::string undecoratedName = dllName.substr(1);
 	target = wibo::loadModule(undecoratedName.c_str());
 	if (target) {
-		DEBUG_LOG("Forwarded export: treating decorated DLL name %s as %s\n", dllName.c_str(),
-				  undecoratedName.c_str());
+		DEBUG_LOG("Forwarded export: treating decorated DLL name %s as %s\n", dllName.c_str(), undecoratedName.c_str());
 		dllName = std::move(undecoratedName);
 	}
 	return target;
@@ -305,9 +306,22 @@ LockedRegistry registry() {
 	if (!reg.initialized) {
 		reg.initialized = true;
 		const wibo::ModuleStub *builtins[] = {
-			&lib_advapi32, &lib_bcrypt, &lib_kernel32, &lib_lmgr,	   &lib_mscoree, &lib_ntdll,
-			&lib_ole32,	   &lib_rpcrt4, &lib_shlwapi, &lib_user32,	   &lib_vcruntime, &lib_version,
-			&lib_winmm,	   &lib_ws2,
+			&lib_advapi32,
+			&lib_bcrypt,
+			&lib_dbghelp,
+			&lib_kernel32,
+			&lib_lmgr,
+			&lib_mscoree,
+			&lib_ntdll,
+			&lib_ole32,
+			&lib_psapi,
+			&lib_rpcrt4,
+			&lib_shlwapi,
+			&lib_user32,
+			&lib_vcruntime,
+			&lib_version,
+			&lib_winmm,
+			&lib_ws2,
 #if WIBO_HAS_MSVCRT
 			&lib_msvcrt,
 #endif

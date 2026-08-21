@@ -83,4 +83,13 @@ UINT WINAPI SetErrorMode(UINT uMode) {
 	return previous;
 }
 
+HRESULT WINAPI WerSetFlags(DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	// Wibo does not provide a host-side Windows Error Reporting service. The
+	// flags only control how WER handles a later failure, so acknowledging them
+	// is sufficient and must not alter guest execution or host crash handling.
+	DEBUG_LOG("WerSetFlags(0x%x)\n", dwFlags);
+	return S_OK;
+}
+
 } // namespace kernel32

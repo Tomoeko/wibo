@@ -14,7 +14,6 @@ namespace user32 {
 constexpr uint32_t RT_STRING_ID = 6;
 constexpr HKL kDefaultKeyboardLayout = 0x04090409;
 constexpr int UOI_FLAGS = 1;
-constexpr DWORD WSF_VISIBLE = 0x0001;
 
 struct USEROBJECTFLAGS {
 	BOOL fInherit;
@@ -166,13 +165,35 @@ BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWO
 	auto *flags = reinterpret_cast<USEROBJECTFLAGS *>(pvInfo);
 	flags->fInherit = FALSE;
 	flags->fReserved = FALSE;
-	flags->dwFlags = WSF_VISIBLE;
+	// Wibo has no desktop or interactive window station. Reporting visibility
+	// here makes console tools take GUI-only error paths and call into GDI even
+	// though GetProcessWindowStation returned no handle.
+	flags->dwFlags = 0;
 	return TRUE;
 }
 
 HWND WINAPI GetActiveWindow() {
 	DEBUG_LOG("GetActiveWindow()\n");
 	return NO_HANDLE;
+}
+
+DWORD WINAPI GetSysColor(int nIndex) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetSysColor(%d)\n", nIndex);
+	// Stable classic Windows colors are preferable to querying host UI state:
+	// wibo is also used on headless Linux hosts where no desktop theme exists.
+	switch (nIndex) {
+	case 5: // COLOR_WINDOW
+		return 0x00FFFFFF;
+	case 13: // COLOR_HIGHLIGHT
+		return 0x00D77800;
+	case 15: // COLOR_3DFACE / COLOR_BTNFACE
+		return 0x00C0C0C0;
+	case 17: // COLOR_GRAYTEXT
+		return 0x00808080;
+	default:
+		return nIndex >= 0 && nIndex <= 30 ? 0x00000000 : 0;
+	}
 }
 
 } // namespace user32

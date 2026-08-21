@@ -893,6 +893,21 @@ def emit_cc_thunk64(f: FuncInfo | TypedefInfo, lines: List[str]):
         lines.append("\tmov rsp, qword ptr [rbx+TEB_SP]")
         lines.append("\tmov qword ptr [rbx+TEB_SP], rbp")
 
+        if f.return_type.arg_class != ArgClass.INT:
+            raise NotImplementedError(
+                f"Unsupported return type class {f.return_type.arg_class.value} for function {f.name}"
+            )
+        return_size = f.return_type.type.get_size()
+        if return_size > 8:
+            raise NotImplementedError(
+                f"Return size {return_size} not supported for function {f.name}"
+            )
+        if return_size > 4:
+            # A 64-bit host result arrives in RAX, while the 32-bit Windows ABI
+            # returns the high half in EDX and the low half in EAX.
+            lines.append("\tmov rdx, rax")
+            lines.append("\tshr rdx, 32")
+
         # Jump to 32-bit mode
         lines.append("\tLJMP32 rbx")
 

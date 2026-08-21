@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "context.h"
+#include "modules.h"
 
 namespace kernel32 {
 
@@ -9,6 +10,17 @@ void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD Excep
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RtlUnwind(%p, %p, %p, %p)\n", TargetFrame, TargetIp, ExceptionRecord, ReturnValue);
 	DEBUG_LOG("WARNING: Silently returning from RtlUnwind - exception handlers and clean up code may not be run\n");
+}
+
+PVOID WINAPI RtlPcToFileHeader(PVOID PcValue, GUEST_PTR *BaseOfImage) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlPcToFileHeader(%p, %p)\n", PcValue, BaseOfImage);
+	wibo::ModuleInfo *module = wibo::moduleInfoFromAddress(PcValue);
+	PVOID base = module && module->executable ? module->executable->imageBase : nullptr;
+	if (BaseOfImage) {
+		*BaseOfImage = base ? toGuestPtr(base) : GUEST_NULL;
+	}
+	return base;
 }
 
 } // namespace kernel32
