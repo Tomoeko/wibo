@@ -9,8 +9,8 @@
 #include <climits>
 #include <csignal>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -100,8 +100,7 @@ static std::string stripTrailingDots(const std::string &s) {
 		size_t end = i;
 		size_t len = end - start;
 		// Leave "." and ".." untouched.
-		bool isDotDir = (len == 1 && s[start] == '.') ||
-						(len == 2 && s[start] == '.' && s[start + 1] == '.');
+		bool isDotDir = (len == 1 && s[start] == '.') || (len == 2 && s[start] == '.' && s[start + 1] == '.');
 		if (!isDotDir) {
 			while (end > start && s[end - 1] == '.') {
 				end--;
@@ -148,7 +147,7 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 	// Return as-is if it exists, else traverse the filesystem looking for
 	// a path that matches case insensitively
 	std::filesystem::path path = driveRoot.empty() ? std::filesystem::path(str).lexically_normal()
-											 : (driveRoot / std::filesystem::path(str)).lexically_normal();
+												   : (driveRoot / std::filesystem::path(str)).lexically_normal();
 	if (std::filesystem::exists(path)) {
 		return path;
 	}
@@ -184,10 +183,31 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 }
 
 std::string pathToWindows(const std::filesystem::path &path) {
-	std::string str = path.lexically_normal();
-
-	if (path.is_absolute()) {
-		str.insert(0, "Z:");
+	const std::filesystem::path normalized = path.lexically_normal();
+	std::string str;
+	if (normalized.is_absolute()) {
+		// Keep round trips through GetFullPathName/GetCurrentDirectory on the
+		// configured drive. Besides matching Windows drive semantics, this avoids
+		// leaking (and repeatedly expanding) a potentially long host prefix into
+		// compiler response and dependency data.
+		if (const char *configuredRoot = std::getenv("WIBO_C_DRIVE"); configuredRoot && configuredRoot[0]) {
+			std::error_code ec;
+			std::filesystem::path root = std::filesystem::absolute(configuredRoot, ec).lexically_normal();
+			if (!ec && normalized == root) {
+				str = "C:/";
+			} else if (!ec) {
+				std::filesystem::path relative = normalized.lexically_relative(root);
+				auto first = relative.begin();
+				if (!relative.empty() && first != relative.end() && *first != "..") {
+					str = "C:/" + relative.generic_string();
+				}
+			}
+		}
+		if (str.empty()) {
+			str = "Z:" + normalized.generic_string();
+		}
+	} else {
+		str = normalized.generic_string();
 	}
 
 	std::replace(str.begin(), str.end(), '/', '\\');

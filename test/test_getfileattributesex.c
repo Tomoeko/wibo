@@ -70,6 +70,7 @@ static void test_success_file(void) {
 	TEST_CHECK((data.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE) != 0);
 	TEST_CHECK_U64_EQ(3, file_size_from_data(&data));
 	TEST_CHECK_EQ(sentinel, GetLastError());
+	TEST_CHECK(SetFileAttributesW(file_name, FILE_ATTRIBUTE_NORMAL));
 }
 
 static void test_success_directory(void) {

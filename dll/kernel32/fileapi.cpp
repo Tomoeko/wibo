@@ -1393,6 +1393,17 @@ BOOL WINAPI SetFileAttributesA(LPCSTR lpFileName, DWORD dwFileAttributes) {
 	return TRUE;
 }
 
+BOOL WINAPI SetFileAttributesW(LPCWSTR lpFileName, DWORD dwFileAttributes) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetFileAttributesW -> ");
+	if (!lpFileName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	std::string fileName = wideStringToString(lpFileName);
+	return SetFileAttributesA(fileName.c_str(), dwFileAttributes);
+}
+
 DWORD WINAPI GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetFileSize(%p, %p) ", hFile, lpFileSizeHigh);

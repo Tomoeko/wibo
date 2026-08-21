@@ -577,6 +577,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         # Define fixture tests
         wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        wibo_add_fixture_bin(NAME test_c_drive_mapping SOURCES test/test_c_drive_mapping.c)
+        set_tests_properties(wibo.test_c_drive_mapping PROPERTIES
+            ENVIRONMENT "WIBO_C_DRIVE=${CMAKE_CURRENT_SOURCE_DIR}/test")
         if(APPLE)
             wibo_add_fixture_bin(NAME test_missing_import_exit SOURCES test/test_missing_import_exit.c WILL_FAIL
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)

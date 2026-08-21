@@ -44,6 +44,12 @@ constexpr uintptr_t kLowMemoryStart = 0x00110000UL; // 1 MiB + 64 KiB
 constexpr uintptr_t kHeapMax = 0x70000000UL;
 #ifdef WIBO_GUEST_64
 constexpr uintptr_t kGuestAddressLimit = 0x0000800000000000ULL;
+// Keep PE32+ anonymous data clear of both the 32-bit sign boundary and the
+// usual 0x140000000 image range. macOS otherwise places an unhinted mmap
+// directly above Wibo's low host image, which makes a large allocation straddle
+// 0x80000000 and breaks legacy 64-bit tools that use signed 32-bit offsets
+// within an arena.
+constexpr uintptr_t kWin64AllocationStart = 0x0000000200000000ULL;
 #endif
 #ifdef __APPLE__
 // On macOS, our program is mapped at 0x7E001000
@@ -820,7 +826,7 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 	}
 	void *requestedAddress = baseAddress ? *baseAddress : nullptr;
 
-	DWORD unsupportedFlags = allocationType & (MEM_WRITE_WATCH | MEM_PHYSICAL | MEM_LARGE_PAGES | MEM_RESET_UNDO);
+	DWORD unsupportedFlags = allocationType & (MEM_PHYSICAL | MEM_LARGE_PAGES | MEM_RESET_UNDO);
 	if (unsupportedFlags != 0) {
 		return VmStatus::NotSupported;
 	}
@@ -829,7 +835,18 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 	bool commit = (allocationType & MEM_COMMIT) != 0;
 	bool reset = (allocationType & MEM_RESET) != 0;
 	bool topDown = (allocationType & MEM_TOP_DOWN) != 0;
+	bool writeWatch = (allocationType & MEM_WRITE_WATCH) != 0;
+#ifdef WIBO_GUEST_64
+	(void)topDown;
+#endif
 
+	// MEM_WRITE_WATCH is a reservation-time tracking request. Wibo currently
+	// provides the allocation semantics but not GetWriteWatch/ResetWriteWatch;
+	// tools that only use the flag as an optional allocator hint remain fully
+	// functional, while invalid commit-only uses still fail as on Windows.
+	if (writeWatch && !reserve) {
+		return VmStatus::InvalidParameter;
+	}
 	if (!reserve && commit && requestedAddress == nullptr) {
 		reserve = true;
 	}
@@ -899,29 +916,76 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 				return VmStatus::InvalidParameter;
 			}
 			length = static_cast<std::size_t>(aligned);
+#ifdef WIBO_GUEST_64
+			// A PE32+ process is not confined to Wibo's collision-managed low
+			// arena. Give the host kernel a Windows-like high address hint so a
+			// single large arena cannot straddle the 32-bit sign boundary.
+			if (!findFreeMappingLocked(length, kWin64AllocationStart, kGuestAddressLimit, false, &base)) {
+				return VmStatus::NoMemory;
+			}
+#else
 			if (!findFreeMappingLocked(length, kLowMemoryStart, kTopDownStart, topDown, &base)) {
 				return VmStatus::NoMemory;
 			}
 			if (base >= kTwoGB || (base + length) > kTwoGB) {
 				return VmStatus::NoMemory;
 			}
+#endif
 		}
 
 		int prot = commit ? posixProtectFromWin32(protect) : PROT_NONE;
-		int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+		int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef WIBO_GUEST_64
+		const bool hostSelectedAddress = requestedAddress == nullptr;
+		if (!hostSelectedAddress) {
+			flags |= MAP_FIXED;
+		}
+#else
+		constexpr bool hostSelectedAddress = false;
+		flags |= MAP_FIXED;
+#endif
 		if (!commit) {
 			flags |= MAP_NORESERVE;
 		}
-		void *mapped = mmap(reinterpret_cast<void *>(base), length, prot, flags, -1, 0);
+		std::size_t mappedLength = length;
+#ifdef WIBO_GUEST_64
+		if (hostSelectedAddress) {
+			if (length > std::numeric_limits<std::size_t>::max() - kVirtualAllocationGranularity) {
+				return VmStatus::InvalidParameter;
+			}
+			mappedLength += kVirtualAllocationGranularity;
+		}
+#endif
+		void *mapped = mmap(reinterpret_cast<void *>(base), mappedLength, prot, flags, -1, 0);
 		if (mapped == MAP_FAILED) {
 			return vmStatusFromErrno(errno);
 		}
+		if (hostSelectedAddress) {
+			const uintptr_t rawBase = reinterpret_cast<uintptr_t>(mapped);
+			const uintptr_t alignedBase = alignUp(rawBase, kVirtualAllocationGranularity);
+			const std::size_t prefix = static_cast<std::size_t>(alignedBase - rawBase);
+			const std::size_t suffix = mappedLength - prefix - length;
+			if (prefix != 0) {
+				munmap(mapped, prefix);
+			}
+			if (suffix != 0) {
+				munmap(reinterpret_cast<void *>(alignedBase + length), suffix);
+			}
+			mapped = reinterpret_cast<void *>(alignedBase);
+		}
+		uintptr_t actualBase = reinterpret_cast<uintptr_t>(mapped);
+#ifdef WIBO_GUEST_64
+		if ((hostSelectedAddress && actualBase < kWin64AllocationStart) || actualBase >= kGuestAddressLimit ||
+			addOverflows(actualBase, length) || actualBase + length > kGuestAddressLimit) {
+			munmap(mapped, length);
+			return VmStatus::NoMemory;
+		}
+#endif
 		if (type == MEM_IMAGE) {
 			setVirtualAllocationName(mapped, length, "wibo guest image");
 		} else {
 			setVirtualAllocationName(mapped, length, "wibo guest allocated");
 		}
-		uintptr_t actualBase = reinterpret_cast<uintptr_t>(mapped);
 		VirtualAllocation allocation{};
 		allocation.base = actualBase;
 		allocation.size = length;
@@ -1478,7 +1542,8 @@ __attribute__((constructor(101)))
 #else
 __attribute__((constructor))
 #endif
-__attribute__((used)) static void wibo_heap_constructor() {
+__attribute__((used)) static void
+wibo_heap_constructor() {
 #ifdef __linux__
 	MEMORY_BASIC_INFORMATION mappings[MAX_NUM_MAPPINGS];
 	memset(mappings, 0, sizeof(mappings));
