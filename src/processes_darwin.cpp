@@ -4,20 +4,22 @@
 #include "handles.h"
 #include "kernel32/internal.h"
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <filesystem>
-#include <memory>
 #include <mutex>
 #include <spawn.h>
-#include <system_error>
 #include <string>
+#include <sys/event.h>
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <pthread.h>
+#include <system_error>
+#include <thread>
 #include <unistd.h>
+#include <unordered_map>
 
 #define ENUM_DYLD_BOOL
 #include <mach-o/dyld.h>
@@ -68,7 +70,18 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
+	void runLoop();
+	void wake() const;
+	void handleExit(pid_t pid);
+	bool registerProcess(pid_t pid, const Pin<ProcessObject> &process);
+	Pin<ProcessObject> takeProcess(pid_t pid);
+
+	mutable std::mutex m;
 	std::atomic<bool> mRunning{false};
+	std::thread mThread;
+	int mKqueueFd = -1;
+	static constexpr uintptr_t kWakeIdent = 1;
+	std::unordered_map<pid_t, Pin<ProcessObject>> mProcesses;
 };
 
 void completeProcess(Pin<ProcessObject> process, int status) {
@@ -84,37 +97,11 @@ void completeProcess(Pin<ProcessObject> process, int status) {
 	process->notifyWaiters(false);
 }
 
-struct ReaperContext {
-	pid_t pid;
-	Pin<ProcessObject> process;
-};
-
-void *reapProcess(void *rawContext) {
-	std::unique_ptr<ReaperContext> context(static_cast<ReaperContext *>(rawContext));
-	int status = 0;
-	for (;;) {
-		pid_t result = waitpid(context->pid, &status, 0);
-		if (result == context->pid) {
-			completeProcess(std::move(context->process), status);
-			return nullptr;
-		}
-		if (result < 0 && errno == EINTR) {
-			continue;
-		}
-		if (result < 0) {
-			DEBUG_LOG("ProcessManager: waitpid(%d) failed: %s\n", context->pid, strerror(errno));
-		}
-		return nullptr;
-	}
-}
-
 } // namespace
 
 namespace wibo::detail {
 
-std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() {
-	return std::make_unique<DarwinProcessManager>();
-}
+std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() { return std::make_unique<DarwinProcessManager>(); }
 
 int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info) {
 	auto &path = executablePath();
@@ -145,13 +132,63 @@ int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info)
 } // namespace wibo::detail
 
 bool DarwinProcessManager::init() {
+	if (mRunning.load(std::memory_order_acquire)) {
+		return true;
+	}
+
+	mKqueueFd = kqueue();
+	if (mKqueueFd < 0) {
+		perror("kqueue");
+		return false;
+	}
+
+	struct kevent event;
+	EV_SET(&event, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+	if (kevent(mKqueueFd, &event, 1, nullptr, 0, nullptr) < 0) {
+		perror("kevent(EV_ADD user)");
+		close(mKqueueFd);
+		mKqueueFd = -1;
+		return false;
+	}
+
 	mRunning.store(true, std::memory_order_release);
+	mThread = std::thread(&DarwinProcessManager::runLoop, this);
 	DEBUG_LOG("ProcessManager (Darwin) initialized\n");
 	return true;
 }
 
 void DarwinProcessManager::shutdown() {
-	mRunning.store(false, std::memory_order_release);
+	if (!mRunning.exchange(false, std::memory_order_acq_rel)) {
+		return;
+	}
+	wake();
+	if (mThread.joinable()) {
+		mThread.join();
+	}
+	{
+		std::lock_guard lk(m);
+		mProcesses.clear();
+	}
+	if (mKqueueFd >= 0) {
+		close(mKqueueFd);
+		mKqueueFd = -1;
+	}
+}
+
+bool DarwinProcessManager::registerProcess(pid_t pid, const Pin<ProcessObject> &process) {
+	std::lock_guard lk(m);
+	return mProcesses.emplace(pid, process.clone()).second;
+}
+
+Pin<ProcessObject> DarwinProcessManager::takeProcess(pid_t pid) {
+	std::lock_guard lk(m);
+	auto it = mProcesses.find(pid);
+	if (it == mProcesses.end()) {
+		return {};
+	}
+	auto process = std::move(it->second);
+	mProcesses.erase(it);
+	return process;
 }
 
 bool DarwinProcessManager::addProcess(Pin<ProcessObject> po) {
@@ -163,15 +200,86 @@ bool DarwinProcessManager::addProcess(Pin<ProcessObject> po) {
 		std::lock_guard lk(po->m);
 		pid = po->pid;
 	}
-	auto *context = new ReaperContext{pid, std::move(po)};
-	pthread_t thread;
-	int result = pthread_create(&thread, nullptr, reapProcess, context);
-	if (result != 0) {
-		DEBUG_LOG("ProcessManager: failed to start reaper for pid %d: %s\n", pid, strerror(result));
-		delete context;
+
+	// Publish ownership before enabling notifications so a short-lived child
+	// cannot be observed by the monitor before its waitable object is visible.
+	if (!registerProcess(pid, po)) {
+		DEBUG_LOG("ProcessManager: pid %d is already registered\n", pid);
 		return false;
 	}
-	pthread_detach(thread);
+
+	struct kevent event;
+	EV_SET(&event, static_cast<uintptr_t>(pid), EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
+	if (kevent(mKqueueFd, &event, 1, nullptr, 0, nullptr) < 0) {
+		int error = errno;
+		auto process = takeProcess(pid);
+		DEBUG_LOG("ProcessManager: kevent add for pid %d failed: %s\n", pid, strerror(error));
+		if (error == ESRCH && process) {
+			int status = 0;
+			pid_t result;
+			do {
+				result = waitpid(pid, &status, 0);
+			} while (result < 0 && errno == EINTR);
+			if (result == pid) {
+				completeProcess(std::move(process), status);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	DEBUG_LOG("ProcessManager: registered pid %d\n", pid);
 	return true;
+}
+
+void DarwinProcessManager::runLoop() {
+	constexpr int kMaxEvents = 64;
+	std::array<struct kevent, kMaxEvents> events{};
+	while (mRunning.load(std::memory_order_acquire)) {
+		int count = kevent(mKqueueFd, nullptr, 0, events.data(), kMaxEvents, nullptr);
+		if (count < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			perror("kevent");
+			break;
+		}
+		for (int i = 0; i < count; ++i) {
+			const auto &event = events[i];
+			if (event.filter == EVFILT_USER) {
+				continue;
+			}
+			if (event.filter == EVFILT_PROC && (event.fflags & NOTE_EXIT)) {
+				handleExit(static_cast<pid_t>(event.ident));
+			}
+		}
+	}
+}
+
+void DarwinProcessManager::wake() const {
+	if (mKqueueFd < 0) {
+		return;
+	}
+	struct kevent event;
+	EV_SET(&event, kWakeIdent, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
+	kevent(mKqueueFd, &event, 1, nullptr, 0, nullptr);
+}
+
+void DarwinProcessManager::handleExit(pid_t pid) {
+	auto process = takeProcess(pid);
+	if (!process) {
+		DEBUG_LOG("ProcessManager: exit event for unknown pid %d\n", pid);
+		return;
+	}
+
+	int status = 0;
+	pid_t result;
+	do {
+		result = waitpid(pid, &status, 0);
+	} while (result < 0 && errno == EINTR);
+	if (result != pid) {
+		DEBUG_LOG("ProcessManager: waitpid(%d) failed: %s\n", pid, strerror(errno));
+		return;
+	}
+	completeProcess(std::move(process), status);
 }

@@ -12,7 +12,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,17 +25,6 @@ extern char **environ;
 using kernel32::ProcessObject;
 
 namespace wibo {
-
-#if defined(__APPLE__)
-// Rosetta does not reliably tolerate concurrent posix_spawn/pthread_create
-// transactions issued by translated Windows worker threads. Keep only host
-// process construction and reaper publication serial; children execute in
-// parallel as soon as their individual transaction has completed.
-static std::mutex &darwinSpawnMutex() {
-	static std::mutex mutex;
-	return mutex;
-}
-#endif
 
 ProcessManager::ProcessManager() : mImpl(detail::createProcessManagerImpl()) {}
 
@@ -221,9 +209,6 @@ std::optional<std::filesystem::path> resolveExecutable(const std::string &comman
 }
 
 static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::ProcessObject> &pinOut) {
-#if defined(__APPLE__)
-	std::lock_guard darwinSpawnGuard(darwinSpawnMutex());
-#endif
 	std::vector<char *> argv;
 	argv.reserve(args.size() + 2);
 	argv.push_back(const_cast<char *>("wibo"));
