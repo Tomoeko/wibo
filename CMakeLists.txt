@@ -293,6 +293,7 @@ add_executable(wibo
     dll/kernel32/timezoneapi.cpp
 	dll/kernel32/toolhelp.cpp
     dll/kernel32/winbase.cpp
+    dll/kernel32/winprofile.cpp
     dll/kernel32/wincon.cpp
     dll/kernel32/winnls.cpp
     dll/kernel32/winnt.cpp
@@ -499,6 +500,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/timezoneapi.h
 	dll/kernel32/toolhelp.h
     dll/kernel32/winbase.h
+    dll/kernel32/winprofile.h
     dll/kernel32/wincon.h
     dll/kernel32/winnls.h
     dll/kernel32/winnt.h
@@ -649,6 +651,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_critical_section_owner SOURCES test/test_critical_section_owner.c)
         wibo_add_fixture_bin(NAME test_version_conditions SOURCES test/test_version_conditions.c)
         wibo_add_fixture_bin(NAME test_expand_environment SOURCES test/test_expand_environment.c)
+        wibo_add_fixture_bin(NAME test_profile_read SOURCES test/test_profile_read.c)
         wibo_add_fixture_bin(NAME test_code_pointer SOURCES test/test_code_pointer.c)
         wibo_add_fixture_bin(NAME test_stack_query SOURCES test/test_stack_query.c)
         wibo_add_fixture_bin(NAME test_resource_release SOURCES test/test_resource_release.c ${WIBO_TEST_BIN_DIR}/test_resource_release_res.o)
