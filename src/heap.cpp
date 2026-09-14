@@ -1380,15 +1380,17 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 	}
 	DWORD allocationProtect = region->allocationProtect != 0 ? region->allocationProtect : PAGE_NOACCESS;
 	DWORD finalProtect = committed ? pageProtect : PAGE_NOACCESS;
+	const uintptr_t allocationBase = region->base;
+	const DWORD allocationType = region->type;
 	allocLock.unlock();
 
 	outInfo->BaseAddress = toGuestPtr(reinterpret_cast<void *>(blockStart));
-	outInfo->AllocationBase = toGuestPtr(reinterpret_cast<void *>(region->base));
+	outInfo->AllocationBase = toGuestPtr(reinterpret_cast<void *>(allocationBase));
 	outInfo->AllocationProtect = allocationProtect;
 	outInfo->RegionSize = blockEnd - blockStart;
 	outInfo->State = committed ? MEM_COMMIT : MEM_RESERVE;
 	outInfo->Protect = finalProtect;
-	outInfo->Type = region->type;
+	outInfo->Type = allocationType;
 	return VmStatus::Success;
 }
 
