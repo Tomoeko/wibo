@@ -263,6 +263,7 @@ endfunction()
 
 add_executable(wibo
     dll/advapi32.cpp
+    dll/advapi32/evntrace.cpp
     dll/advapi32/md5.c
     dll/advapi32/processthreadsapi.cpp
     dll/advapi32/securitybaseapi.cpp
@@ -455,6 +456,7 @@ function(wibo_codegen_module)
 endfunction()
 
 wibo_codegen_module(NAME advapi32 HEADERS
+    dll/advapi32/evntrace.h
     dll/advapi32/processthreadsapi.h
     dll/advapi32/securitybaseapi.h
     dll/advapi32/winbase.h
@@ -641,6 +643,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_locale SOURCES test/test_locale.c)
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_global_atoms SOURCES test/test_global_atoms.c)
+        wibo_add_fixture_bin(NAME test_trace_registration SOURCES test/test_trace_registration.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_critical_section SOURCES test/test_critical_section.c)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
