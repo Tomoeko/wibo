@@ -83,6 +83,13 @@ ATOM WINAPI AddAtomA(LPCSTR lpString);
 ATOM WINAPI AddAtomW(LPCWSTR lpString);
 UINT WINAPI GetAtomNameA(ATOM nAtom, LPSTR lpBuffer, int nSize);
 UINT WINAPI GetAtomNameW(ATOM nAtom, LPWSTR lpBuffer, int nSize);
+ATOM WINAPI GlobalAddAtomA(LPCSTR lpString);
+ATOM WINAPI GlobalAddAtomW(LPCWSTR lpString);
+ATOM WINAPI GlobalFindAtomA(LPCSTR lpString);
+ATOM WINAPI GlobalFindAtomW(LPCWSTR lpString);
+ATOM WINAPI GlobalDeleteAtom(ATOM nAtom);
+UINT WINAPI GlobalGetAtomNameA(ATOM nAtom, LPSTR lpBuffer, int nSize);
+UINT WINAPI GlobalGetAtomNameW(ATOM nAtom, LPWSTR lpBuffer, int nSize);
 UINT WINAPI SetHandleCount(UINT uNumber);
 // DWORD WINAPI FormatMessageA(DWORD dwFlags, LPCVOID lpSource, DWORD dwMessageId, DWORD dwLanguageId, LPSTR lpBuffer,
 // 							DWORD nSize, va_list *Arguments);

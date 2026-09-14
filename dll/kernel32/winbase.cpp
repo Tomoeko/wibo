@@ -47,6 +47,7 @@ constexpr ATOM kMinIntegerAtom = 0x0001;
 constexpr ATOM kMaxIntegerAtom = 0xBFFF;
 constexpr ATOM kMinStringAtom = 0xC000;
 constexpr ATOM kMaxStringAtom = 0xFFFF;
+constexpr DWORD ERROR_MORE_DATA = 234;
 
 bool memoryProtectionAllowsRead(DWORD protect) {
 	if ((protect & PAGE_GUARD) != 0) {
@@ -171,7 +172,7 @@ struct MemorySnapshot {
 
 bool queryHostMemory(MemorySnapshot &out) {
 #if defined(__linux__)
-	struct sysinfo info {};
+	struct sysinfo info{};
 	if (sysinfo(&info) != 0) {
 		return false;
 	}
@@ -207,7 +208,7 @@ bool queryHostMemory(MemorySnapshot &out) {
 	out.totalPhys = totalPhys;
 	out.availPhys = freePages * static_cast<uint64_t>(pageSize);
 
-	struct xsw_usage swap {};
+	struct xsw_usage swap{};
 	size_t swapSize = sizeof(swap);
 	if (sysctlbyname("vm.swapusage", &swap, &swapSize, nullptr, 0) == 0 && swapSize == sizeof(swap)) {
 		out.totalPageFile = swap.xsu_total;
@@ -239,7 +240,7 @@ AtomTable &localAtomTable() {
 	return table;
 }
 
-ATOM allocateStringAtomLocked(AtomTable &table) {
+template <typename Table> ATOM allocateStringAtomLocked(Table &table) {
 	constexpr unsigned int kRange = static_cast<unsigned int>(kMaxStringAtom - kMinStringAtom + 1);
 	unsigned int startOffset = 0;
 	if (table.nextStringAtom >= kMinStringAtom && table.nextStringAtom <= kMaxStringAtom) {
@@ -345,6 +346,145 @@ ATOM addAtomByString(const std::string &value) {
 	table.stringToAtom.emplace(std::move(normalized), newAtom);
 	table.atomToData.emplace(newAtom, std::move(data));
 	return newAtom;
+}
+
+// This is a separate namespace from local atoms and is shared by threads in
+// this wibo process only. Windows shares global atoms across processes and
+// retains them after process exit; there is no host-wide atom service here.
+struct GlobalAtomData {
+	uint32_t refCount = 1;
+	std::u16string original;
+};
+
+struct GlobalAtomTable {
+	std::mutex mutex;
+	std::unordered_map<std::u16string, ATOM> stringToAtom;
+	std::unordered_map<ATOM, GlobalAtomData> atomToData;
+	ATOM nextStringAtom = kMinStringAtom;
+};
+
+GlobalAtomTable &globalAtomTable() {
+	static GlobalAtomTable table;
+	return table;
+}
+
+std::u16string normalizeGlobalAtomName(std::u16string value) {
+	// Deterministic Basic Latin / Latin-1 uppercasing for the current ACP.
+	// Preserve y-diaeresis's UTF-16 uppercase form outside Latin-1. Wine's atom
+	// table keeps micro sign distinct from Greek Mu. Other Unicode case mappings
+	// remain unsupported.
+	for (auto &character : value) {
+		if ((character >= u'a' && character <= u'z') || (character >= 0xe0 && character <= 0xf6) ||
+			(character >= 0xf8 && character <= 0xfe)) {
+			character -= 0x20;
+		} else if (character == 0xff) {
+			character = 0x0178;
+		}
+	}
+	return value;
+}
+
+ATOM globalAtomByString(const std::u16string &value, bool add) {
+	if (value.empty() || value.size() > 255) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	// Only a '#' followed entirely by decimal digits denotes an integer.
+	// strtoul would incorrectly accept signs and leading whitespace.
+	if (value.size() > 1 && value[0] == u'#' &&
+		std::all_of(value.begin() + 1, value.end(), [](char16_t ch) { return ch >= u'0' && ch <= u'9'; })) {
+		unsigned int number = 0;
+		for (size_t index = 1; index < value.size(); ++index) {
+			number = number * 10 + static_cast<unsigned int>(value[index] - u'0');
+			if (number > kMaxIntegerAtom) {
+				kernel32::setLastError(ERROR_INVALID_PARAMETER);
+				return 0;
+			}
+		}
+		if (number == 0) {
+			kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		}
+		return static_cast<ATOM>(number);
+	}
+
+	auto normalized = normalizeGlobalAtomName(value);
+	auto &table = globalAtomTable();
+	std::lock_guard lk(table.mutex);
+	auto existing = table.stringToAtom.find(normalized);
+	if (existing != table.stringToAtom.end()) {
+		if (add) {
+			auto &data = table.atomToData.at(existing->second);
+			if (data.refCount == std::numeric_limits<uint32_t>::max()) {
+				kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+				return 0;
+			}
+			++data.refCount;
+		}
+		return existing->second;
+	}
+	if (!add) {
+		kernel32::setLastError(ERROR_FILE_NOT_FOUND);
+		return 0;
+	}
+	ATOM atom = allocateStringAtomLocked(table);
+	if (!atom) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	table.stringToAtom.emplace(std::move(normalized), atom);
+	table.atomToData.emplace(atom, GlobalAtomData{1, value});
+	return atom;
+}
+
+ATOM globalAtomA(LPCSTR string, bool add) {
+	ATOM atom = 0;
+	if (tryHandleIntegerAtomPointer(string, atom)) {
+		return atom;
+	}
+	size_t length = strnlen(string, 256);
+	if (length == 0 || length > 255) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	// GetACP currently advertises ISO-8859-1. Keep that one-byte mapping
+	// explicit; this does not implement other Windows ANSI code pages.
+	std::u16string value;
+	value.reserve(length);
+	for (size_t index = 0; index < length; ++index) {
+		value.push_back(static_cast<unsigned char>(string[index]));
+	}
+	return globalAtomByString(value, add);
+}
+
+ATOM globalAtomW(LPCWSTR string, bool add) {
+	ATOM atom = 0;
+	if (tryHandleIntegerAtomPointer(string, atom)) {
+		return atom;
+	}
+	size_t length = wstrnlen(string, 256);
+	if (length == 0 || length > 255) {
+		kernel32::setLastError(length == 0 ? ERROR_INVALID_NAME : ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	return globalAtomByString(std::u16string(string, string + length), add);
+}
+
+bool getGlobalAtomName(ATOM atom, std::u16string &value) {
+	if (atom >= kMinIntegerAtom && atom <= kMaxIntegerAtom) {
+		auto number = std::to_string(atom);
+		value = u'#';
+		value.append(number.begin(), number.end());
+		return true;
+	}
+	auto &table = globalAtomTable();
+	std::lock_guard lk(table.mutex);
+	auto found = table.atomToData.find(atom);
+	if (found == table.atomToData.end()) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return false;
+	}
+	value = found->second.original;
+	return true;
 }
 
 bool tryGetCurrentDirectoryPath(std::string &outPath) {
@@ -690,6 +830,107 @@ UINT WINAPI GetAtomNameW(ATOM nAtom, LPWSTR lpBuffer, int nSize) {
 	UINT written = static_cast<UINT>(needed ? needed - 1 : 0);
 	DEBUG_LOG("GetAtomNameW -> %u (lastError=%u)\n", written, getLastError());
 	return written;
+}
+
+ATOM WINAPI GlobalAddAtomA(LPCSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	ATOM atom = globalAtomA(lpString, true);
+	DEBUG_LOG("GlobalAddAtomA(%p) -> %u (lastError=%u)\n", lpString, atom, getLastError());
+	return atom;
+}
+
+ATOM WINAPI GlobalAddAtomW(LPCWSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	ATOM atom = globalAtomW(lpString, true);
+	DEBUG_LOG("GlobalAddAtomW(%p) -> %u (lastError=%u)\n", lpString, atom, getLastError());
+	return atom;
+}
+
+ATOM WINAPI GlobalFindAtomA(LPCSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	ATOM atom = globalAtomA(lpString, false);
+	DEBUG_LOG("GlobalFindAtomA(%p) -> %u (lastError=%u)\n", lpString, atom, getLastError());
+	return atom;
+}
+
+ATOM WINAPI GlobalFindAtomW(LPCWSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	ATOM atom = globalAtomW(lpString, false);
+	DEBUG_LOG("GlobalFindAtomW(%p) -> %u (lastError=%u)\n", lpString, atom, getLastError());
+	return atom;
+}
+
+ATOM WINAPI GlobalDeleteAtom(ATOM nAtom) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GlobalDeleteAtom(%u)\n", nAtom);
+	if (nAtom < kMinStringAtom) {
+		return 0;
+	}
+	auto &table = globalAtomTable();
+	std::lock_guard lk(table.mutex);
+	auto found = table.atomToData.find(nAtom);
+	if (found == table.atomToData.end()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		// The documented return is always zero. Wine returns nAtom here;
+		// callers must inspect last error to distinguish this failure.
+		return 0;
+	}
+	if (--found->second.refCount == 0) {
+		table.stringToAtom.erase(normalizeGlobalAtomName(found->second.original));
+		table.atomToData.erase(found);
+	}
+	return 0;
+}
+
+UINT WINAPI GlobalGetAtomNameA(ATOM nAtom, LPSTR lpBuffer, int nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GlobalGetAtomNameA(%u, %p, %d)\n", nAtom, lpBuffer, nSize);
+	if (nSize < 0 || (!lpBuffer && nSize > 0)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::u16string value;
+	if (!getGlobalAtomName(nAtom, value)) {
+		return 0;
+	}
+	size_t copied = nSize > 0 ? std::min(value.size(), static_cast<size_t>(nSize - 1)) : 0;
+	for (size_t index = 0; index < copied; ++index) {
+		// Characters outside the current single-byte ACP use its default char.
+		lpBuffer[index] = value[index] <= 0xff ? static_cast<char>(value[index]) : '?';
+	}
+	if (nSize > 0) {
+		lpBuffer[copied] = 0;
+	}
+	if (value.size() >= static_cast<size_t>(nSize)) {
+		setLastError(ERROR_MORE_DATA);
+		return 0;
+	}
+	return static_cast<UINT>(copied);
+}
+
+UINT WINAPI GlobalGetAtomNameW(ATOM nAtom, LPWSTR lpBuffer, int nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GlobalGetAtomNameW(%u, %p, %d)\n", nAtom, lpBuffer, nSize);
+	if (nSize < 0 || (!lpBuffer && nSize > 0)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::u16string value;
+	if (!getGlobalAtomName(nAtom, value)) {
+		return 0;
+	}
+	size_t copied = std::min(value.size(), static_cast<size_t>(nSize));
+	if (copied > 0) {
+		std::copy_n(value.begin(), copied, lpBuffer);
+	}
+	if (value.size() >= static_cast<size_t>(nSize)) {
+		// Wine's wide API returns the unterminated prefix length on truncation,
+		// unlike its ANSI API, which returns zero and terminates that prefix.
+		setLastError(ERROR_MORE_DATA);
+	} else {
+		lpBuffer[copied] = 0;
+	}
+	return static_cast<UINT>(copied);
 }
 
 UINT WINAPI SetHandleCount(UINT uNumber) {
@@ -1357,7 +1598,7 @@ BOOL WINAPI GetDiskFreeSpaceA(LPCSTR lpRootPathName, LPDWORD lpSectorsPerCluster
 							  LPDWORD lpNumberOfFreeClusters, LPDWORD lpTotalNumberOfClusters) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetDiskFreeSpaceA(%s)\n", lpRootPathName ? lpRootPathName : "(null)");
-	struct statvfs buf {};
+	struct statvfs buf{};
 	std::string resolvedPath;
 	if (!resolveDiskFreeSpaceStat(lpRootPathName, buf, resolvedPath)) {
 		return FALSE;
@@ -1416,7 +1657,7 @@ BOOL WINAPI GetDiskFreeSpaceExA(LPCSTR lpDirectoryName, PULARGE_INTEGER lpFreeBy
 								PULARGE_INTEGER lpTotalNumberOfBytes, PULARGE_INTEGER lpTotalNumberOfFreeBytes) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetDiskFreeSpaceExA(%s)\n", lpDirectoryName ? lpDirectoryName : "(null)");
-	struct statvfs buf {};
+	struct statvfs buf{};
 	std::string resolvedPath;
 	if (!resolveDiskFreeSpaceStat(lpDirectoryName, buf, resolvedPath)) {
 		return FALSE;
