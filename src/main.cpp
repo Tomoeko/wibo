@@ -181,11 +181,18 @@ void wibo::initializeTibStackInfo(TEB *tibPtr) {
 	if (!tibPtr) {
 		return;
 	}
-	// Allocate a stack for the thread in the guest address space (below 2GB)
 	void *guestLimit = nullptr;
 	void *guestBase = nullptr;
-	if (!wibo::heap::reserveGuestStack(1 * 1024 * 1024, &guestLimit, &guestBase)) {
-		fprintf(stderr, "Failed to reserve guest stack\n");
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	// Same-width guest calls retain the native stack. Register it before the
+	// TEB is installed, and retire it on failed installation or teardown.
+	bool stackReady = wibo::heap::registerNativeStackForCurrentThread(&guestLimit, &guestBase);
+#else
+	// Cross-width guest calls need a separate stack below 2GB.
+	bool stackReady = wibo::heap::reserveGuestStack(1 * 1024 * 1024, &guestLimit, &guestBase);
+#endif
+	if (!stackReady) {
+		fprintf(stderr, "Failed to initialize guest stack\n");
 		std::abort();
 	}
 	tibPtr->Tib.StackLimit = toGuestPtr(guestLimit);
@@ -200,6 +207,9 @@ bool wibo::installTibForCurrentThread(TEB *tibPtr) {
 		return false;
 	}
 	if (!tebThreadSetup(tibPtr)) {
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+		wibo::heap::unregisterNativeStackForCurrentThread();
+#endif
 		return false;
 	}
 	currentThreadTeb = tibPtr;
@@ -210,6 +220,9 @@ bool wibo::installTibForCurrentThread(TEB *tibPtr) {
 void wibo::uninstallTebForCurrentThread() {
 	TEB *teb = std::exchange(currentThreadTeb, nullptr);
 	tebThreadTeardown(teb);
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	wibo::heap::unregisterNativeStackForCurrentThread();
+#endif
 }
 
 void wibo::prepareGuestWorkerSignalMask() {

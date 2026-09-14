@@ -72,6 +72,7 @@ using LPMEMORYSTATUS = MEMORYSTATUS *;
 
 namespace kernel32 {
 
+BOOL WINAPI IsBadCodePtr(FARPROC lpfn);
 BOOL WINAPI IsBadReadPtr(LPCVOID lp, UINT_PTR ucb);
 BOOL WINAPI IsBadWritePtr(LPVOID lp, UINT_PTR ucb);
 BOOL WINAPI IsBadStringPtrA(LPCSTR lpsz, UINT_PTR ucchMax);

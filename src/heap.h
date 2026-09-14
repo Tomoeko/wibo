@@ -88,6 +88,11 @@ NTSTATUS ntStatusFromVmStatus(VmStatus status);
 
 bool reserveGuestStack(std::size_t stackSizeBytes, void **outStackLimit, void **outStackBase);
 
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBase);
+void unregisterNativeStackForCurrentThread();
+#endif
+
 //-------------------- deleters --------------------
 template <class U> struct single_deleter {
 	void operator()(U *p) const noexcept {

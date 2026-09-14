@@ -1200,6 +1200,13 @@ void tryMarkExecutable(void *mem) {
 	mprotect(reinterpret_cast<void *>(alignedStart), length, PROT_READ | PROT_WRITE | PROT_EXEC);
 }
 
+BOOL WINAPI IsBadCodePtr(FARPROC lpfn) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsBadCodePtr(%p)\n", lpfn);
+	// The Windows contract tests read access, not execute permission or code.
+	return isBadMemoryRange(lpfn, 1, false) ? TRUE : FALSE;
+}
+
 BOOL WINAPI IsBadReadPtr(LPCVOID lp, UINT_PTR ucb) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("IsBadReadPtr(ptr=%p, size=%zu)\n", lp, static_cast<size_t>(ucb));

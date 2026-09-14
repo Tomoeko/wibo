@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <charconv>
 #include <cstdint>
@@ -29,7 +30,10 @@
 
 #include <mimalloc.h>
 #if defined(__APPLE__) && defined(WIBO_GUEST_64)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <malloc/malloc.h>
+#include <pthread.h>
 #endif
 #include <sys/mman.h>
 #include <unistd.h>
@@ -88,6 +92,90 @@ struct VirtualAllocation {
 };
 
 std::map<uintptr_t, VirtualAllocation> g_virtualAllocations;
+
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+// These stacks belong to pthread, not VirtualAlloc. Never expose them to
+// virtualFree or virtualProtect as allocations owned by the guest allocator.
+struct NativeStack {
+	uintptr_t limit;
+	uintptr_t base;
+	DWORD allocationProtect;
+};
+std::map<uintptr_t, NativeStack> g_nativeStacks;
+thread_local uintptr_t g_currentNativeStackLimit = 0;
+
+bool queryNativePage(uintptr_t address, uintptr_t &regionEnd, DWORD &protect) {
+	mach_vm_address_t base = address;
+	mach_vm_size_t size = 0;
+	natural_t depth = 0;
+	vm_region_submap_info_data_64_t info{};
+	for (;;) {
+		base = address;
+		size = 0;
+		mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+		kern_return_t result = mach_vm_region_recurse(mach_task_self(), &base, &size, &depth,
+													  reinterpret_cast<vm_region_recurse_info_t>(&info), &count);
+		if (result != KERN_SUCCESS || base > address || size == 0 ||
+			base > std::numeric_limits<uintptr_t>::max() - size || address >= base + size) {
+			return false;
+		}
+		if (!info.is_submap) {
+			break;
+		}
+		if (++depth > 16) {
+			return false;
+		}
+	}
+	regionEnd = base + size;
+	switch (info.protection) {
+	case VM_PROT_NONE:
+		protect = PAGE_NOACCESS;
+		break;
+	case VM_PROT_READ:
+		protect = PAGE_READONLY;
+		break;
+	case VM_PROT_READ | VM_PROT_WRITE:
+		protect = PAGE_READWRITE;
+		break;
+	case VM_PROT_EXECUTE:
+		protect = PAGE_EXECUTE;
+		break;
+	case VM_PROT_READ | VM_PROT_EXECUTE:
+		protect = PAGE_EXECUTE_READ;
+		break;
+	case VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE:
+		protect = PAGE_EXECUTE_READWRITE;
+		break;
+	default:
+		// A write-only host mapping has no exact Windows protection analogue.
+		return false;
+	}
+	return true;
+}
+
+wibo::heap::VmStatus queryNativeStackLocked(uintptr_t pageBase, MEMORY_BASIC_INFORMATION *outInfo) {
+	auto it = g_nativeStacks.upper_bound(pageBase);
+	if (it == g_nativeStacks.begin() || pageBase >= (--it)->second.base) {
+		return wibo::heap::VmStatus::InvalidAddress;
+	}
+	const NativeStack &stack = it->second;
+	uintptr_t end = 0;
+	DWORD protect = 0;
+	if (!queryNativePage(pageBase, end, protect)) {
+		// This is a registered stack. A failed host query must not describe it
+		// as free memory or invent access permissions.
+		return wibo::heap::VmStatus::UnknownError;
+	}
+	outInfo->BaseAddress = toGuestPtr(reinterpret_cast<void *>(pageBase));
+	outInfo->AllocationBase = toGuestPtr(reinterpret_cast<void *>(stack.limit));
+	outInfo->AllocationProtect = stack.allocationProtect;
+	outInfo->RegionSize = std::min(end, stack.base) - pageBase;
+	outInfo->State = MEM_COMMIT;
+	outInfo->Protect = protect;
+	outInfo->Type = MEM_PRIVATE;
+	return wibo::heap::VmStatus::Success;
+}
+#endif
 
 const uintptr_t kDefaultMmapMinAddr = 0x10000u;
 
@@ -1215,6 +1303,12 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 	std::unique_lock allocLock(g_mappingsMutex);
 	VirtualAllocation *region = lookupRegion(pageBase);
 	if (!region) {
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+		VmStatus nativeStatus = queryNativeStackLocked(pageBase, outInfo);
+		if (nativeStatus != VmStatus::InvalidAddress) {
+			return nativeStatus;
+		}
+#endif
 		uintptr_t regionStart = pageBase;
 		uintptr_t regionEnd = regionStart;
 		auto next = g_virtualAllocations.lower_bound(pageBase);
@@ -1227,6 +1321,12 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 			regionEnd = kTwoGB;
 #endif
 		}
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+		auto nextStack = g_nativeStacks.lower_bound(pageBase);
+		if (nextStack != g_nativeStacks.end()) {
+			regionEnd = std::min(regionEnd, nextStack->second.limit);
+		}
+#endif
 		if (regionEnd <= regionStart) {
 			regionEnd = regionStart + pageSize;
 		}
@@ -1351,13 +1451,29 @@ bool reserveGuestStack(std::size_t stackSizeBytes, void **outStackLimit, void **
 		return false;
 	}
 
-	// Protect the guard page at the bottom of the mapped region
-	if (mprotect(r.start, ps, PROT_NONE) != 0) {
-		// Non-fatal; continue without guard
-		DEBUG_LOG("heap: reserveGuestStack: mprotect guard failed\n");
+	// The bottom page is inaccessible, without Windows PAGE_GUARD semantics.
+	bool bottomProtected = mprotect(r.start, ps, PROT_NONE) == 0;
+	if (!bottomProtected) {
+		// Non-fatal; report the actual writable mapping if protection failed.
+		DEBUG_LOG("heap: reserveGuestStack: mprotect bottom page failed\n");
 	}
 
-	// Stack grows downwards; limit is after guard, base is top of mapping
+	VirtualAllocation region;
+	region.base = reinterpret_cast<uintptr_t>(r.start);
+	region.size = r.size;
+	region.allocationProtect = PAGE_READWRITE;
+	region.pageProtect.assign(r.size / ps, PAGE_READWRITE);
+	if (bottomProtected) {
+		region.pageProtect.front() = PAGE_NOACCESS;
+	}
+	{
+		std::lock_guard lock(g_mappingsMutex);
+		auto [it, inserted] = g_virtualAllocations.emplace(region.base, std::move(region));
+		assert(inserted); // mapArena reserved a non-overlapping range.
+		refreshGuestMappingLocked(it->second);
+	}
+
+	// Stack grows downwards; limit is after the bottom page, base is the top.
 	void *limit = static_cast<char *>(r.start) + ps;
 	void *base = static_cast<char *>(r.start) + r.size;
 	*outStackLimit = limit;
@@ -1365,6 +1481,53 @@ bool reserveGuestStack(std::size_t stackSizeBytes, void **outStackLimit, void **
 	DEBUG_LOG("heap: reserved guest stack limit=%p base=%p (total=%zu KiB)\n", limit, base, r.size >> 10);
 	return true;
 }
+
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBase) {
+	if (!outStackLimit || !outStackBase || g_currentNativeStackLimit != 0) {
+		return false;
+	}
+	// Darwin reports the usable stack bounds, excluding its inaccessible
+	// bottom page. The actual protection is queried again for each request.
+	pthread_t self = pthread_self();
+	uintptr_t base = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(self));
+	size_t size = pthread_get_stacksize_np(self);
+	const size_t pageSize = systemPageSize();
+	uintptr_t current = reinterpret_cast<uintptr_t>(&self);
+	if (size == 0 || size >= base || base >= kGuestAddressLimit || base % pageSize != 0 || size % pageSize != 0 ||
+		current < base - size || current >= base) {
+		return false;
+	}
+	uintptr_t end = 0;
+	DWORD protect = 0;
+	if (!queryNativePage(current, end, protect)) {
+		return false;
+	}
+	uintptr_t limit = base - size;
+	{
+		std::lock_guard lock(g_mappingsMutex);
+		auto next = g_nativeStacks.lower_bound(limit);
+		if ((next != g_nativeStacks.end() && next->second.limit < base) ||
+			(next != g_nativeStacks.begin() && std::prev(next)->second.base > limit)) {
+			return false;
+		}
+		g_nativeStacks.emplace(limit, NativeStack{limit, base, protect});
+		g_currentNativeStackLimit = limit;
+	}
+	*outStackLimit = reinterpret_cast<void *>(limit);
+	*outStackBase = reinterpret_cast<void *>(base);
+	DEBUG_LOG("heap: registered native stack limit=%p base=%p\n", *outStackLimit, *outStackBase);
+	return true;
+}
+
+void unregisterNativeStackForCurrentThread() {
+	std::lock_guard lock(g_mappingsMutex);
+	if (g_currentNativeStackLimit != 0) {
+		g_nativeStacks.erase(g_currentNativeStackLimit);
+		g_currentNativeStackLimit = 0;
+	}
+}
+#endif
 
 } // namespace wibo::heap
 
