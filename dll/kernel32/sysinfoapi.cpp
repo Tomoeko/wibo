@@ -15,8 +15,13 @@
 
 namespace {
 
-constexpr WORD PROCESSOR_ARCHITECTURE_INTEL = 0;
-constexpr DWORD PROCESSOR_INTEL_PENTIUM = 586;
+#ifdef WIBO_GUEST_64
+constexpr WORD kSystemProcessorArchitecture = 9; // PROCESSOR_ARCHITECTURE_AMD64
+constexpr DWORD kSystemProcessorType = 8664;	 // PROCESSOR_AMD_X8664
+#else
+constexpr WORD kSystemProcessorArchitecture = 0; // PROCESSOR_ARCHITECTURE_INTEL
+constexpr DWORD kSystemProcessorType = 586;		 // PROCESSOR_INTEL_PENTIUM
+#endif
 
 constexpr uint64_t kUnixTimeZero = 11644473600ULL * 10000000ULL;
 constexpr DWORD kMajorVersion = 6;
@@ -165,10 +170,10 @@ void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
 	}
 
 	std::memset(lpSystemInfo, 0, sizeof(*lpSystemInfo));
-	lpSystemInfo->wProcessorArchitecture = PROCESSOR_ARCHITECTURE_INTEL;
+	lpSystemInfo->wProcessorArchitecture = kSystemProcessorArchitecture;
 	lpSystemInfo->dwOemId = lpSystemInfo->wProcessorArchitecture;
-	lpSystemInfo->dwProcessorType = PROCESSOR_INTEL_PENTIUM;
-	lpSystemInfo->wProcessorLevel = 6; // Pentium
+	lpSystemInfo->dwProcessorType = kSystemProcessorType;
+	lpSystemInfo->wProcessorLevel = 6; // Retain the existing CPU-family facade.
 
 	long pageSize = sysconf(_SC_PAGESIZE);
 	if (pageSize <= 0) {
@@ -177,7 +182,7 @@ void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
 	lpSystemInfo->dwPageSize = static_cast<DWORD>(pageSize);
 
 	lpSystemInfo->lpMinimumApplicationAddress = toGuestPtr(reinterpret_cast<void *>(0x00010000));
-#ifdef _WIN64
+#ifdef WIBO_GUEST_64
 	lpSystemInfo->lpMaximumApplicationAddress = toGuestPtr(reinterpret_cast<void *>(0x00007FFFFFFEFFFFull));
 #else
 	lpSystemInfo->lpMaximumApplicationAddress = toGuestPtr(reinterpret_cast<void *>(0x7FFEFFFF));
@@ -186,12 +191,22 @@ void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
 	unsigned int cpuCount = 1;
 	long reported = sysconf(_SC_NPROCESSORS_ONLN);
 	if (reported > 0) {
-		cpuCount = static_cast<unsigned int>(reported);
+		// Match the single processor group represented by our pointer-sized
+		// mask and GetLogicalProcessorInformation.
+		cpuCount = static_cast<unsigned int>(std::min(reported, static_cast<long>(sizeof(DWORD_PTR) * 8)));
 	}
 	lpSystemInfo->dwNumberOfProcessors = cpuCount;
 	lpSystemInfo->dwActiveProcessorMask = computeSystemProcessorMask(cpuCount);
 
 	lpSystemInfo->dwAllocationGranularity = 0x10000;
+}
+
+void WINAPI GetNativeSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetNativeSystemInfo(%p)\n", lpSystemInfo);
+	// IsWow64Process reports false: each guest presents a native Windows
+	// architecture. The host CPU does not change that compatibility facade.
+	GetSystemInfo(lpSystemInfo);
 }
 
 BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer, PDWORD returnLength) {
