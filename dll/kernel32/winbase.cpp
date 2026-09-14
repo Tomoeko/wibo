@@ -1,4 +1,5 @@
 #include "winbase.h"
+#include "winnls.h"
 
 #include "common.h"
 #include "context.h"
@@ -643,6 +644,87 @@ void ensureDefaultActivationContext() {
 }
 
 namespace kernel32 {
+
+namespace {
+
+// Match the existing fixed-locale CompareStringA facade without routing UTF-16
+// through CompareStringW's current byte conversion. Every code unit participates
+// in equality/order; insensitive comparisons fold ASCII only. This is not the
+// complete Windows locale-sensitive word sort (case weights, punctuation and
+// non-ASCII folding still need an NLS implementation).
+int compareLegacyWideStrings(LPCWSTR first, LPCWSTR second, bool ignoreCase) {
+	if (!first || !second) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return -2;
+	}
+	for (size_t index = 0;; ++index) {
+		uint16_t left = first[index];
+		uint16_t right = second[index];
+		if (ignoreCase) {
+			if (left >= 'a' && left <= 'z') {
+				left -= 'a' - 'A';
+			}
+			if (right >= 'a' && right <= 'z') {
+				right -= 'a' - 'A';
+			}
+		}
+		if (left != right) {
+			return left < right ? -1 : 1;
+		}
+		if (left == 0) {
+			return 0;
+		}
+	}
+}
+
+} // namespace
+
+int WINAPI lstrlenA(LPCSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrlenA(%p)\n", lpString);
+	if (!lpString) {
+		// The documented return is zero; Wine also reports this error.
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	return static_cast<int>(std::strlen(lpString));
+}
+
+int WINAPI lstrlenW(LPCWSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrlenW(%p)\n", lpString);
+	if (!lpString) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	return static_cast<int>(wstrlen(lpString));
+}
+
+int WINAPI lstrcmpA(LPCSTR lpString1, LPCSTR lpString2) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrcmpA(%p, %p)\n", lpString1, lpString2);
+	// Use the same fixed user locale/ACP as wibo's existing NLS facade.
+	return CompareStringA(GetUserDefaultLCID(), 0, lpString1, -1, lpString2, -1) - 2;
+}
+
+int WINAPI lstrcmpW(LPCWSTR lpString1, LPCWSTR lpString2) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrcmpW(%p, %p)\n", lpString1, lpString2);
+	return compareLegacyWideStrings(lpString1, lpString2, false);
+}
+
+int WINAPI lstrcmpiA(LPCSTR lpString1, LPCSTR lpString2) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrcmpiA(%p, %p)\n", lpString1, lpString2);
+	constexpr DWORD kNormIgnoreCase = 0x00000001;
+	return CompareStringA(GetUserDefaultLCID(), kNormIgnoreCase, lpString1, -1, lpString2, -1) - 2;
+}
+
+int WINAPI lstrcmpiW(LPCWSTR lpString1, LPCWSTR lpString2) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("lstrcmpiW(%p, %p)\n", lpString1, lpString2);
+	return compareLegacyWideStrings(lpString1, lpString2, true);
+}
 
 LPSTR WINAPI lstrcpynA(LPSTR lpString1, LPCSTR lpString2, int iMaxLength) {
 	HOST_CONTEXT_GUARD();
