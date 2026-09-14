@@ -34,15 +34,16 @@ struct PredefinedKeyInfo {
 };
 
 constexpr PredefinedKeyInfo kPredefinedKeyInfos[] = {
-	{static_cast<HKEY>(0x80000000u), u"HKEY_CLASSES_ROOT"},
-	{static_cast<HKEY>(0x80000001u), u"HKEY_CURRENT_USER"},
-	{static_cast<HKEY>(0x80000002u), u"HKEY_LOCAL_MACHINE"},
-	{static_cast<HKEY>(0x80000003u), u"HKEY_USERS"},
-	{static_cast<HKEY>(0x80000004u), u"HKEY_PERFORMANCE_DATA"},
-	{static_cast<HKEY>(0x80000005u), u"HKEY_CURRENT_CONFIG"},
+	{HKEY_CLASSES_ROOT, u"HKEY_CLASSES_ROOT"},
+	{HKEY_CURRENT_USER, u"HKEY_CURRENT_USER"},
+	{HKEY_LOCAL_MACHINE, u"HKEY_LOCAL_MACHINE"},
+	{HKEY_USERS, u"HKEY_USERS"},
+	{HKEY_PERFORMANCE_DATA, u"HKEY_PERFORMANCE_DATA"},
+	{HKEY_CURRENT_CONFIG, u"HKEY_CURRENT_CONFIG"},
 };
 
 constexpr size_t kPredefinedKeyCount = std::size(kPredefinedKeyInfos);
+constexpr REGSAM kLegacyOpenAccess = 0x02000000; // MAXIMUM_ALLOWED
 
 std::mutex g_registryMutex;
 std::unordered_set<std::u16string> g_existingKeys;
@@ -208,6 +209,41 @@ LSTATUS WINAPI RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, LPSTR
 	return RegCreateKeyExW(hKey, lpSubKey ? reinterpret_cast<LPCWSTR>(subKeyWideStorage.data()) : nullptr, Reserved,
 						   lpClass ? reinterpret_cast<LPWSTR>(classWideStorage.data()) : nullptr, dwOptions, samDesired,
 						   lpSecurityAttributes, phkResult, lpdwDisposition);
+}
+
+LSTATUS WINAPI RegOpenKeyA(HKEY hKey, LPCSTR lpSubKey, PHKEY phkResult) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegOpenKeyA(%p, %s, %p)\n", hKey, lpSubKey ? lpSubKey : "(null)", phkResult);
+	if (!phkResult) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	if (!lpSubKey || !lpSubKey[0]) {
+		// The legacy API returns this exact handle, including ordinary keys.
+		*phkResult = hKey;
+		return ERROR_SUCCESS;
+	}
+	const DWORD savedError = kernel32::getLastError();
+	const LSTATUS status = RegOpenKeyExA(hKey, lpSubKey, 0, kLegacyOpenAccess, phkResult);
+	// Registry status is returned directly; the legacy call preserves last error
+	// even though the existing RegOpenKeyEx implementation changes it on failure.
+	kernel32::setLastError(savedError);
+	return status;
+}
+
+LSTATUS WINAPI RegOpenKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegOpenKeyW(%p, %p, %p)\n", hKey, lpSubKey, phkResult);
+	if (!phkResult) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	if (!lpSubKey || !lpSubKey[0]) {
+		*phkResult = hKey;
+		return ERROR_SUCCESS;
+	}
+	const DWORD savedError = kernel32::getLastError();
+	const LSTATUS status = RegOpenKeyExW(hKey, lpSubKey, 0, kLegacyOpenAccess, phkResult);
+	kernel32::setLastError(savedError);
+	return status;
 }
 
 LSTATUS WINAPI RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult) {

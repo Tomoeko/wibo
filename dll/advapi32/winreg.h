@@ -4,23 +4,24 @@
 
 struct FILETIME;
 
+// Predefined HKEY values are signed 32-bit constants, extended to guest width.
 #ifndef HKEY_CLASSES_ROOT
-#define HKEY_CLASSES_ROOT ((HKEY)(uintptr_t)0x80000000u)
+#define HKEY_CLASSES_ROOT ((HKEY)(LONG)0x80000000u)
 #endif
 #ifndef HKEY_CURRENT_USER
-#define HKEY_CURRENT_USER ((HKEY)(uintptr_t)0x80000001u)
+#define HKEY_CURRENT_USER ((HKEY)(LONG)0x80000001u)
 #endif
 #ifndef HKEY_LOCAL_MACHINE
-#define HKEY_LOCAL_MACHINE ((HKEY)(uintptr_t)0x80000002u)
+#define HKEY_LOCAL_MACHINE ((HKEY)(LONG)0x80000002u)
 #endif
 #ifndef HKEY_USERS
-#define HKEY_USERS ((HKEY)(uintptr_t)0x80000003u)
+#define HKEY_USERS ((HKEY)(LONG)0x80000003u)
 #endif
 #ifndef HKEY_PERFORMANCE_DATA
-#define HKEY_PERFORMANCE_DATA ((HKEY)(uintptr_t)0x80000004u)
+#define HKEY_PERFORMANCE_DATA ((HKEY)(LONG)0x80000004u)
 #endif
 #ifndef HKEY_CURRENT_CONFIG
-#define HKEY_CURRENT_CONFIG ((HKEY)(uintptr_t)0x80000005u)
+#define HKEY_CURRENT_CONFIG ((HKEY)(LONG)0x80000005u)
 #endif
 
 constexpr DWORD REG_OPTION_OPEN_LINK = 0x00000008;
@@ -37,6 +38,8 @@ LSTATUS WINAPI RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, LPSTR
 							   REGSAM samDesired, void *lpSecurityAttributes, PHKEY phkResult, LPDWORD lpdwDisposition);
 LSTATUS WINAPI RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD Reserved, LPWSTR lpClass, DWORD dwOptions,
 							   REGSAM samDesired, void *lpSecurityAttributes, PHKEY phkResult, LPDWORD lpdwDisposition);
+LSTATUS WINAPI RegOpenKeyA(HKEY hKey, LPCSTR lpSubKey, PHKEY phkResult);
+LSTATUS WINAPI RegOpenKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult);
 LSTATUS WINAPI RegOpenKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult);
 LSTATUS WINAPI RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult);
 LSTATUS WINAPI RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, BYTE *lpData,
