@@ -15,6 +15,7 @@ HRSRC WINAPI FindResourceExA(HMODULE hModule, LPCSTR lpType, LPCSTR lpName, WORD
 HRSRC WINAPI FindResourceW(HMODULE hModule, LPCWSTR lpName, LPCWSTR lpType);
 HRSRC WINAPI FindResourceExW(HMODULE hModule, LPCWSTR lpType, LPCWSTR lpName, WORD wLanguage);
 HGLOBAL WINAPI LoadResource(HMODULE hModule, HRSRC hResInfo);
+BOOL WINAPI FreeResource(HGLOBAL hResData);
 LPVOID WINAPI LockResource(HGLOBAL hResData);
 DWORD WINAPI SizeofResource(HMODULE hModule, HRSRC hResInfo);
 HMODULE WINAPI LoadLibraryA(LPCSTR lpLibFileName);

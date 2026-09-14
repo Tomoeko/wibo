@@ -198,7 +198,7 @@ DWORD WINAPI GetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize)
 
 HRSRC WINAPI FindResourceA(HMODULE hModule, LPCSTR lpName, LPCSTR lpType) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("FindResourceA(%p, %s, %s)\n", hModule, lpName, lpType);
+	DEBUG_LOG("FindResourceA(%p, %p, %p)\n", hModule, lpName, lpType);
 	auto type = wibo::resourceIdentifierFromAnsi(lpType);
 	auto name = wibo::resourceIdentifierFromAnsi(lpName);
 	return findResourceInternal(hModule, type, name, std::nullopt);
@@ -206,7 +206,7 @@ HRSRC WINAPI FindResourceA(HMODULE hModule, LPCSTR lpName, LPCSTR lpType) {
 
 HRSRC WINAPI FindResourceExA(HMODULE hModule, LPCSTR lpType, LPCSTR lpName, WORD wLanguage) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("FindResourceExA(%p, %s, %s, %u)\n", hModule, lpName, lpType, wLanguage);
+	DEBUG_LOG("FindResourceExA(%p, %p, %p, %u)\n", hModule, lpName, lpType, wLanguage);
 	auto type = wibo::resourceIdentifierFromAnsi(lpType);
 	auto name = wibo::resourceIdentifierFromAnsi(lpName);
 	return findResourceInternal(hModule, type, name, wLanguage);
@@ -246,6 +246,14 @@ HGLOBAL WINAPI LoadResource(HMODULE hModule, HRSRC hResInfo) {
 		return GUEST_NULL;
 	}
 	return toGuestPtr(exe->fromRVA<const void>(entry->offsetToData));
+}
+
+BOOL WINAPI FreeResource(HGLOBAL hResData) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FreeResource(%p)\n", fromGuestPtr(hResData));
+	// Win32 resources remain mapped with their module. The legacy release
+	// function always returns FALSE and does not release LoadResource bytes.
+	return FALSE;
 }
 
 LPVOID WINAPI LockResource(HGLOBAL hResData) {

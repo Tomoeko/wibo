@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <mimalloc.h>
 #include <optional>
 #include <string>
@@ -93,6 +94,65 @@ std::optional<std::string> getEnvValueForWindows(const std::string &name) {
 		return convertEnvValueForWindows(name, rawValue);
 	}
 	return std::nullopt;
+}
+
+std::optional<std::string> expansionVariableName(std::string_view name) {
+	return name.empty() ? std::nullopt : std::make_optional(std::string(name));
+}
+
+std::optional<std::string> expansionVariableName(std::u16string_view name) {
+	if (name.empty()) {
+		return std::nullopt;
+	}
+	// Environment storage uses wibo's current single-byte ACP. A wide name
+	// outside that mapping must remain unknown, never alias its low bytes.
+	std::string result;
+	result.reserve(name.size());
+	for (char16_t character : name) {
+		if (character > 0xff) {
+			return std::nullopt;
+		}
+		result.push_back(static_cast<char>(character));
+	}
+	return result;
+}
+
+template <typename Character, typename Append>
+bool visitEnvironmentExpansion(std::basic_string_view<Character> source, Append append) {
+	using View = std::basic_string_view<Character>;
+	constexpr Character percent = static_cast<Character>('%');
+	size_t cursor = 0;
+	while (cursor < source.size()) {
+		size_t opening = source.find(percent, cursor);
+		if (opening == View::npos) {
+			return append(source.substr(cursor), false);
+		}
+		if (!append(source.substr(cursor, opening - cursor), false)) {
+			return false;
+		}
+		size_t closing = source.find(percent, opening + 1);
+		if (closing == View::npos) {
+			return append(source.substr(opening), false);
+		}
+		auto name = expansionVariableName(source.substr(opening + 1, closing - opening - 1));
+		auto value = name ? getEnvValueForWindows(*name) : std::nullopt;
+		if (value) {
+			std::basic_string<Character> replacement;
+			replacement.reserve(value->size());
+			for (unsigned char character : *value) {
+				replacement.push_back(static_cast<Character>(character));
+			}
+			if (!append(View(replacement), true)) {
+				return false;
+			}
+		} else if (!append(source.substr(opening, closing - opening + 1), false)) {
+			return false;
+		}
+		// Continue in the original source: percent expressions in values are
+		// not recursively expanded, and unknown/empty names stay unchanged.
+		cursor = closing + 1;
+	}
+	return true;
 }
 
 std::vector<std::string> prepareEnvStrings(size_t &totalSize) {
@@ -291,6 +351,92 @@ DWORD WINAPI GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSiz
 	}
 	std::copy(wideValue.begin(), wideValue.end(), lpBuffer);
 	return required - 1;
+}
+
+DWORD WINAPI ExpandEnvironmentStringsA(LPCSTR lpSrc, LPSTR lpDst, DWORD nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("ExpandEnvironmentStringsA(%p, %p, %u)\n", lpSrc, lpDst, nSize);
+	if (!lpSrc) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::string expanded;
+	constexpr size_t maximum = std::numeric_limits<DWORD>::max();
+	bool complete = visitEnvironmentExpansion(std::string_view(lpSrc), [&](std::string_view part, bool) {
+		if (part.size() > maximum - 2 - expanded.size()) {
+			return false;
+		}
+		expanded.append(part);
+		return true;
+	});
+	if (!complete) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	DWORD required = static_cast<DWORD>(expanded.size() + 1);
+	if (!lpDst || nSize <= required) {
+		// The documented ANSI buffer rule needs one extra character. Wine
+		// reports that larger requirement and empties a non-NULL destination,
+		// including a query with nSize == 0 and a valid destination pointer.
+		if (lpDst) {
+			lpDst[0] = 0;
+		}
+		return required + 1;
+	}
+	std::memcpy(lpDst, expanded.c_str(), required);
+	return required;
+}
+
+DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR lpSrc, LPWSTR lpDst, DWORD nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("ExpandEnvironmentStringsW(%p, %p, %u)\n", lpSrc, lpDst, nSize);
+	if (!lpSrc || (!lpDst && nSize != 0)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	// Preserve literal UTF-16 independently of the single-byte environment
+	// storage; no wideStringToString conversion is permitted here.
+	std::u16string source(lpSrc, lpSrc + wstrlen(lpSrc));
+	DWORD remaining = nSize;
+	size_t written = 0;
+	DWORD required = 1;
+	bool complete =
+		visitEnvironmentExpansion(std::u16string_view(source), [&](std::u16string_view part, bool variable) {
+			if (part.size() > std::numeric_limits<DWORD>::max() - required) {
+				return false;
+			}
+			required += static_cast<DWORD>(part.size());
+			if (remaining == 0) {
+				return true;
+			}
+			if (part.size() >= remaining) {
+				// Wine's wide API copies a literal prefix without adding a NUL on
+				// overflow. A variable value is copied only whole; when it cannot
+				// fit, the current position is terminated instead. Continue counting.
+				if (variable) {
+					lpDst[written] = 0;
+				} else {
+					std::copy_n(part.begin(), remaining - 1, lpDst + written);
+				}
+				remaining = 0;
+				return true;
+			}
+			std::copy(part.begin(), part.end(), lpDst + written);
+			written += part.size();
+			remaining -= static_cast<DWORD>(part.size());
+			if (variable) {
+				lpDst[written] = 0;
+			}
+			return true;
+		});
+	if (!complete) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	if (remaining != 0) {
+		lpDst[written] = 0;
+	}
+	return required;
 }
 
 BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {

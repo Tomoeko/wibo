@@ -646,6 +646,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_trace_registration SOURCES test/test_trace_registration.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_critical_section_owner SOURCES test/test_critical_section_owner.c)
         wibo_add_fixture_bin(NAME test_version_conditions SOURCES test/test_version_conditions.c)
+        wibo_add_fixture_bin(NAME test_expand_environment SOURCES test/test_expand_environment.c)
+        wibo_add_fixture_bin(NAME test_resource_release SOURCES test/test_resource_release.c ${WIBO_TEST_BIN_DIR}/test_resource_release_res.o)
         wibo_add_fixture_bin(NAME test_critical_section SOURCES test/test_critical_section.c)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
@@ -691,6 +693,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                     -O coff -o test_resources_res.o
             WORKING_DIRECTORY ${WIBO_TEST_BIN_DIR}
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resources.rc)
+
+        # Resource bytes owned by the release fixture executable.
+        add_custom_command(
+            OUTPUT ${WIBO_TEST_BIN_DIR}/test_resource_release_res.o
+            COMMAND ${WIBO_MINGW_WINDRES}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_release.rc
+                    -O coff -o test_resource_release_res.o
+            WORKING_DIRECTORY ${WIBO_TEST_BIN_DIR}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_release.rc)
 
         add_custom_target(wibo_test_fixtures DEPENDS ${WIBO_TEST_FIXTURES})
 

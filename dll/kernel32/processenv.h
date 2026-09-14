@@ -15,6 +15,8 @@ BOOL WINAPI FreeEnvironmentStringsA(LPCH penv);
 BOOL WINAPI FreeEnvironmentStringsW(LPWCH penv);
 DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName, LPSTR lpBuffer, DWORD nSize);
 DWORD WINAPI GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSize);
+DWORD WINAPI ExpandEnvironmentStringsA(LPCSTR lpSrc, LPSTR lpDst, DWORD nSize);
+DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR lpSrc, LPWSTR lpDst, DWORD nSize);
 BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue);
 BOOL WINAPI SetEnvironmentVariableW(LPCWSTR lpName, LPCWSTR lpValue);
 
