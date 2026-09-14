@@ -32,6 +32,127 @@ DWORD_PTR computeSystemProcessorMask(unsigned int cpuCount) {
 	return mask == 0 ? 1 : mask;
 }
 
+constexpr DWORD ERROR_BAD_ARGUMENTS = 160;
+constexpr DWORD ERROR_OLD_WIN_VERSION = 1150;
+
+BYTE versionCondition(ULONGLONG mask, unsigned int fieldBit) { return static_cast<BYTE>((mask >> (3 * fieldBit)) & 7); }
+
+bool matchesVersionValue(DWORD actual, DWORD requested, BYTE condition) {
+	switch (condition) {
+	case VER_EQUAL:
+		return actual == requested;
+	case VER_GREATER:
+		return actual > requested;
+	case VER_GREATER_EQUAL:
+		return actual >= requested;
+	case VER_LESS:
+		return actual < requested;
+	case VER_LESS_EQUAL:
+		return actual <= requested;
+	default:
+		return false;
+	}
+}
+
+bool isVersionRelation(BYTE condition) { return condition >= VER_EQUAL && condition <= VER_LESS_EQUAL; }
+
+bool sameVersionDirection(BYTE governing, BYTE next) {
+	if (next == VER_EQUAL) {
+		return isVersionRelation(governing);
+	}
+	const bool increasing = governing == VER_GREATER || governing == VER_GREATER_EQUAL;
+	const bool decreasing = governing == VER_LESS || governing == VER_LESS_EQUAL;
+	return (increasing && (next == VER_GREATER || next == VER_GREATER_EQUAL)) ||
+		   (decreasing && (next == VER_LESS || next == VER_LESS_EQUAL));
+}
+
+template <typename VersionInfo>
+DWORD verifyVersionConditions(const VersionInfo *requested, DWORD fields, ULONGLONG mask) {
+	if (!requested) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	if (!fields || !mask) {
+		return ERROR_BAD_ARGUMENTS;
+	}
+
+	// Use the same version facade as GetVersionExA/W, including its product and
+	// service-pack values. This does not introduce manifest-based version lies.
+	OSVERSIONINFOEXW actual{};
+	actual.dwOSVersionInfoSize = sizeof(actual);
+	const NTSTATUS status = ntdll::RtlGetVersion(reinterpret_cast<PRTL_OSVERSIONINFOW>(&actual));
+	if (status != STATUS_SUCCESS) {
+		return wibo::winErrorFromNtStatus(status);
+	}
+
+	if ((fields & VER_PRODUCT_TYPE) &&
+		!matchesVersionValue(actual.wProductType, requested->wProductType, versionCondition(mask, 7))) {
+		return ERROR_OLD_WIN_VERSION;
+	}
+	if (fields & VER_SUITENAME) {
+		const WORD present = actual.wSuiteMask & requested->wSuiteMask;
+		switch (versionCondition(mask, 6)) {
+		case VER_AND:
+			if (present != requested->wSuiteMask) {
+				return ERROR_OLD_WIN_VERSION;
+			}
+			break;
+		case VER_OR:
+			// An empty requested suite imposes no requirement for either mode.
+			if (requested->wSuiteMask && !present) {
+				return ERROR_OLD_WIN_VERSION;
+			}
+			break;
+		default:
+			return ERROR_BAD_ARGUMENTS;
+		}
+	}
+	if ((fields & VER_PLATFORMID) &&
+		!matchesVersionValue(actual.dwPlatformId, requested->dwPlatformId, versionCondition(mask, 3))) {
+		return ERROR_OLD_WIN_VERSION;
+	}
+	if ((fields & VER_BUILDNUMBER) &&
+		!matchesVersionValue(actual.dwBuildNumber, requested->dwBuildNumber, versionCondition(mask, 2))) {
+		return ERROR_OLD_WIN_VERSION;
+	}
+
+	struct Component {
+		unsigned int bit;
+		DWORD actual;
+		DWORD requested;
+	};
+	const Component hierarchy[] = {
+		{1, actual.dwMajorVersion, requested->dwMajorVersion},
+		{0, actual.dwMinorVersion, requested->dwMinorVersion},
+		{5, actual.wServicePackMajor, requested->wServicePackMajor},
+		{4, actual.wServicePackMinor, requested->wServicePackMinor},
+	};
+	BYTE governing = 0;
+	bool inheritRemaining = false;
+	bool matched = true;
+	for (const Component &component : hierarchy) {
+		if (!(fields & (1u << component.bit))) {
+			continue;
+		}
+		const BYTE supplied = versionCondition(mask, component.bit);
+		BYTE effective = governing;
+		if (!inheritRemaining && (governing == 0 || (governing == VER_EQUAL && isVersionRelation(supplied)))) {
+			governing = effective = supplied;
+		} else if (!inheritRemaining && sameVersionDirection(governing, supplied)) {
+			effective = supplied;
+		}
+		if (!supplied) {
+			inheritRemaining = true;
+		}
+		matched = matchesVersionValue(component.actual, component.requested, effective);
+		// Equal components defer even a strict relation to the next selected
+		// component. The first unequal component decides the hierarchy.
+		if (component.actual != component.requested || !isVersionRelation(effective)) {
+			break;
+		}
+	}
+	return matched ? ERROR_SUCCESS : ERROR_OLD_WIN_VERSION;
+}
+
 } // namespace
 
 namespace kernel32 {
@@ -294,6 +415,34 @@ BOOL WINAPI GetVersionExW(LPOSVERSIONINFOW lpVersionInformation) {
 	}
 
 	lpVersionInformation->dwOSVersionInfoSize = size;
+	return TRUE;
+}
+
+ULONGLONG WINAPI VerSetConditionMask(ULONGLONG ConditionMask, DWORD TypeMask, BYTE Condition) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("VerSetConditionMask(0x%llx, 0x%x, %u)\n", ConditionMask, TypeMask, Condition);
+	return ntdll::VerSetConditionMask(ConditionMask, TypeMask, Condition);
+}
+
+BOOL WINAPI VerifyVersionInfoA(LPOSVERSIONINFOEXA lpVersionInformation, DWORD dwTypeMask, ULONGLONG dwlConditionMask) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("VerifyVersionInfoA(%p, 0x%x, 0x%llx)\n", lpVersionInformation, dwTypeMask, dwlConditionMask);
+	const DWORD error = verifyVersionConditions(lpVersionInformation, dwTypeMask, dwlConditionMask);
+	if (error != ERROR_SUCCESS) {
+		setLastError(error);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+BOOL WINAPI VerifyVersionInfoW(LPOSVERSIONINFOEXW lpVersionInformation, DWORD dwTypeMask, ULONGLONG dwlConditionMask) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("VerifyVersionInfoW(%p, 0x%x, 0x%llx)\n", lpVersionInformation, dwTypeMask, dwlConditionMask);
+	const DWORD error = verifyVersionConditions(lpVersionInformation, dwTypeMask, dwlConditionMask);
+	if (error != ERROR_SUCCESS) {
+		setLastError(error);
+		return FALSE;
+	}
 	return TRUE;
 }
 

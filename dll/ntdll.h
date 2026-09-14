@@ -2,6 +2,8 @@
 
 #include "types.h"
 
+struct RTL_CRITICAL_SECTION;
+
 using PIO_APC_ROUTINE = PVOID;
 
 typedef struct _IO_STATUS_BLOCK {
@@ -67,7 +69,9 @@ VOID WINAPI RtlInitializeBitMap(PRTL_BITMAP BitMapHeader, PULONG BitMapBuffer, U
 VOID WINAPI RtlSetBits(PRTL_BITMAP BitMapHeader, ULONG StartingIndex, ULONG NumberToSet);
 BOOLEAN WINAPI RtlAreBitsSet(PRTL_BITMAP BitMapHeader, ULONG StartingIndex, ULONG Length);
 BOOLEAN WINAPI RtlAreBitsClear(PRTL_BITMAP BitMapHeader, ULONG StartingIndex, ULONG Length);
+BOOL WINAPI RtlIsCriticalSectionLockedByThread(RTL_CRITICAL_SECTION *CriticalSection);
 NTSTATUS WINAPI RtlGetVersion(PRTL_OSVERSIONINFOW lpVersionInformation);
+ULONGLONG WINAPI VerSetConditionMask(ULONGLONG ConditionMask, DWORD TypeMask, BYTE Condition);
 NTSTATUS WINAPI NtQueryInformationProcess(HANDLE ProcessHandle, PROCESSINFOCLASS ProcessInformationClass,
 										  PVOID ProcessInformation, ULONG ProcessInformationLength,
 										  PULONG ReturnLength);

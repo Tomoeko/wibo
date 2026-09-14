@@ -10,6 +10,7 @@
 #include "kernel32/internal.h"
 #include "kernel32/minwinbase.h"
 #include "kernel32/processthreadsapi.h"
+#include "kernel32/synchapi.h"
 #include "modules.h"
 #include "processes.h"
 #include "strutil.h"
@@ -183,11 +184,6 @@ std::string windowsImagePathFor(const ProcessHandleDetails &details) {
 }
 
 } // namespace
-
-namespace kernel32 {
-BOOL WINAPI SetEvent(HANDLE hEvent);
-BOOL WINAPI ResetEvent(HANDLE hEvent);
-} // namespace kernel32
 
 namespace ntdll {
 
@@ -729,6 +725,32 @@ BOOLEAN WINAPI RtlAreBitsClear(PRTL_BITMAP BitMapHeader, ULONG StartingIndex, UL
 
 	DEBUG_LOG("-> %u\n", TRUE);
 	return TRUE;
+}
+
+BOOL WINAPI RtlIsCriticalSectionLockedByThread(RTL_CRITICAL_SECTION *CriticalSection) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlIsCriticalSectionLockedByThread(%p)\n", CriticalSection);
+	if (!CriticalSection) {
+		return FALSE;
+	}
+	const HANDLE currentThread = static_cast<HANDLE>(kernel32::GetCurrentThreadId());
+	const HANDLE owner = __atomic_load_n(&CriticalSection->OwningThread, __ATOMIC_ACQUIRE);
+	// Read the owner-only recursion field only when this thread owns the lock.
+	// Ownership publication uses the same acquire/release pair as kernel32.
+	return owner == currentThread && CriticalSection->RecursionCount != 0;
+}
+
+ULONGLONG WINAPI VerSetConditionMask(ULONGLONG ConditionMask, DWORD TypeMask, BYTE Condition) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("VerSetConditionMask(0x%llx, 0x%x, %u)\n", ConditionMask, TypeMask, Condition);
+	// Each recognized version field has a three-bit operator. Existing bits
+	// accumulate; one call selects only the highest recognized field bit.
+	for (unsigned int bit = 8; bit != 0; --bit) {
+		if (TypeMask & (1u << (bit - 1))) {
+			return ConditionMask | (static_cast<ULONGLONG>(Condition & 7) << (3 * (bit - 1)));
+		}
+	}
+	return ConditionMask;
 }
 
 NTSTATUS WINAPI RtlGetVersion(PRTL_OSVERSIONINFOW lpVersionInformation) {

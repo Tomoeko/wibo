@@ -100,6 +100,27 @@ struct OSVERSIONINFOEXW : OSVERSIONINFOW {
 
 using LPOSVERSIONINFOEXW = OSVERSIONINFOEXW *;
 
+enum : DWORD {
+	VER_MINORVERSION = 0x01,
+	VER_MAJORVERSION = 0x02,
+	VER_BUILDNUMBER = 0x04,
+	VER_PLATFORMID = 0x08,
+	VER_SERVICEPACKMINOR = 0x10,
+	VER_SERVICEPACKMAJOR = 0x20,
+	VER_SUITENAME = 0x40,
+	VER_PRODUCT_TYPE = 0x80,
+};
+
+enum : BYTE {
+	VER_EQUAL = 1,
+	VER_GREATER = 2,
+	VER_GREATER_EQUAL = 3,
+	VER_LESS = 4,
+	VER_LESS_EQUAL = 5,
+	VER_AND = 6,
+	VER_OR = 7,
+};
+
 namespace kernel32 {
 
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
@@ -111,5 +132,8 @@ DWORD WINAPI GetTickCount();
 DWORD WINAPI GetVersion();
 BOOL WINAPI GetVersionExA(LPOSVERSIONINFOA lpVersionInformation);
 BOOL WINAPI GetVersionExW(LPOSVERSIONINFOW lpVersionInformation);
+ULONGLONG WINAPI VerSetConditionMask(ULONGLONG ConditionMask, DWORD TypeMask, BYTE Condition);
+BOOL WINAPI VerifyVersionInfoA(LPOSVERSIONINFOEXA lpVersionInformation, DWORD dwTypeMask, ULONGLONG dwlConditionMask);
+BOOL WINAPI VerifyVersionInfoW(LPOSVERSIONINFOEXW lpVersionInformation, DWORD dwTypeMask, ULONGLONG dwlConditionMask);
 
 } // namespace kernel32
