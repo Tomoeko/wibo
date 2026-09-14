@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -47,6 +49,33 @@ constexpr REGSAM kLegacyOpenAccess = 0x02000000; // MAXIMUM_ALLOWED
 
 std::mutex g_registryMutex;
 std::unordered_set<std::u16string> g_existingKeys;
+
+struct RegistryValue {
+	DWORD type;
+	std::vector<BYTE> data;
+};
+
+// Values belong to a key path, not an open handle. The registry is process-local;
+// this does not add persistence, ACL checks, or separate WOW64 registry views.
+using RegistryValues = std::unordered_map<std::u16string, RegistryValue>;
+std::unordered_map<std::u16string, RegistryValues> g_registryValues;
+constexpr DWORD kRegSz = 1;
+constexpr DWORD kRegExpandSz = 2;
+constexpr DWORD kRegMultiSz = 7;
+constexpr LSTATUS kErrorMoreData = 234;
+
+bool isRegistryString(DWORD type) { return type == kRegSz || type == kRegExpandSz || type == kRegMultiSz; }
+
+std::u16string canonicalizeValueName(LPCWSTR name) {
+	std::u16string result;
+	if (name) {
+		for (; *name; ++name) {
+			result.push_back(static_cast<char16_t>(wcharToLower(*name)));
+		}
+	}
+	// Unlike key paths, slash characters are literal parts of a value name.
+	return result;
+}
 
 std::u16string canonicalizeKeySegment(const std::u16string &input) {
 	std::u16string result;
@@ -118,6 +147,81 @@ Pin<RegistryKeyObject> handleDataFromHKeyLocked(HKEY hKey) {
 bool isPredefinedKeyHandle(HKEY hKey) {
 	return std::any_of(std::begin(kPredefinedKeyInfos), std::end(kPredefinedKeyInfos),
 					   [hKey](const PredefinedKeyInfo &info) { return info.value == hKey; });
+}
+
+LSTATUS setRegistryValue(HKEY key, LPCWSTR name, DWORD reserved, DWORD type, const BYTE *data, DWORD size, bool ansi) {
+	if (reserved || (!data && size)) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	std::lock_guard<std::mutex> lock(g_registryMutex);
+	auto handle = handleDataFromHKeyLocked(key);
+	if (!handle) {
+		return ERROR_INVALID_HANDLE;
+	}
+	RegistryValue value{type, {}};
+	if (ansi && isRegistryString(type)) {
+		if (size > std::numeric_limits<DWORD>::max() / sizeof(WCHAR)) {
+			return ERROR_NOT_ENOUGH_MEMORY;
+		}
+		// Match the existing shim's byte-to-U+00xx ACP mapping, with an
+		// explicit byte count so embedded MULTI_SZ separators are retained.
+		// General Windows code-page conversion remains unsupported.
+		value.data.resize(static_cast<size_t>(size) * sizeof(WCHAR));
+		for (size_t i = 0; i < size; ++i) {
+			value.data[2 * i] = data[i];
+			value.data[2 * i + 1] = 0;
+		}
+	} else if (size) {
+		value.data.assign(data, data + size);
+	}
+	g_registryValues[handle->canonicalPath].insert_or_assign(canonicalizeValueName(name), std::move(value));
+	return ERROR_SUCCESS;
+}
+
+LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWORD type, BYTE *data, LPDWORD size,
+						   bool ansi) {
+	if (reserved || (data && !size)) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	std::lock_guard<std::mutex> lock(g_registryMutex);
+	auto handle = handleDataFromHKeyLocked(key);
+	if (!handle) {
+		return ERROR_INVALID_HANDLE;
+	}
+	auto keyValues = g_registryValues.find(handle->canonicalPath);
+	if (keyValues == g_registryValues.end()) {
+		return ERROR_FILE_NOT_FOUND;
+	}
+	auto entry = keyValues->second.find(canonicalizeValueName(name));
+	if (entry == keyValues->second.end()) {
+		return ERROR_FILE_NOT_FOUND;
+	}
+	const RegistryValue &value = entry->second;
+	const bool narrowString = ansi && isRegistryString(value.type);
+	const DWORD required = static_cast<DWORD>(narrowString ? value.data.size() / sizeof(WCHAR) : value.data.size());
+	const DWORD capacity = data ? *size : 0;
+	if (type) {
+		*type = value.type;
+	}
+	if (size) {
+		*size = required;
+	}
+	if (!data) {
+		return ERROR_SUCCESS;
+	}
+	if (capacity < required) {
+		return kErrorMoreData;
+	}
+	if (narrowString) {
+		// The existing ACP facade narrows UTF-16 to its low byte. Full
+		// Unicode-to-ACP conversion is not claimed by this implementation.
+		for (size_t i = 0; i < required; ++i) {
+			data[i] = value.data[2 * i];
+		}
+	} else if (required) {
+		std::memcpy(data, value.data.data(), required);
+	}
+	return ERROR_SUCCESS;
 }
 
 } // namespace
@@ -316,39 +420,36 @@ LSTATUS WINAPI RegOpenKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGSAM
 	return RegOpenKeyExW(hKey, widePtr, ulOptions, samDesired, phkResult);
 }
 
-LSTATUS WINAPI RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, BYTE *lpData,
-								  LPDWORD lpcbData) {
+LSTATUS WINAPI RegSetValueExW(HKEY hKey, LPCWSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE *lpData,
+							  DWORD cbData) {
 	HOST_CONTEXT_GUARD();
-	std::string valueName = lpValueName ? wideStringToString(lpValueName) : std::string("(default)");
-	DEBUG_LOG("RegQueryValueExW(%p, %s, %p, %p, %p, %p)\n", hKey, valueName.c_str(), lpReserved, lpType, lpData,
-			  lpcbData);
-	if (lpReserved) {
-		kernel32::setLastError(ERROR_INVALID_PARAMETER);
-		return ERROR_INVALID_PARAMETER;
-	}
-	if (lpcbData) {
-		*lpcbData = 0;
-	}
-	if (lpType) {
-		*lpType = 0;
-	}
-	(void)hKey;
-	(void)lpData;
-	kernel32::setLastError(ERROR_FILE_NOT_FOUND);
-	return ERROR_FILE_NOT_FOUND;
+	DEBUG_LOG("RegSetValueExW(%p, %p, %u, %u, %p, %u)\n", hKey, lpValueName, Reserved, dwType, lpData, cbData);
+	return setRegistryValue(hKey, lpValueName, Reserved, dwType, lpData, cbData, false);
+}
+
+LSTATUS WINAPI RegSetValueExA(HKEY hKey, LPCSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE *lpData,
+							  DWORD cbData) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegSetValueExA(%p, %s, %u, %u, %p, %u)\n", hKey, lpValueName ? lpValueName : "(default)", Reserved,
+			  dwType, lpData, cbData);
+	const auto name = stringToWideString(lpValueName);
+	return setRegistryValue(hKey, name.data(), Reserved, dwType, lpData, cbData, true);
+}
+
+LSTATUS WINAPI RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, BYTE *lpData,
+								LPDWORD lpcbData) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegQueryValueExW(%p, %p, %p, %p, %p, %p)\n", hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+	return queryRegistryValue(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData, false);
 }
 
 LSTATUS WINAPI RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, BYTE *lpData,
-								  LPDWORD lpcbData) {
+								LPDWORD lpcbData) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("RegQueryValueExA(%p, %s, %p, %p, %p, %p)\n", hKey, lpValueName ? lpValueName : "(null)", lpReserved,
+	DEBUG_LOG("RegQueryValueExA(%p, %s, %p, %p, %p, %p)\n", hKey, lpValueName ? lpValueName : "(default)", lpReserved,
 			  lpType, lpData, lpcbData);
-	std::vector<uint16_t> valueWideStorage;
-	if (lpValueName) {
-		valueWideStorage = stringToWideString(lpValueName);
-	}
-	return RegQueryValueExW(hKey, lpValueName ? reinterpret_cast<LPCWSTR>(valueWideStorage.data()) : nullptr,
-							lpReserved, lpType, lpData, lpcbData);
+	const auto name = stringToWideString(lpValueName);
+	return queryRegistryValue(hKey, name.data(), lpReserved, lpType, lpData, lpcbData, true);
 }
 
 LSTATUS WINAPI RegEnumKeyExW(HKEY hKey, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved,
