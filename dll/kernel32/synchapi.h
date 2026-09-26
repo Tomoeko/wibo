@@ -5,6 +5,7 @@
 
 constexpr DWORD WAIT_OBJECT_0 = 0x00000000;
 constexpr DWORD WAIT_ABANDONED = 0x00000080;
+constexpr DWORD WAIT_IO_COMPLETION = 0x000000C0;
 constexpr DWORD WAIT_TIMEOUT = 0x00000102;
 constexpr DWORD WAIT_FAILED = 0xFFFFFFFF;
 constexpr DWORD INFINITE = 0xFFFFFFFF;
@@ -93,6 +94,7 @@ using PCONDITION_VARIABLE = CONDITION_VARIABLE *;
 namespace kernel32 {
 
 void WINAPI Sleep(DWORD dwMilliseconds);
+DWORD WINAPI SleepEx(DWORD dwMilliseconds, BOOL bAlertable);
 HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access);
 BOOL WINAPI SetWaitableTimer(HANDLE handle, const LARGE_INTEGER *dueTime, LONG period, GUEST_PTR callback,
 							 LPVOID callbackArgument, BOOL resume);

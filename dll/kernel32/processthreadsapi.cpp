@@ -149,6 +149,7 @@ void threadCleanup(void *param) {
 	if (!obj) {
 		return;
 	}
+	kernel32::closeApcState();
 	{
 		std::lock_guard lk(obj->m);
 		obj->signaled = true;
@@ -173,6 +174,7 @@ void *threadTrampoline(void *param) {
 	delete dataPtr;
 
 	g_currentThreadObject = data.obj;
+	kernel32::installApcState(data.obj->apc);
 
 	// Install TIB
 	TEB *threadTib = wibo::allocateTib();
@@ -187,6 +189,9 @@ void *threadTrampoline(void *param) {
 	{
 		std::unique_lock lk(data.obj->m);
 		data.obj->tib = threadTib;
+		data.obj->threadId = wibo::getThreadId();
+		data.obj->initialized = true;
+		data.obj->cv.notify_all();
 		if (data.obj->suspendCount) {
 			DEBUG_LOG("Thread is suspended at start; waiting...\n");
 			data.obj->cv.wait(lk, [&] { return data.obj->suspendCount == 0; });
@@ -194,6 +199,7 @@ void *threadTrampoline(void *param) {
 	}
 
 	wibo::notifyDllThreadAttach();
+	kernel32::dispatchPendingApcs();
 	DEBUG_LOG("Calling thread entry %p with userData %p\n", data.entry, data.userData);
 	DWORD result = 0;
 	if (data.entry) {
@@ -657,13 +663,15 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 		return INVALID_HANDLE_VALUE;
 	}
 
-	std::size_t hashed = std::hash<pthread_t>{}(obj->thread);
-	obj->threadId = static_cast<DWORD>(hashed & 0xffffffffu);
+	{
+		std::unique_lock lock(obj->m);
+		obj->cv.wait(lock, [&] { return obj->initialized; });
+	}
 	if (lpThreadId) {
 		*lpThreadId = obj->threadId;
 	}
 
-	return wibo::handles().alloc(std::move(obj), 0 /* TODO */, 0);
+	return wibo::handles().alloc(std::move(obj), 0x1FFFFF, 0);
 }
 
 [[noreturn]] void WINAPI ExitThread(DWORD dwExitCode) {

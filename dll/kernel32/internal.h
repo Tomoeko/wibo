@@ -89,14 +89,32 @@ constexpr pthread_t pthread_null = 0;
 constexpr pthread_t pthread_null = nullptr;
 #endif
 
+struct ApcState final : WaitableObject {
+	struct Entry {
+		GUEST_PTR callback;
+		ULONG_PTR argument;
+	};
+	std::deque<Entry> pending;
+	bool terminated = false;
+	ApcState() : WaitableObject(ObjectType::ApcQueue) {}
+};
+
+std::shared_ptr<ApcState> currentApcState();
+void installApcState(std::shared_ptr<ApcState> state);
+void closeApcState();
+bool dispatchPendingApcs();
+DWORD waitAlertable(HANDLE handle, WaitableObject *object, DWORD milliseconds);
+
 struct ThreadObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Thread;
 
 	pthread_t thread;
 	DWORD threadId = 0;
+	bool initialized = false;
 	DWORD exitCode = STILL_ACTIVE;
 	unsigned int suspendCount = 0;
 	TEB *tib = nullptr;
+	std::shared_ptr<ApcState> apc = std::make_shared<ApcState>();
 
 	explicit ThreadObject(pthread_t thread = pthread_null) : WaitableObject(kType), thread(thread) {}
 

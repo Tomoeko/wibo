@@ -56,7 +56,10 @@ BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, H
 		return TRUE;
 	} else if (isPseudoCurrentThreadHandle(hSourceHandle)) {
 		auto th = make_pin<ThreadObject>(pthread_self());
-		auto handle = handles.alloc(std::move(th), 0, 0);
+		th->apc = currentApcState();
+		th->threadId = currentThreadTeb->ClientId.UniqueThread;
+		const auto access = (dwOptions & DUPLICATE_SAME_ACCESS) ? 0x1FFFFF : dwDesiredAccess;
+		auto handle = handles.alloc(std::move(th), access, bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
 		DEBUG_LOG("DuplicateHandle: created thread handle for current thread -> %p\n", handle);
 		*lpTargetHandle = handle;
 		return TRUE;

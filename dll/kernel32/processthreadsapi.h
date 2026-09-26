@@ -71,8 +71,11 @@ constexpr DWORD TLS_OUT_OF_INDEXES = 0xFFFFFFFFu;
 constexpr DWORD NORMAL_PRIORITY_CLASS = 0x00000020;
 
 typedef DWORD(_CC_STDCALL *LPTHREAD_START_ROUTINE)(LPVOID);
+typedef void(_CC_STDCALL *PAPCFUNC)(ULONG_PTR);
 
 namespace kernel32 {
+
+DWORD WINAPI QueueUserAPC(PAPCFUNC callback, HANDLE thread, ULONG_PTR argument);
 
 BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
 											 DWORD dwFlags, SIZE_T *lpSize);

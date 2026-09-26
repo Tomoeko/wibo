@@ -498,7 +498,17 @@ namespace kernel32 {
 void WINAPI Sleep(DWORD dwMilliseconds) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("Sleep(%u)\n", dwMilliseconds);
-	usleep(static_cast<useconds_t>(dwMilliseconds) * 1000);
+	if (!dwMilliseconds) {
+		std::this_thread::yield();
+		return;
+	}
+	std::mutex mutex;
+	std::condition_variable cv;
+	std::unique_lock lock(mutex);
+	if (dwMilliseconds == INFINITE)
+		cv.wait(lock, [] { return false; });
+	else
+		cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds), [] { return false; });
 }
 
 HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName) {
@@ -755,8 +765,18 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bA
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("WaitForSingleObjectEx(%p, %u, %d)\n", hHandle, dwMilliseconds, bAlertable);
 	if (bAlertable) {
-		setLastError(ERROR_NOT_SUPPORTED);
-		return WAIT_FAILED;
+		HandleMeta metadata{};
+		auto pin = wibo::handles().get(hHandle, &metadata);
+		auto *object = detail::castTo<WaitableObject>(pin.get());
+		if (!object) {
+			setLastError(ERROR_INVALID_HANDLE);
+			return WAIT_FAILED;
+		}
+		if (object->type == ObjectType::Timer && !(metadata.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
+		return waitAlertable(hHandle, object, dwMilliseconds);
 	}
 	return WaitForSingleObject(hHandle, dwMilliseconds);
 }

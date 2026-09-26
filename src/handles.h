@@ -32,6 +32,7 @@ enum class ObjectType : uint16_t {
 	ToolhelpSnapshot,
 	UserImage,
 	Timer,
+	ApcQueue,
 };
 
 enum ObjectFlags : uint16_t {
