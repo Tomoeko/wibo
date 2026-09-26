@@ -148,6 +148,41 @@ StatFetchResult fetchStat(kernel32::FsObject *fs, struct stat &st) {
 	return StatFetchResult{};
 }
 
+void populateBasicInformation(const struct stat &st, FILE_BASIC_INFORMATION &info) {
+	info = {};
+#ifdef __APPLE__
+	info.CreationTime.QuadPart = timespecToFileTime(st.st_birthtimespec);
+#else
+	info.CreationTime.QuadPart = timespecToFileTime(changeTimespec(st));
+#endif
+	info.LastAccessTime.QuadPart = timespecToFileTime(accessTimespec(st));
+	info.LastWriteTime.QuadPart = timespecToFileTime(modifyTimespec(st));
+	info.ChangeTime.QuadPart = timespecToFileTime(changeTimespec(st));
+	info.FileAttributes = buildFileAttributes(st);
+}
+
+void populateStandardInformation(const kernel32::FsObject &file, const struct stat &st,
+								 FILE_STANDARD_INFORMATION &info) {
+	info = {};
+	info.AllocationSize.QuadPart = static_cast<LONGLONG>(st.st_blocks) * 512;
+	info.EndOfFile.QuadPart = static_cast<LONGLONG>(st.st_size);
+	info.NumberOfLinks = static_cast<ULONG>(st.st_nlink);
+	info.DeletePending = file.deletePending ? TRUE : FALSE;
+	info.Directory = S_ISDIR(st.st_mode) ? TRUE : FALSE;
+}
+
+std::vector<WCHAR> fileInformationName(const kernel32::FsObject &file) {
+	std::string path = file.canonicalPath.empty() ? "" : files::pathToWindows(file.canonicalPath);
+	if (path.size() >= 2 && path[1] == ':')
+		path.erase(0, 2);
+	if (!path.empty() && path.front() != '\\')
+		path.insert(path.begin(), '\\');
+	auto wide = stringToWideString(path.c_str(), path.size());
+	if (!wide.empty())
+		wide.pop_back(); // Native file names are byte-counted and exclude a terminator.
+	return wide;
+}
+
 bool resolveProcessDetails(HANDLE processHandle, ProcessHandleDetails &details) {
 	if (kernel32::isPseudoCurrentProcessHandle(processHandle)) {
 		details.pid = getpid();
@@ -472,7 +507,8 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 		return STATUS_OBJECT_TYPE_MISMATCH;
 	}
 
-	auto obj = wibo::handles().getAs<kernel32::FsObject>(FileHandle);
+	HandleMeta metadata{};
+	auto obj = wibo::handles().getAs<kernel32::FsObject>(FileHandle, &metadata);
 	if (!obj || !obj->valid()) {
 		IoStatusBlock->Status = STATUS_INVALID_HANDLE;
 		DEBUG_LOG("-> 0x%x\n", STATUS_INVALID_HANDLE);
@@ -495,11 +531,7 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			break;
 		}
 		auto info = reinterpret_cast<PFILE_BASIC_INFORMATION>(FileInformation);
-		info->CreationTime.QuadPart = timespecToFileTime(changeTimespec(st));
-		info->LastAccessTime.QuadPart = timespecToFileTime(accessTimespec(st));
-		info->LastWriteTime.QuadPart = timespecToFileTime(modifyTimespec(st));
-		info->ChangeTime.QuadPart = timespecToFileTime(changeTimespec(st));
-		info->FileAttributes = buildFileAttributes(st);
+		populateBasicInformation(st, *info);
 		IoStatusBlock->Information = sizeof(FILE_BASIC_INFORMATION);
 		break;
 	}
@@ -515,13 +547,7 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			break;
 		}
 		auto info = reinterpret_cast<PFILE_STANDARD_INFORMATION>(FileInformation);
-		unsigned long long allocation = static_cast<unsigned long long>(st.st_blocks) * 512ULL;
-		info->AllocationSize.QuadPart = static_cast<LONGLONG>(allocation);
-		info->EndOfFile.QuadPart = static_cast<LONGLONG>(st.st_size);
-		info->NumberOfLinks = static_cast<ULONG>(st.st_nlink);
-		info->DeletePending = obj->deletePending ? TRUE : FALSE;
-		info->Directory = S_ISDIR(st.st_mode) ? TRUE : FALSE;
-		info->Reserved = 0;
+		populateStandardInformation(*obj, st, *info);
 		IoStatusBlock->Information = sizeof(FILE_STANDARD_INFORMATION);
 		break;
 	}
@@ -540,32 +566,63 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 		IoStatusBlock->Information = sizeof(FILE_POSITION_INFORMATION);
 		break;
 	}
+	case FileAllInformation: {
+		static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation.FileName) == 100);
+		if (Length < sizeof(FILE_ALL_INFORMATION)) {
+			status = STATUS_INFO_LENGTH_MISMATCH;
+			break;
+		}
+		// The mapped backend has byte alignment and does not implement uncached I/O.
+		if (obj->openFlags & FILE_FLAG_NO_BUFFERING) {
+			status = STATUS_NOT_SUPPORTED;
+			break;
+		}
+		struct stat st{};
+		const auto fetched = fetchStat(obj.get(), st);
+		if (!fetched.ok) {
+			status = wibo::statusFromErrno(fetched.err ? fetched.err : EINVAL);
+			break;
+		}
+		FILE_ALL_INFORMATION info{};
+		populateBasicInformation(st, info.BasicInformation);
+		populateStandardInformation(*obj, st, info.StandardInformation);
+		info.IndexNumber.QuadPart = static_cast<LONGLONG>(st.st_ino);
+		// Extended attributes are not represented by this mapped filesystem.
+		info.EaSize = 0;
+		info.AccessFlags = metadata.grantedAccess;
+		if (obj->flags & Of_File) {
+			auto file = obj.clone().downcast<kernel32::FileObject>();
+			info.PositionInformation.CurrentByteOffset.QuadPart = file->filePos;
+		}
+		info.Mode = (obj->openFlags & FILE_FLAG_OVERLAPPED) ? 0 : 0x20; // FILE_SYNCHRONOUS_IO_NONALERT
+		if (obj->openFlags & FILE_FLAG_WRITE_THROUGH)
+			info.Mode |= 0x2;
+		if (obj->openFlags & 0x08000000) // FILE_FLAG_SEQUENTIAL_SCAN
+			info.Mode |= 0x4;
+		if (obj->deletePending)
+			info.Mode |= 0x1000;
+		info.AlignmentRequirement = 0; // FILE_BYTE_ALIGNMENT
+		const auto name = fileInformationName(*obj);
+		const size_t required = name.size() * sizeof(WCHAR);
+		constexpr size_t prefix = offsetof(FILE_ALL_INFORMATION, NameInformation.FileName);
+		const size_t copied = std::min(required, static_cast<size_t>(Length) - prefix);
+		info.NameInformation.FileNameLength = static_cast<ULONG>(required);
+		std::memcpy(FileInformation, &info, prefix);
+		if (copied)
+			std::memcpy(static_cast<BYTE *>(FileInformation) + prefix, name.data(), copied);
+		IoStatusBlock->Information = prefix + copied;
+		if (copied < required)
+			status = static_cast<NTSTATUS>(0x80000005); // STATUS_BUFFER_OVERFLOW
+		break;
+	}
 	case FileNameInformation: {
 		if (Length < sizeof(ULONG)) {
 			status = STATUS_INFO_LENGTH_MISMATCH;
 			break;
 		}
-		std::string windowsPath;
-		if (!obj->canonicalPath.empty()) {
-			windowsPath = files::pathToWindows(obj->canonicalPath);
-		}
-		std::string volumeRelative;
-		if (!windowsPath.empty()) {
-			if (windowsPath.size() >= 2 && windowsPath[1] == ':') {
-				volumeRelative = windowsPath.substr(2);
-				if (volumeRelative.empty() || volumeRelative.front() != '\\') {
-					volumeRelative.insert(volumeRelative.begin(), '\\');
-				}
-			} else if (!windowsPath.empty() && windowsPath.front() != '\\') {
-				volumeRelative = "\\" + windowsPath;
-			} else {
-				volumeRelative = windowsPath;
-			}
-		}
 		auto info = reinterpret_cast<PFILE_NAME_INFORMATION>(FileInformation);
-		auto wide = stringToWideString(volumeRelative.c_str(), volumeRelative.size());
-		size_t charCount = wide.empty() ? 0 : wstrlen(wide.data());
-		size_t bytesRequired = charCount * sizeof(uint16_t);
+		const auto wide = fileInformationName(*obj);
+		size_t bytesRequired = wide.size() * sizeof(WCHAR);
 		if (Length < sizeof(ULONG) + bytesRequired) {
 			info->FileNameLength = static_cast<ULONG>(bytesRequired);
 			status = STATUS_INFO_LENGTH_MISMATCH;

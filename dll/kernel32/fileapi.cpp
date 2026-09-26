@@ -45,9 +45,6 @@ const FILETIME kDefaultFindFileTime = {
 	static_cast<DWORD>((kSecondsBetween1601And1970 * kWindowsTicksPerSecond) & 0xFFFFFFFFULL),
 	static_cast<DWORD>((kSecondsBetween1601And1970 * kWindowsTicksPerSecond) >> 32)};
 
-const FILETIME kDefaultFileInformationTime = {static_cast<DWORD>(UNIX_TIME_ZERO & 0xFFFFFFFFULL),
-											  static_cast<DWORD>(UNIX_TIME_ZERO >> 32)};
-
 using wibo::access::containsAny;
 
 constexpr DWORD kLockFailImmediately = 0x1;
@@ -286,9 +283,18 @@ DWORD buildFileAttributes(const struct stat &st, bool isDirectory) {
 	return attributes;
 }
 
+timespec creationTimespec(const struct stat &st) {
+#ifdef __APPLE__
+	return st.st_birthtimespec;
+#else
+	// Preserve the existing fallback on hosts whose stat has no birth timestamp.
+	return changeTimespec(st);
+#endif
+}
+
 void populateAttributeDataFromStat(const struct stat &st, bool isDirectory, WIN32_FILE_ATTRIBUTE_DATA &out) {
 	out.dwFileAttributes = buildFileAttributes(st, isDirectory);
-	toFileTime(changeTimespec(st), out.ftCreationTime);
+	toFileTime(creationTimespec(st), out.ftCreationTime);
 	toFileTime(accessTimespec(st), out.ftLastAccessTime);
 	toFileTime(modifyTimespec(st), out.ftLastWriteTime);
 	uint64_t fileSize = (isDirectory || !S_ISREG(st.st_mode)) ? 0ULL : static_cast<uint64_t>(st.st_size);
@@ -301,7 +307,7 @@ template <typename FindData> void populateFromStat(const FindSearchEntry &entry,
 	uint64_t fileSize = (entry.isDirectory || !S_ISREG(st.st_mode)) ? 0ULL : static_cast<uint64_t>(st.st_size);
 	out.nFileSizeHigh = static_cast<DWORD>(fileSize >> 32);
 	out.nFileSizeLow = static_cast<DWORD>(fileSize & 0xFFFFFFFFULL);
-	toFileTime(changeTimespec(st), out.ftCreationTime);
+	toFileTime(creationTimespec(st), out.ftCreationTime);
 	toFileTime(accessTimespec(st), out.ftLastAccessTime);
 	toFileTime(modifyTimespec(st), out.ftLastWriteTime);
 }
@@ -1215,6 +1221,7 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 	}
 	fsObject->canonicalPath = std::move(canonicalPath);
 	fsObject->shareAccess = shareMask;
+	fsObject->openFlags = dwFlagsAndAttributes;
 	fsObject->deletePending = deleteOnClose;
 
 	uint32_t handleFlags = 0;
@@ -1568,8 +1575,8 @@ BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLa
 		*target = result;
 		return true;
 	};
-	if (!assignFileTime(lpCreationTime, changeTimespec(st)) || !assignFileTime(lpLastAccessTime, accessTimespec(st)) ||
-		!assignFileTime(lpLastWriteTime, modifyTimespec(st))) {
+	if (!assignFileTime(lpCreationTime, creationTimespec(st)) ||
+		!assignFileTime(lpLastAccessTime, accessTimespec(st)) || !assignFileTime(lpLastWriteTime, modifyTimespec(st))) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
@@ -1654,7 +1661,7 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 		return FALSE;
 	}
 	HandleMeta meta{};
-	auto file = wibo::handles().getAs<FileObject>(hFile, &meta);
+	auto file = wibo::handles().getAs<FsObject>(hFile, &meta);
 	if (!file || !file->valid()) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
@@ -1665,22 +1672,18 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 		setLastErrorFromErrno();
 		return FALSE;
 	}
-	lpFileInformation->dwFileAttributes = 0;
-	if (S_ISDIR(st.st_mode)) {
-		lpFileInformation->dwFileAttributes |= FILE_ATTRIBUTE_DIRECTORY;
-	}
-	if (S_ISREG(st.st_mode)) {
-		lpFileInformation->dwFileAttributes |= FILE_ATTRIBUTE_NORMAL;
-	}
-	lpFileInformation->ftCreationTime = kDefaultFileInformationTime;
-	lpFileInformation->ftLastAccessTime = kDefaultFileInformationTime;
-	lpFileInformation->ftLastWriteTime = kDefaultFileInformationTime;
+	WIN32_FILE_ATTRIBUTE_DATA attributes{};
+	populateAttributeDataFromStat(st, S_ISDIR(st.st_mode), attributes);
+	lpFileInformation->dwFileAttributes = attributes.dwFileAttributes;
+	lpFileInformation->ftCreationTime = attributes.ftCreationTime;
+	lpFileInformation->ftLastAccessTime = attributes.ftLastAccessTime;
+	lpFileInformation->ftLastWriteTime = attributes.ftLastWriteTime;
 	lpFileInformation->dwVolumeSerialNumber = 0;
 	lpFileInformation->nFileSizeHigh = static_cast<DWORD>(static_cast<uint64_t>(st.st_size) >> 32);
 	lpFileInformation->nFileSizeLow = static_cast<DWORD>(st.st_size & 0xFFFFFFFFULL);
-	lpFileInformation->nNumberOfLinks = 1;
-	lpFileInformation->nFileIndexHigh = 0;
-	lpFileInformation->nFileIndexLow = 0;
+	lpFileInformation->nNumberOfLinks = static_cast<DWORD>(st.st_nlink);
+	lpFileInformation->nFileIndexHigh = static_cast<DWORD>(static_cast<uint64_t>(st.st_ino) >> 32);
+	lpFileInformation->nFileIndexLow = static_cast<DWORD>(st.st_ino);
 	return TRUE;
 }
 

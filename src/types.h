@@ -285,6 +285,18 @@ typedef struct _FILE_NAME_INFORMATION {
 	WCHAR FileName[1];
 } FILE_NAME_INFORMATION, *PFILE_NAME_INFORMATION;
 
+struct FILE_ALL_INFORMATION {
+	FILE_BASIC_INFORMATION BasicInformation;
+	FILE_STANDARD_INFORMATION StandardInformation;
+	LARGE_INTEGER IndexNumber;
+	ULONG EaSize;
+	ULONG AccessFlags;
+	FILE_POSITION_INFORMATION PositionInformation;
+	ULONG Mode;
+	ULONG AlignmentRequirement;
+	FILE_NAME_INFORMATION NameInformation;
+};
+
 struct GUID {
 	DWORD Data1;
 	WORD Data2;
