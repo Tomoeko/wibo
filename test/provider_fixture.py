@@ -57,6 +57,16 @@ elif operation == 'api-set-host':
     elif fault == 'contract-host':
         response = header() + text(arguments[0])
 
+elif operation == 'numa-highest-node-number':
+    response = header() + number(3)
+    fault = os.environ.get('WIBO_FIXTURE_NUMA_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)

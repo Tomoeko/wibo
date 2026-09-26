@@ -854,6 +854,23 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_overlapped_io PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_time SOURCES test/test_time.c)
         wibo_add_fixture_bin(NAME test_system_times SOURCES test/test_system_times.c)
+        wibo_add_fixture_bin(NAME test_numa_highest_node SOURCES test/test_numa_highest_node.c NO_TEST)
+        foreach(mode success failed truncated trailing unavailable)
+            add_test(NAME wibo.test_numa_highest_node_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_numa_highest_node.exe)
+            if(mode STREQUAL "unavailable")
+                set_tests_properties(wibo.test_numa_highest_node_${mode} PROPERTIES
+                    ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_NUMA_RESPONSE=unavailable")
+            else()
+                set_tests_properties(wibo.test_numa_highest_node_${mode} PROPERTIES
+                    ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1"
+                    TIMEOUT 15)
+                if(NOT mode STREQUAL "success")
+                    set_property(TEST wibo.test_numa_highest_node_${mode} APPEND PROPERTY
+                        ENVIRONMENT "WIBO_FIXTURE_NUMA_RESPONSE=${mode}")
+                endif()
+            endif()
+        endforeach()
         wibo_add_fixture_bin(NAME test_provider_stream SOURCES test/test_provider_stream.c NO_TEST)
         foreach(mode fresh concurrent exit truncated oversized timeout)
             add_test(NAME wibo.test_provider_stream_${mode}

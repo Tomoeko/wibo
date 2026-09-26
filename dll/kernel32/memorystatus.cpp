@@ -12,7 +12,6 @@
 #include <sys/resource.h>
 
 namespace {
-constexpr DWORD ERROR_INVALID_DATA = 13;
 
 bool availableVirtualMemory(uint64_t &total, uint64_t &available) {
 	SYSTEM_INFO system{};

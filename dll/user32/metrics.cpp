@@ -7,10 +7,6 @@
 
 #include <bit>
 
-namespace {
-constexpr DWORD ERROR_INVALID_DATA = 13;
-}
-
 namespace user32 {
 int WINAPI GetSystemMetrics(int index) {
 	HOST_CONTEXT_GUARD();

@@ -100,6 +100,16 @@ bool apiSetHost(const WCHAR *contract) {
 	return response.write();
 }
 
+bool numaHighestNodeNumber() {
+	ULONG highest = 0;
+	const BOOL result = GetNumaHighestNodeNumber(&highest);
+	Response response;
+	response.header(result ? ERROR_SUCCESS : GetLastError());
+	if (result)
+		response.number(highest);
+	return response.write();
+}
+
 bool timeZoneInformation() {
 	TIME_ZONE_INFORMATION zone{};
 	const DWORD state = GetTimeZoneInformation(&zone);
@@ -950,6 +960,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
+	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)
+		written = numaHighestNodeNumber();
 	else if (argc == 2 && wcscmp(argv[1], L"time-zone-information") == 0)
 		written = timeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"dynamic-time-zone-information") == 0)

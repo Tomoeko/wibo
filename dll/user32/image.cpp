@@ -17,8 +17,6 @@
 
 namespace {
 
-constexpr DWORD ERROR_INVALID_DATA = 13;
-
 struct BitmapData {
 	uint32_t width = 0, height = 0, stride = 0, planes = 0, bitsPerPixel = 0;
 	std::vector<uint8_t> bytes;

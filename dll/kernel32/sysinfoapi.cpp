@@ -5,6 +5,7 @@
 #include "errors.h"
 #include "internal.h"
 #include "ntdll.h"
+#include "system_provider.h"
 #include "timeutil.h"
 
 #include <algorithm>
@@ -163,6 +164,33 @@ DWORD verifyVersionConditions(const VersionInfo *requested, DWORD fields, ULONGL
 } // namespace
 
 namespace kernel32 {
+
+BOOL WINAPI GetNumaHighestNodeNumber(PULONG highestNodeNumber) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetNumaHighestNodeNumber(%p)\n", highestNodeNumber);
+	if (!highestNodeNumber) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"numa-highest-node-number"}, response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	uint32_t highest = 0;
+	if (!reader.header(status) || (status == ERROR_SUCCESS && !reader.number(highest)) || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (status != ERROR_SUCCESS) {
+		setLastError(static_cast<DWORD>(status));
+		return FALSE;
+	}
+	*highestNodeNumber = highest;
+	return TRUE;
+}
 
 DWORD WINAPI GetActiveProcessorCount(WORD groupNumber) {
 	HOST_CONTEXT_GUARD();

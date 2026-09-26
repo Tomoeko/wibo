@@ -69,7 +69,6 @@ struct RegistryValue {
 // this does not add persistence, ACL checks, or separate WOW64 registry views.
 using RegistryValues = std::unordered_map<std::u16string, RegistryValue>;
 std::unordered_map<std::u16string, RegistryValues> g_registryValues;
-constexpr LSTATUS kErrorInvalidData = 13;
 constexpr DWORD kRegSz = 1;
 constexpr DWORD kRegExpandSz = 2;
 constexpr DWORD kRegMultiSz = 7;
@@ -106,25 +105,25 @@ LSTATUS providerOpen(const std::u16string &path, const std::string &view) {
 	wibo::provider::Reader reader(response);
 	int32_t status = 0;
 	if (!reader.header(status))
-		return kErrorInvalidData;
+		return ERROR_INVALID_DATA;
 	RegistryValues values;
 	if (status == ERROR_SUCCESS && snapshot) {
 		uint32_t count = 0;
 		if (!reader.number(count) || count > 4096)
-			return kErrorInvalidData;
+			return ERROR_INVALID_DATA;
 		for (uint32_t i = 0; i < count; ++i) {
 			std::u16string name;
 			RegistryValue value;
 			if (!reader.text(name) || name.find(u'\0') != std::u16string::npos || !reader.number(value.type) ||
 				!reader.bytes(value.data))
-				return kErrorInvalidData;
+				return ERROR_INVALID_DATA;
 			const auto canonicalName = canonicalizeValueName(reinterpret_cast<LPCWSTR>(name.c_str()));
 			value.name = std::move(name);
 			values.insert_or_assign(canonicalName, std::move(value));
 		}
 	}
 	if (!reader.done())
-		return kErrorInvalidData;
+		return ERROR_INVALID_DATA;
 	if (snapshot && status == ERROR_SUCCESS)
 		g_providerSnapshots.emplace(cacheKey, std::move(values));
 	g_providerKeys.emplace(cacheKey, status);
@@ -160,13 +159,13 @@ LSTATUS providerQuery(const RegistryKeyObject &key, const std::u16string &name, 
 	wibo::provider::Reader reader(response);
 	int32_t status = 0;
 	if (!reader.header(status))
-		return kErrorInvalidData;
+		return ERROR_INVALID_DATA;
 	if (status == ERROR_SUCCESS) {
 		if (!reader.number(value.type) || !reader.bytes(value.data))
-			return kErrorInvalidData;
+			return ERROR_INVALID_DATA;
 	}
 	if (!reader.done())
-		return kErrorInvalidData;
+		return ERROR_INVALID_DATA;
 	g_providerValues.emplace(std::move(cacheKey), ProviderValue{status, value});
 	return status;
 }
@@ -421,7 +420,7 @@ LSTATUS prepareRegistryString(RegistryValue &value, bool expand) {
 	if (!isRegistryString(value.type))
 		return ERROR_SUCCESS;
 	if (value.data.size() % sizeof(WCHAR))
-		return kErrorInvalidData;
+		return ERROR_INVALID_DATA;
 	if (value.data.empty() || value.data[value.data.size() - 2] || value.data.back())
 		value.data.resize(value.data.size() + sizeof(WCHAR), 0);
 	if (value.type != kRegExpandSz || !expand)
