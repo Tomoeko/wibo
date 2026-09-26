@@ -857,6 +857,78 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 	return io.unixError == 0 && io.windowsError == 0;
 }
 
+namespace {
+
+Pin<FileObject> rangeLockFile(HANDLE handle) {
+	HandleMeta meta{};
+	auto file = wibo::handles().getAs<FileObject>(handle, &meta);
+	if (!file || !file->valid() || file->isPipe) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return {};
+	}
+	if (!(meta.grantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA))) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return {};
+	}
+	return file;
+}
+
+BOOL lockFileRange(HANDLE handle, DWORD flags, uint64_t start, uint64_t length, LPOVERLAPPED overlapped) {
+	auto file = rangeLockFile(handle);
+	if (!file)
+		return FALSE;
+	if (file->overlapped && !(flags & kLockFailImmediately)) {
+		// Pending asynchronous locks need cancellation and completion queue support.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const DWORD error =
+		files::lockRange(file.get(), start, length, (flags & kLockExclusive) != 0, (flags & kLockFailImmediately) == 0);
+	if (error) {
+		setLastError(error);
+		return FALSE;
+	}
+	if (overlapped)
+		detail::signalOverlappedEvent(file.get(), overlapped, STATUS_SUCCESS, 0);
+	return TRUE;
+}
+
+BOOL unlockFileRange(HANDLE handle, uint64_t start, uint64_t length, LPOVERLAPPED overlapped) {
+	auto file = rangeLockFile(handle);
+	if (!file)
+		return FALSE;
+	const DWORD error = files::unlockRange(file.get(), start, length);
+	if (error) {
+		setLastError(error);
+		return FALSE;
+	}
+	if (overlapped)
+		detail::signalOverlappedEvent(file.get(), overlapped, STATUS_SUCCESS, 0);
+	return TRUE;
+}
+
+} // namespace
+
+BOOL WINAPI LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow,
+					 DWORD nNumberOfBytesToLockHigh) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LockFile(%p, %u, %u, %u, %u)\n", hFile, dwFileOffsetLow, dwFileOffsetHigh, nNumberOfBytesToLockLow,
+			  nNumberOfBytesToLockHigh);
+	const uint64_t start = dwFileOffsetLow | (static_cast<uint64_t>(dwFileOffsetHigh) << 32);
+	const uint64_t length = nNumberOfBytesToLockLow | (static_cast<uint64_t>(nNumberOfBytesToLockHigh) << 32);
+	return lockFileRange(hFile, kLockFailImmediately | kLockExclusive, start, length, nullptr);
+}
+
+BOOL WINAPI UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToUnlockLow,
+					   DWORD nNumberOfBytesToUnlockHigh) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("UnlockFile(%p, %u, %u, %u, %u)\n", hFile, dwFileOffsetLow, dwFileOffsetHigh, nNumberOfBytesToUnlockLow,
+			  nNumberOfBytesToUnlockHigh);
+	const uint64_t start = dwFileOffsetLow | (static_cast<uint64_t>(dwFileOffsetHigh) << 32);
+	const uint64_t length = nNumberOfBytesToUnlockLow | (static_cast<uint64_t>(nNumberOfBytesToUnlockHigh) << 32);
+	return unlockFileRange(hFile, start, length, nullptr);
+}
+
 BOOL WINAPI LockFileEx(HANDLE hFile, DWORD dwFlags, DWORD dwReserved, DWORD nNumberOfBytesToLockLow,
 					   DWORD nNumberOfBytesToLockHigh, LPOVERLAPPED lpOverlapped) {
 	HOST_CONTEXT_GUARD();
@@ -866,31 +938,9 @@ BOOL WINAPI LockFileEx(HANDLE hFile, DWORD dwFlags, DWORD dwReserved, DWORD nNum
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	HandleMeta meta{};
-	auto file = wibo::handles().getAs<FileObject>(hFile, &meta);
-	if (!file || !file->valid() || file->isPipe) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return FALSE;
-	}
-	if (!(meta.grantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA))) {
-		setLastError(ERROR_ACCESS_DENIED);
-		return FALSE;
-	}
-	if (file->overlapped && !(dwFlags & kLockFailImmediately)) {
-		// Pending asynchronous locks need cancellation and completion queue support.
-		setLastError(ERROR_NOT_SUPPORTED);
-		return FALSE;
-	}
 	const uint64_t start = lpOverlapped->Offset | (static_cast<uint64_t>(lpOverlapped->OffsetHigh) << 32);
 	const uint64_t length = nNumberOfBytesToLockLow | (static_cast<uint64_t>(nNumberOfBytesToLockHigh) << 32);
-	const DWORD error = files::lockRange(file.get(), start, length, (dwFlags & kLockExclusive) != 0,
-										 (dwFlags & kLockFailImmediately) == 0);
-	if (error) {
-		setLastError(error);
-		return FALSE;
-	}
-	detail::signalOverlappedEvent(file.get(), lpOverlapped, STATUS_SUCCESS, 0);
-	return TRUE;
+	return lockFileRange(hFile, dwFlags, start, length, lpOverlapped);
 }
 
 BOOL WINAPI UnlockFileEx(HANDLE hFile, DWORD dwReserved, DWORD nNumberOfBytesToUnlockLow,
@@ -902,20 +952,9 @@ BOOL WINAPI UnlockFileEx(HANDLE hFile, DWORD dwReserved, DWORD nNumberOfBytesToU
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	auto file = wibo::handles().getAs<FileObject>(hFile);
-	if (!file || !file->valid() || file->isPipe) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return FALSE;
-	}
 	const uint64_t start = lpOverlapped->Offset | (static_cast<uint64_t>(lpOverlapped->OffsetHigh) << 32);
 	const uint64_t length = nNumberOfBytesToUnlockLow | (static_cast<uint64_t>(nNumberOfBytesToUnlockHigh) << 32);
-	const DWORD error = files::unlockRange(file.get(), start, length);
-	if (error) {
-		setLastError(error);
-		return FALSE;
-	}
-	detail::signalOverlappedEvent(file.get(), lpOverlapped, STATUS_SUCCESS, 0);
-	return TRUE;
+	return unlockFileRange(hFile, start, length, lpOverlapped);
 }
 
 BOOL WINAPI FlushFileBuffers(HANDLE hFile) {
