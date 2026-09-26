@@ -2,6 +2,7 @@
 
 #include "ws2.h"
 
+#include <atomic>
 #include <memory>
 #include <sys/socket.h>
 
@@ -10,6 +11,7 @@ namespace ws2::detail {
 struct Socket {
 	int descriptor;
 	int family;
+	std::atomic<bool> connecting = false;
 	explicit Socket(int descriptor, int family) : descriptor(descriptor), family(family) {}
 	~Socket();
 };

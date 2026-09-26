@@ -53,12 +53,71 @@ int main(void) {
 	TEST_CHECK(ordinalError != NULL);
 	TEST_CHECK_EQ(WSAECONNREFUSED, ordinalError());
 	TEST_CHECK_EQ(0, closesocket(client));
+	client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	TEST_CHECK(client != INVALID_SOCKET);
+	u_long nonblocking = 1;
+	TEST_CHECK_EQ(0, ioctlsocket(client, FIONBIO, &nonblocking));
+	TEST_CHECK_EQ(SOCKET_ERROR, connect(client, (SOCKADDR *)&destination, sizeof(destination)));
+	int error = WSAGetLastError();
+	TEST_CHECK(error == WSAEWOULDBLOCK || error == WSAECONNREFUSED);
+	if (error == WSAEWOULDBLOCK) {
+		fd_set writable, exceptional;
+		FD_ZERO(&writable);
+		FD_ZERO(&exceptional);
+		FD_SET(client, &writable);
+		FD_SET(client, &exceptional);
+		struct timeval timeout = {5, 0};
+		TEST_CHECK_EQ(1, select(0, NULL, &writable, &exceptional, &timeout));
+		TEST_CHECK_EQ(0, writable.fd_count);
+		TEST_CHECK_EQ(1, exceptional.fd_count);
+		int length = sizeof(error);
+		TEST_CHECK_EQ(0, getsockopt(client, SOL_SOCKET, SO_ERROR, (char *)&error, &length));
+		TEST_CHECK_EQ(WSAECONNREFUSED, error);
+		TEST_CHECK_EQ(0, WSAGetLastError());
+		if (getenv("WIBO_FIXTURE_RUNTIME")) {
+			TEST_CHECK_EQ(0, getsockopt(client, SOL_SOCKET, SO_ERROR, (char *)&error, &length));
+			TEST_CHECK_EQ(0, error);
+			FD_SET(client, &exceptional);
+			timeout.tv_sec = 0;
+			timeout.tv_usec = 20000;
+			TEST_CHECK_EQ(0, select(0, NULL, NULL, &exceptional, &timeout));
+		}
+	}
+	TEST_CHECK_EQ(0, closesocket(client));
 	const char *port = getenv("WIBO_TEST_SERVER_PORT");
 	if (port) {
 		client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		TEST_CHECK(client != INVALID_SOCKET);
 		destination.sin_port = htons((u_short)atoi(port));
-		TEST_CHECK_EQ(0, connect(client, (SOCKADDR *)&destination, sizeof(destination)));
+		TEST_CHECK_EQ(0, ioctlsocket(client, FIONBIO, &nonblocking));
+		int status = connect(client, (SOCKADDR *)&destination, sizeof(destination));
+		if (status == SOCKET_ERROR) {
+			TEST_CHECK_EQ(WSAEWOULDBLOCK, WSAGetLastError());
+			fd_set writable, exceptional;
+			FD_ZERO(&writable);
+			FD_ZERO(&exceptional);
+			FD_SET(client, &writable);
+			FD_SET(client, &exceptional);
+			struct timeval timeout = {5, 0};
+			TEST_CHECK_EQ(1, select(0, NULL, &writable, &exceptional, &timeout));
+			TEST_CHECK_EQ(1, writable.fd_count);
+			TEST_CHECK_EQ(0, exceptional.fd_count);
+			int length = sizeof(error);
+			TEST_CHECK_EQ(0, getsockopt(client, SOL_SOCKET, SO_ERROR, (char *)&error, &length));
+			TEST_CHECK_EQ(0, error);
+
+		} else
+			TEST_CHECK_EQ(0, status);
+		if (getenv("WIBO_TEST_OOB")) {
+			printf("READY\n");
+			fflush(stdout);
+			fd_set exceptional;
+			FD_ZERO(&exceptional);
+			FD_SET(client, &exceptional);
+			struct timeval timeout = {5, 0};
+			TEST_CHECK_EQ(1, select(0, NULL, NULL, &exceptional, &timeout));
+			TEST_CHECK_EQ(1, exceptional.fd_count);
+		}
 		TEST_CHECK_EQ(0, closesocket(client));
 	}
 	TEST_CHECK_EQ(0, WSACleanup());

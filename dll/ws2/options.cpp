@@ -155,6 +155,14 @@ int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *leng
 		if (option.kind == ValueKind::Boolean)
 			native = native != 0;
 		else if (option.kind == ValueKind::Error) {
+			if (native)
+				state->connecting.store(false);
+			else if (state->connecting.load()) {
+				sockaddr_storage peer{};
+				socklen_t size = sizeof(peer);
+				if (::getpeername(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &size) == 0)
+					state->connecting.store(false);
+			}
 			native = native ? detail::socketError(native) : 0;
 			detail::setLastError(0);
 		}

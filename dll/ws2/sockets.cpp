@@ -303,8 +303,12 @@ int WINAPI connect(SOCKET handle, LPCVOID address, int length) {
 		native.ss_len = nativeLength;
 #endif
 	}
-	if (::connect(state->descriptor, reinterpret_cast<sockaddr *>(&native), nativeLength) < 0)
-		return detail::failSocket(errno == EINPROGRESS ? 10035 : detail::socketError(errno));
+	state->connecting.store(false);
+	if (::connect(state->descriptor, reinterpret_cast<sockaddr *>(&native), nativeLength) < 0) {
+		const int error = errno;
+		state->connecting.store(error == EINPROGRESS || error == EALREADY);
+		return detail::failSocket(error == EINPROGRESS ? 10035 : detail::socketError(error));
+	}
 	return 0;
 }
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length) {

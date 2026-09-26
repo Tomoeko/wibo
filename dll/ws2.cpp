@@ -173,21 +173,6 @@ GUEST_PTR WINAPI gethostbyname(LPCSTR name) {
 	return GUEST_NULL;
 }
 
-int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, const void *timeout) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("select(%d, %p, %p, %p, %p)\n", nfds, readfds, writefds, exceptfds, timeout);
-	if (!requireStarted()) {
-		return SOCKET_ERROR;
-	}
-	(void)nfds;
-	(void)readfds;
-	(void)writefds;
-	(void)exceptfds;
-	(void)timeout;
-	setLastError(0);
-	return 0;
-}
-
 } // namespace ws2
 
 #include "ws2_trampolines.h"
