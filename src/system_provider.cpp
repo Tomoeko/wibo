@@ -1,6 +1,7 @@
 #include "system_provider.h"
 
 #include "common.h"
+#include "strutil.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -33,39 +34,7 @@ std::string encodeBytes(std::string_view input) {
 	return result;
 }
 
-bool encodeUtf8(std::u16string_view input, std::string &output) {
-	output.clear();
-	for (size_t i = 0; i < input.size(); ++i) {
-		uint32_t cp = input[i];
-		if (!cp) {
-			return false; // An argv entry cannot represent an embedded NUL.
-		}
-		if (cp >= 0xD800 && cp <= 0xDBFF) {
-			if (++i == input.size() || input[i] < 0xDC00 || input[i] > 0xDFFF) {
-				return false;
-			}
-			cp = 0x10000 + ((cp - 0xD800) << 10) + input[i] - 0xDC00;
-		} else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-			return false;
-		}
-		if (cp < 0x80) {
-			output.push_back(static_cast<char>(cp));
-		} else if (cp < 0x800) {
-			output.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-			output.push_back(static_cast<char>(0x80 | (cp & 63)));
-		} else if (cp < 0x10000) {
-			output.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-			output.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63)));
-			output.push_back(static_cast<char>(0x80 | (cp & 63)));
-		} else {
-			output.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-			output.push_back(static_cast<char>(0x80 | ((cp >> 12) & 63)));
-			output.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63)));
-			output.push_back(static_cast<char>(0x80 | (cp & 63)));
-		}
-	}
-	return true;
-}
+bool encodeUtf8(std::u16string_view input, std::string &output) { return utf16ToUtf8(input, output); }
 
 bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &response, int timeoutMs, bool *timedOut) {
 	response.clear();

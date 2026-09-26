@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+bool utf16ToUtf8(std::u16string_view input, std::string &output);
+
 size_t wstrlen(const uint16_t *str);
 size_t wstrnlen(const uint16_t *str, size_t numberOfElements);
 int wstrncmp(const uint16_t *string1, const uint16_t *string2, size_t count);

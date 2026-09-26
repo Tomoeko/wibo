@@ -1615,17 +1615,44 @@ BOOL WINAPI CreateDirectoryW(LPCWSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurit
 
 BOOL WINAPI RemoveDirectoryA(LPCSTR lpPathName) {
 	HOST_CONTEXT_GUARD();
-	if (!lpPathName) {
-		setLastError(ERROR_INVALID_PARAMETER);
+	if (!lpPathName || !*lpPathName) {
+		setLastError(ERROR_INVALID_NAME);
 		return FALSE;
 	}
 	std::string path = files::pathFromWindows(lpPathName);
 	DEBUG_LOG("RemoveDirectoryA(%s)\n", path.c_str());
 	if (rmdir(path.c_str()) != 0) {
-		setLastErrorFromErrno();
+		const int error = errno;
+		DWORD result = wibo::winErrorFromErrno(error);
+		struct stat st{};
+		if (error == ENOTDIR) {
+			result = stat(path.c_str(), &st) == 0 ? ERROR_DIRECTORY : ERROR_FILE_NOT_FOUND;
+		} else if (error == ENOENT) {
+			auto parent = std::filesystem::path(path).parent_path();
+			if (parent.empty())
+				parent = ".";
+			if (stat(parent.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+				result = ERROR_PATH_NOT_FOUND;
+		}
+		setLastError(result);
 		return FALSE;
 	}
 	return TRUE;
+}
+
+BOOL WINAPI RemoveDirectoryW(LPCWSTR lpPathName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RemoveDirectoryW(%p)\n", lpPathName);
+	if (!lpPathName) {
+		setLastError(ERROR_INVALID_NAME);
+		return FALSE;
+	}
+	std::string path;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpPathName), wstrlen(lpPathName)), path)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	return RemoveDirectoryA(path.c_str());
 }
 
 BOOL WINAPI SetFileAttributesA(LPCSTR lpFileName, DWORD dwFileAttributes) {

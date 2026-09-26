@@ -14,6 +14,8 @@ DWORD winErrorFromErrno(int err) {
 		return ERROR_ACCESS_DENIED;
 	case EXDEV:
 		return ERROR_NOT_SAME_DEVICE;
+	case ENOTEMPTY:
+		return ERROR_DIR_NOT_EMPTY;
 	case EEXIST:
 		return ERROR_ALREADY_EXISTS;
 	case ENOENT:
