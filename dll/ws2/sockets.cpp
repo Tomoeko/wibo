@@ -116,6 +116,14 @@ bool copySocketOptions(int source, int destination) {
 	return true;
 }
 Socket::~Socket() { ::close(descriptor); }
+void finishSocketSend(Socket &socket) {
+	std::lock_guard lock(socket.ioMutex);
+	if (--socket.pendingSends == 0 && socket.sendShutdown && !socket.nativeSendShutdown && !socket.closed) {
+		if (::shutdown(socket.descriptor, SHUT_WR) < 0)
+			DEBUG_LOG("Deferred socket shutdown failed: %d\n", errno);
+		socket.nativeSendShutdown = true;
+	}
+}
 std::shared_ptr<Socket> findSocket(SOCKET handle) {
 	if (!requireStarted())
 		return nullptr;
@@ -334,6 +342,53 @@ int WINAPI closesocket(SOCKET handle) {
 		::shutdown(found->second->descriptor, SHUT_RDWR);
 	}
 	registry.sockets.erase(found);
+	detail::wakeSocketIo();
+	return 0;
+}
+int WINAPI shutdown(SOCKET handle, int how) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("shutdown(0x%llx, %d)\n", static_cast<unsigned long long>(handle), how);
+	const auto state = detail::findSocket(handle);
+	if (!state)
+		return -1;
+	if (how < 0 || how > 2)
+		return detail::failSocket(10022);
+	{
+		std::lock_guard lock(state->ioMutex);
+		if (state->closed)
+			return detail::failSocket(10038);
+		int type = 0;
+		socklen_t length = sizeof(type);
+		if (::getsockopt(state->descriptor, SOL_SOCKET, SO_TYPE, &type, &length) < 0)
+			return detail::failSocket(detail::socketError(errno));
+		if (type == SOCK_STREAM && !state->sendShutdown) {
+			sockaddr_storage peer{};
+			length = sizeof(peer);
+			if (::getpeername(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &length) < 0) {
+				const int error = errno;
+				DEBUG_LOG("Socket shutdown peer query failed: %d\n", error);
+				return detail::failSocket(detail::socketError(error));
+			}
+		}
+		const bool receiving = how != 1;
+		const bool sending = how != 0;
+		const bool deferSend = sending && state->pendingSends != 0;
+		if (receiving || !deferSend) {
+			const int nativeHow = receiving ? (sending && !deferSend ? SHUT_RDWR : SHUT_RD) : SHUT_WR;
+			if (::shutdown(state->descriptor, nativeHow) < 0 &&
+				!(errno == ENOTCONN && (type == SOCK_DGRAM || state->sendShutdown))) {
+				const int error = errno;
+				DEBUG_LOG("Socket shutdown failed: %d\n", error);
+				return detail::failSocket(detail::socketError(error));
+			}
+		}
+		if (receiving)
+			state->receiveShutdown = true;
+		if (sending) {
+			state->sendShutdown = true;
+			state->nativeSendShutdown |= !deferSend;
+		}
+	}
 	detail::wakeSocketIo();
 	return 0;
 }

@@ -83,6 +83,7 @@ DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, BOOL wa
 SOCKET WINAPI WSASocketA(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags);
 SOCKET WINAPI socket(int family, int type, int protocol);
 int WINAPI closesocket(SOCKET handle);
+int WINAPI shutdown(SOCKET handle, int how);
 int WINAPI bind(SOCKET handle, LPCVOID address, int length);
 int WINAPI connect(SOCKET handle, LPCVOID address, int length);
 int WINAPI listen(SOCKET handle, int backlog);

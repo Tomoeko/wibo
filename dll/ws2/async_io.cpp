@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -42,10 +43,15 @@ class SocketIoWorker {
 			{
 				std::lock_guard lock(mutex);
 				descriptors.push_back({wakePipe[0], POLLIN, 0});
+				std::unordered_map<const ws2::detail::Socket *, unsigned> ordered;
 				for (const auto &request : requests) {
 					immediate |= request->isCancelled();
 					snapshot.push_back(request.get());
-					descriptors.push_back({request->descriptor(), request->events(), 0});
+					const auto group = static_cast<unsigned>(request->order);
+					auto &groups = ordered[request->socket.get()];
+					const bool blocked = (groups & group) != 0;
+					groups |= group;
+					descriptors.push_back({blocked ? -1 : request->descriptor(), request->events(), 0});
 				}
 			}
 			int ready;

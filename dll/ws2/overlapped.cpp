@@ -47,6 +47,14 @@ struct TransferRequest final : ws2::detail::SocketIoRequest {
 	bool stream = false;
 	int flags = 0;
 	uint32_t remaining = 0;
+	bool countedSend = false;
+	~TransferRequest() override { release(); }
+	void release() override {
+		if (countedSend) {
+			countedSend = false;
+			ws2::detail::finishSocketSend(*socket);
+		}
+	}
 	[[nodiscard]] short events() const override { return sending ? POLLOUT : POLLIN; }
 	bool process() override {
 		ssize_t transferred;
@@ -108,6 +116,8 @@ int transfer(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD transfer
 	const auto socket = ws2::detail::findSocket(handle);
 	if (!socket)
 		return -1;
+	if (sending ? socket->sendShutdown.load() : socket->receiveShutdown.load())
+		return ws2::detail::failSocket(10058);
 	const bool asynchronous = overlapped && socket->overlapped;
 	if (!buffers || (!sending && !returnedFlags) || (!asynchronous && !transferred))
 		return ws2::detail::failSocket(10014);
@@ -121,6 +131,7 @@ int transfer(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD transfer
 	request->binding = std::atomic_load(&socket->completion);
 	request->overlapped = overlapped;
 	request->sending = sending;
+	request->order = sending ? ws2::detail::SocketIoOrder::Send : ws2::detail::SocketIoOrder::Receive;
 	uint64_t total = 0;
 	for (DWORD i = 0; i < count; ++i) {
 		if (!buffers[i].buf && buffers[i].len)
@@ -156,6 +167,13 @@ int transfer(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD transfer
 	request->flags = ((flags & 1) ? MSG_OOB : 0) | ((flags & 2) ? MSG_PEEK : 0) | ((flags & 4) ? MSG_DONTROUTE : 0) |
 					 ((flags & 8) ? MSG_WAITALL : 0);
 	if (asynchronous) {
+		if (sending) {
+			std::lock_guard lock(socket->ioMutex);
+			if (socket->sendShutdown)
+				return ws2::detail::failSocket(10058);
+			++socket->pendingSends;
+			request->countedSend = true;
+		}
 		if (!ws2::detail::queueSocketIo(std::move(request)))
 			return ws2::detail::failSocket(10055);
 		return ws2::detail::failSocket(ERROR_IO_PENDING);

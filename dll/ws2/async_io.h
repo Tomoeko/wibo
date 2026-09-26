@@ -6,6 +6,7 @@
 #include "ws2/internal.h"
 
 namespace ws2::detail {
+enum class SocketIoOrder : unsigned { Unordered = 0, Receive = 1, Send = 2 };
 struct SocketIoRequest {
 	std::shared_ptr<Socket> socket;
 	std::shared_ptr<const kernel32::CompletionBinding> binding;
@@ -14,6 +15,7 @@ struct SocketIoRequest {
 	bool cancelled = false;
 	NTSTATUS status = STATUS_SUCCESS;
 	DWORD bytes = 0;
+	SocketIoOrder order = SocketIoOrder::Unordered;
 	virtual ~SocketIoRequest() = default;
 	[[nodiscard]] virtual int descriptor() const { return socket->descriptor; }
 	[[nodiscard]] virtual short events() const = 0;

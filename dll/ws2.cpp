@@ -224,6 +224,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "listen";
 	case 21:
 		return "setsockopt";
+	case 22:
+		return "shutdown";
 	case 8:
 		return "htonl";
 	case 9:

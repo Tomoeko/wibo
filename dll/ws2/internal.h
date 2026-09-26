@@ -24,6 +24,10 @@ struct Socket {
 	std::mutex ioMutex;
 	std::condition_variable overlappedCv;
 	std::atomic<bool> closed = false;
+	std::atomic<bool> receiveShutdown = false;
+	std::atomic<bool> sendShutdown = false;
+	unsigned pendingSends = 0; // Protected by ioMutex.
+	bool nativeSendShutdown = false;
 	unsigned pendingAccepts = 0;
 	int acceptOriginalFlags = -1;
 	bool acceptReserved = false;
@@ -43,6 +47,7 @@ bool getHandleInformation(SOCKET handle, DWORD *flags);
 bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags);
 int socketError(int error);
 int failSocket(int error);
+void finishSocketSend(Socket &socket);
 int addressToNative(LPCVOID address, int length, sockaddr_storage &result, socklen_t &resultLength);
 int addressFromNative(const sockaddr *address, LPVOID result, int *length);
 

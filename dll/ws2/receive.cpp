@@ -15,6 +15,8 @@ int receive(SOCKET handle, LPSTR buffer, int length, int flags, LPVOID address, 
 	const auto state = detail::findSocket(handle);
 	if (!state)
 		return -1;
+	if (state->receiveShutdown)
+		return detail::failSocket(10058);
 	if (length < 0 || (flags & ~0xBU))
 		return detail::failSocket(10022);
 	if (!buffer && length)
@@ -105,6 +107,8 @@ int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags) {
 	const auto state = detail::findSocket(handle);
 	if (!state)
 		return -1;
+	if (state->sendShutdown)
+		return detail::failSocket(10058);
 	if (length < 0 || (flags & ~5U))
 		return detail::failSocket(10022);
 	if (!buffer && length)
