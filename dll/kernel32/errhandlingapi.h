@@ -39,6 +39,9 @@ PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLE
 LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter);
 LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo);
 UINT WINAPI SetErrorMode(UINT uMode);
+UINT WINAPI GetErrorMode();
+DWORD WINAPI GetThreadErrorMode();
+BOOL WINAPI SetThreadErrorMode(DWORD dwNewMode, LPDWORD lpOldMode);
 HRESULT WINAPI WerSetFlags(DWORD dwFlags);
 
 } // namespace kernel32

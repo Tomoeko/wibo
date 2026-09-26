@@ -768,6 +768,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)
         wibo_add_fixture_bin(NAME test_gettempfilename SOURCES test/test_gettempfilename.c)
         wibo_add_fixture_bin(NAME test_getprocaddress SOURCES test/test_getprocaddress.c)
+        wibo_add_fixture_bin(NAME test_error_mode SOURCES test/test_error_mode.c)
         wibo_add_fixture_bin(NAME test_getmodulehandleex SOURCES test/test_getmodulehandleex.c)
         if(NOT WIBO_GUEST_64)
             # These fixtures contain x86-specific inline FS/TLS assembly.

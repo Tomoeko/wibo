@@ -91,10 +91,18 @@ static void test_getsystemtimeasfiletime(void) {
 }
 
 static void test_gettickcount_progresses(void) {
-    DWORD start = GetTickCount();
-    Sleep(60);
+	ULONGLONG wideStart = GetTickCount64();
+	DWORD start = GetTickCount();
+	ULONGLONG wideMiddle = GetTickCount64();
+	TEST_CHECK(wideMiddle >= wideStart);
+	TEST_CHECK((DWORD)(start - (DWORD)wideStart) <= (DWORD)(wideMiddle - wideStart));
+	Sleep(60);
     DWORD end = GetTickCount();
-    DWORD diff = end - start;
+	ULONGLONG wideEnd = GetTickCount64();
+	TEST_CHECK(wideEnd >= wideMiddle);
+	TEST_CHECK(wideEnd - wideStart >= 40);
+	TEST_CHECK(wideEnd - wideStart <= 5000);
+	DWORD diff = end - start;
 
     TEST_CHECK_MSG(diff >= 40, "GetTickCount diff too small: %lu", (unsigned long)diff);
     TEST_CHECK_MSG(diff <= 5000, "GetTickCount diff too large: %lu", (unsigned long)diff);

@@ -5,13 +5,16 @@
 #include "errors.h"
 #include "internal.h"
 
+#include <atomic>
+
 namespace {
 
 constexpr DWORD kMsVcThreadNameException = 0x406D1388;
 constexpr DWORD kExceptionNoncontinuable = 0x1;
 
 LPTOP_LEVEL_EXCEPTION_FILTER g_topLevelExceptionFilter = nullptr;
-UINT g_processErrorMode = 0;
+std::atomic<UINT> g_processErrorMode{0};
+thread_local DWORD g_threadErrorMode = 0;
 
 } // namespace
 
@@ -77,10 +80,36 @@ LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo) {
 
 UINT WINAPI SetErrorMode(UINT uMode) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetErrorMode(%u)\n", uMode);
-	UINT previous = g_processErrorMode;
-	g_processErrorMode = uMode;
-	return previous;
+	DEBUG_LOG("SetErrorMode(%u)\n", uMode);
+	return g_processErrorMode.exchange(uMode, std::memory_order_relaxed);
+}
+
+UINT WINAPI GetErrorMode() {
+	HOST_CONTEXT_GUARD();
+	const UINT mode = g_processErrorMode.load(std::memory_order_relaxed);
+	DEBUG_LOG("GetErrorMode() -> %u\n", mode);
+	return mode;
+}
+
+DWORD WINAPI GetThreadErrorMode() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetThreadErrorMode() -> %u\n", g_threadErrorMode);
+	return g_threadErrorMode;
+}
+
+BOOL WINAPI SetThreadErrorMode(DWORD dwNewMode, LPDWORD lpOldMode) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetThreadErrorMode(%u, %p)\n", dwNewMode, lpOldMode);
+	constexpr DWORD validModes = 0x8003;
+	if ((dwNewMode & ~validModes) != 0) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (lpOldMode) {
+		*lpOldMode = g_threadErrorMode;
+	}
+	g_threadErrorMode = dwNewMode;
+	return TRUE;
 }
 
 HRESULT WINAPI WerSetFlags(DWORD dwFlags) {

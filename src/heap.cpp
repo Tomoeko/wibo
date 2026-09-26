@@ -1025,9 +1025,6 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 		int flags = MAP_PRIVATE | MAP_ANONYMOUS;
 #ifdef WIBO_GUEST_64
 		const bool hostSelectedAddress = requestedAddress == nullptr;
-		if (!hostSelectedAddress) {
-			flags |= MAP_FIXED;
-		}
 #else
 		constexpr bool hostSelectedAddress = false;
 		flags |= MAP_FIXED;
@@ -1048,6 +1045,13 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 		if (mapped == MAP_FAILED) {
 			return vmStatusFromErrno(errno);
 		}
+#ifdef WIBO_GUEST_64
+		// Explicit guest reservations must not replace mappings owned by the host.
+		if (!hostSelectedAddress && reinterpret_cast<uintptr_t>(mapped) != base) {
+			munmap(mapped, mappedLength);
+			return VmStatus::InvalidAddress;
+		}
+#endif
 		if (hostSelectedAddress) {
 			const uintptr_t rawBase = reinterpret_cast<uintptr_t>(mapped);
 			const uintptr_t alignedBase = alignUp(rawBase, kVirtualAllocationGranularity);
