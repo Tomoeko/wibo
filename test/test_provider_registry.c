@@ -54,6 +54,46 @@ int main(void) {
 		TEST_CHECK_EQ(ERROR_SUCCESS, RegQueryValueExW(key, L"Number", NULL, &type, (BYTE *)&actualNumber, &size));
 		TEST_CHECK_EQ(17, actualNumber);
 	}
+	const BOOL provider = getenv("WIBO_FIXTURE_PROVIDER") != NULL;
+	unsigned seen = 0;
+	for (DWORD index = 0; index < (provider ? 4U : 3U); ++index) {
+		WCHAR name[32];
+		DWORD length = 32, bytes = 32, kind;
+		BYTE data[32];
+		TEST_CHECK_EQ(ERROR_SUCCESS, RegEnumValueW(key, index, name, &length, NULL, &kind, data, &bytes));
+		TEST_CHECK_EQ(wcslen(name), length);
+		unsigned bit;
+		if (!name[0]) {
+			bit = 1;
+			TEST_CHECK_EQ(REG_BINARY, kind);
+			TEST_CHECK_EQ(sizeof(binary), bytes);
+			TEST_CHECK(memcmp(data, binary, bytes) == 0);
+		} else if (!wcscmp(name, provider ? L"text" : L"Text")) {
+			bit = 2;
+			TEST_CHECK_EQ(REG_SZ, kind);
+			TEST_CHECK_EQ(sizeof(text), bytes);
+			TEST_CHECK(memcmp(data, text, bytes) == 0);
+		} else {
+			DWORD expected;
+			if (!wcscmp(name, provider ? L"number" : L"Number")) {
+				bit = 4;
+				expected = provider ? 17 : number;
+			} else {
+				TEST_CHECK(provider && !wcscmp(name, L"view"));
+				bit = 8;
+				expected = 64;
+			}
+			TEST_CHECK_EQ(REG_DWORD, kind);
+			TEST_CHECK_EQ(sizeof(expected), bytes);
+			TEST_CHECK(memcmp(data, &expected, bytes) == 0);
+		}
+		TEST_CHECK(!(seen & bit));
+		seen |= bit;
+	}
+	TEST_CHECK_EQ(provider ? 15 : 7, seen);
+	WCHAR name[32];
+	DWORD length = 32;
+	TEST_CHECK_EQ(ERROR_NO_MORE_ITEMS, RegEnumValueW(key, provider ? 4 : 3, name, &length, NULL, NULL, NULL, NULL));
 	RegCloseKey(key);
 	if (!getenv("WIBO_FIXTURE_PROVIDER"))
 		RegDeleteKeyW(HKEY_CURRENT_USER, path);

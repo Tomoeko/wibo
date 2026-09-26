@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -60,6 +62,7 @@ std::unordered_set<std::u16string> g_existingKeys;
 struct RegistryValue {
 	DWORD type = 0;
 	std::vector<BYTE> data{};
+	std::u16string name;
 };
 
 // Values belong to a key path, not an open handle. The registry is process-local;
@@ -83,10 +86,14 @@ struct ProviderValue {
 };
 std::unordered_map<std::u16string, ProviderValue> g_providerValues;
 
+std::u16string providerCacheKey(const std::u16string &path, const std::string &view) {
+	return path + (view == "64" ? u"|64" : u"|32");
+}
+
 LSTATUS providerOpen(const std::u16string &path, const std::string &view) {
 	if (!wibo::provider::configured())
 		return ERROR_FILE_NOT_FOUND;
-	const std::u16string cacheKey = path + (view == "64" ? u"|64" : u"|32");
+	const auto cacheKey = providerCacheKey(path, view);
 	if (auto found = g_providerKeys.find(cacheKey); found != g_providerKeys.end())
 		return found->second;
 	std::string encoded;
@@ -111,7 +118,9 @@ LSTATUS providerOpen(const std::u16string &path, const std::string &view) {
 			if (!reader.text(name) || name.find(u'\0') != std::u16string::npos || !reader.number(value.type) ||
 				!reader.bytes(value.data))
 				return kErrorInvalidData;
-			values.insert_or_assign(canonicalizeValueName(reinterpret_cast<LPCWSTR>(name.c_str())), std::move(value));
+			const auto canonicalName = canonicalizeValueName(reinterpret_cast<LPCWSTR>(name.c_str()));
+			value.name = std::move(name);
+			values.insert_or_assign(canonicalName, std::move(value));
 		}
 	}
 	if (!reader.done())
@@ -128,7 +137,7 @@ LSTATUS providerQuery(const RegistryKeyObject &key, const std::u16string &name, 
 	const LSTATUS opened = providerOpen(key.canonicalPath, key.providerView);
 	if (opened != ERROR_SUCCESS)
 		return opened;
-	std::u16string cacheKey = key.canonicalPath + (key.providerView == "64" ? u"|64" : u"|32");
+	auto cacheKey = providerCacheKey(key.canonicalPath, key.providerView);
 	if (auto snapshot = g_providerSnapshots.find(cacheKey); snapshot != g_providerSnapshots.end()) {
 		auto entry = snapshot->second.find(name);
 		if (entry == snapshot->second.end())
@@ -256,7 +265,10 @@ LSTATUS setRegistryValue(HKEY key, LPCWSTR name, DWORD reserved, DWORD type, con
 	if (!handle) {
 		return ERROR_INVALID_HANDLE;
 	}
-	RegistryValue value{type, {}};
+	RegistryValue value;
+	value.type = type;
+	if (name)
+		value.name.assign(reinterpret_cast<const char16_t *>(name), wstrlen(name));
 	if (ansi && isRegistryString(type)) {
 		if (size > std::numeric_limits<DWORD>::max() / sizeof(WCHAR)) {
 			return ERROR_NOT_ENOUGH_MEMORY;
@@ -272,7 +284,16 @@ LSTATUS setRegistryValue(HKEY key, LPCWSTR name, DWORD reserved, DWORD type, con
 	} else if (size) {
 		value.data.assign(data, data + size);
 	}
-	g_registryValues[handle->canonicalPath].insert_or_assign(canonicalizeValueName(name), std::move(value));
+	const auto canonicalName = canonicalizeValueName(name);
+	auto &values = g_registryValues[handle->canonicalPath];
+	if (auto existing = values.find(canonicalName); existing != values.end()) {
+		value.name = existing->second.name;
+	} else if (auto snapshot = g_providerSnapshots.find(providerCacheKey(handle->canonicalPath, handle->providerView));
+			   snapshot != g_providerSnapshots.end()) {
+		if (auto existing = snapshot->second.find(canonicalName); existing != snapshot->second.end())
+			value.name = existing->second.name;
+	}
+	values.insert_or_assign(canonicalName, std::move(value));
 	return ERROR_SUCCESS;
 }
 
@@ -294,15 +315,7 @@ LSTATUS readRegistryValue(HKEY key, LPCWSTR name, RegistryValue &value) {
 	return providerQuery(*handle, canonicalName, value);
 }
 
-LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWORD type, BYTE *data, LPDWORD size,
-						   bool ansi) {
-	if (reserved || (data && !size)) {
-		return ERROR_INVALID_PARAMETER;
-	}
-	RegistryValue value;
-	const LSTATUS status = readRegistryValue(key, name, value);
-	if (status != ERROR_SUCCESS)
-		return status;
+LSTATUS writeRegistryValue(const RegistryValue &value, LPDWORD type, BYTE *data, LPDWORD size, bool ansi) {
 	const bool narrowString = ansi && isRegistryString(value.type);
 	const DWORD required = static_cast<DWORD>(narrowString ? value.data.size() / sizeof(WCHAR) : value.data.size());
 	const DWORD capacity = data ? *size : 0;
@@ -327,6 +340,48 @@ LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWOR
 	} else if (required) {
 		std::memcpy(data, value.data.data(), required);
 	}
+	return ERROR_SUCCESS;
+}
+
+LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWORD type, BYTE *data, LPDWORD size,
+						   bool ansi) {
+	if (reserved || (data && !size)) {
+		return ERROR_INVALID_PARAMETER;
+	}
+	RegistryValue value;
+	const LSTATUS status = readRegistryValue(key, name, value);
+	if (status != ERROR_SUCCESS)
+		return status;
+	return writeRegistryValue(value, type, data, size, ansi);
+}
+
+LSTATUS enumerateRegistryValue(HKEY key, DWORD index, RegistryValue &value) {
+	std::lock_guard lock(g_registryMutex);
+	auto handle = handleDataFromHKeyLocked(key);
+	if (!handle)
+		return ERROR_INVALID_HANDLE;
+	std::map<std::u16string_view, const RegistryValue *> entries;
+	if (wibo::provider::configured()) {
+		const LSTATUS opened = providerOpen(handle->canonicalPath, handle->providerView);
+		if (opened == ERROR_SUCCESS) {
+			auto snapshot = g_providerSnapshots.find(providerCacheKey(handle->canonicalPath, handle->providerView));
+			if (snapshot == g_providerSnapshots.end())
+				return ERROR_NOT_SUPPORTED;
+			for (const auto &[name, entry] : snapshot->second)
+				entries.emplace(name, &entry);
+		} else if (opened != ERROR_FILE_NOT_FOUND || !g_existingKeys.contains(handle->canonicalPath)) {
+			return opened;
+		}
+	}
+	if (auto local = g_registryValues.find(handle->canonicalPath); local != g_registryValues.end()) {
+		for (const auto &[name, entry] : local->second)
+			entries.insert_or_assign(name, &entry);
+	}
+	if (index >= entries.size())
+		return ERROR_NO_MORE_ITEMS;
+	auto selected = entries.begin();
+	std::advance(selected, index);
+	value = *selected->second;
 	return ERROR_SUCCESS;
 }
 
@@ -703,6 +758,25 @@ LSTATUS WINAPI RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserve
 			  lpType, lpData, lpcbData);
 	const auto name = stringToWideString(lpValueName);
 	return queryRegistryValue(hKey, name.data(), lpReserved, lpType, lpData, lpcbData, true);
+}
+
+LSTATUS WINAPI RegEnumValueW(HKEY key, DWORD index, LPWSTR name, LPDWORD length, LPDWORD reserved, LPDWORD type,
+							 BYTE *data, LPDWORD size) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegEnumValueW(%p, %u, %p, %p, %p, %p, %p, %p)\n", key, index, name, length, reserved, type, data, size);
+	if (!name || !length || reserved || (data && !size))
+		return ERROR_INVALID_PARAMETER;
+	RegistryValue value;
+	const LSTATUS status = enumerateRegistryValue(key, index, value);
+	if (status != ERROR_SUCCESS)
+		return status;
+	if (*length <= value.name.size()) {
+		writeRegistryValue(value, type, nullptr, size, false);
+		return kErrorMoreData;
+	}
+	std::memcpy(name, value.name.c_str(), (value.name.size() + 1) * sizeof(WCHAR));
+	*length = static_cast<DWORD>(value.name.size());
+	return writeRegistryValue(value, type, data, size, false);
 }
 
 LSTATUS WINAPI RegEnumKeyExW(HKEY hKey, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved,

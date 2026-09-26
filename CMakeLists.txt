@@ -920,6 +920,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_network_connectivity SOURCES test/test_network_connectivity.c COMPILE_OPTIONS -lole32 -luuid)
         set_tests_properties(wibo.test_network_connectivity PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
+        wibo_add_fixture_bin(NAME test_reg_enum_values SOURCES test/test_reg_enum_values.c)
         wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
         set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account wibo.test_file_security wibo.test_load_cursor wibo.test_memory_status PROPERTIES
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1"
