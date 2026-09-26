@@ -74,6 +74,26 @@ static void test_null_output_pointer_returns_invalid_arg(void) {
 }
 
 int main(void) {
+	BYTE *block = CoTaskMemAlloc(16);
+	TEST_CHECK(block != NULL);
+	memset(block, 0xAB, 16);
+	for (unsigned int i = 0; i < 16; ++i) {
+		TEST_CHECK_EQ(0xAB, block[i]);
+	}
+	CoTaskMemFree(block);
+	CoTaskMemFree(NULL);
+	block = CoTaskMemAlloc(0);
+	TEST_CHECK(block != NULL);
+	CoTaskMemFree(block);
+	GUID generated[16];
+	for (unsigned int i = 0; i < 16; ++i) {
+		TEST_CHECK_EQ(S_OK, CoCreateGuid(&generated[i]));
+		TEST_CHECK_EQ(0x4000, generated[i].Data3 & 0xF000);
+		TEST_CHECK_EQ(0x80, generated[i].Data4[0] & 0xC0);
+		for (unsigned int j = 0; j < i; ++j) {
+			TEST_CHECK(!guid_equals(&generated[i], &generated[j]));
+		}
+	}
 	test_null_string_returns_guid_null();
 	test_braced_guid_parses_iunknown();
 	test_guid_without_braces_is_rejected();

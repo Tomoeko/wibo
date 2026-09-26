@@ -66,6 +66,7 @@ extern const wibo::ModuleStub lib_rpcrt4;
 extern const wibo::ModuleStub lib_ole32;
 extern const wibo::ModuleStub lib_psapi;
 extern const wibo::ModuleStub lib_shlwapi;
+extern const wibo::ModuleStub lib_shell32;
 extern const wibo::ModuleStub lib_user32;
 extern const wibo::ModuleStub lib_vcruntime;
 extern const wibo::ModuleStub lib_version;
@@ -138,7 +139,11 @@ using StubFuncType = void(__attribute__((ms_abi)) *)();
 #else
 using StubFuncType = void (*)();
 #endif
+#ifdef WIBO_GUEST_64
+constexpr size_t MAX_STUBS = 0x1000;
+#else
 constexpr size_t MAX_STUBS = 0x100;
+#endif
 size_t stubIndex = 0;
 std::array<std::string, MAX_STUBS> stubDlls;
 std::array<std::string, MAX_STUBS> stubFuncNames;
@@ -184,7 +189,12 @@ StubFuncType resolveMissingFuncName(const char *dllName, const char *funcName) {
 		fprintf(stderr, "wibo: too many missing functions encountered (>%zu). Last failure: %s (%s)\n", MAX_STUBS,
 				funcName, dllName);
 		fflush(stderr);
+#if defined(__APPLE__)
+		wibo::uninstallTebForCurrentThread();
+		_exit(127);
+#else
 		abort();
+#endif
 	}
 	stubFuncNames[stubIndex] = funcName ? funcName : "";
 	stubDlls[stubIndex] = dllName ? dllName : "";
@@ -317,6 +327,7 @@ LockedRegistry registry() {
 			&lib_psapi,
 			&lib_rpcrt4,
 			&lib_shlwapi,
+			&lib_shell32,
 			&lib_user32,
 			&lib_vcruntime,
 			&lib_version,
@@ -601,7 +612,7 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 		addDirectory(*reg.dllDirectory);
 	}
 
-	if (!alteredSearchPath) {
+	if (!alteredSearchPath && !reg.dllDirectory.has_value()) {
 		addDirectory(std::filesystem::current_path());
 	}
 
@@ -1090,7 +1101,7 @@ ModuleInfo *moduleInfoFromHandle(HMODULE module) {
 }
 
 void setDllDirectoryOverride(const std::filesystem::path &path) {
-	auto canonical = files::canonicalPath(path);
+	auto canonical = path.empty() ? path : files::canonicalPath(path);
 	auto reg = registry();
 	reg->dllDirectory = canonical;
 }

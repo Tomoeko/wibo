@@ -3,7 +3,9 @@
 #include "common.h"
 #include "context.h"
 #include "errors.h"
+#include "heap.h"
 #include "modules.h"
+#include "rpcrt4.h"
 
 #include <cstring>
 
@@ -110,6 +112,27 @@ HRESULT parseGuidString(const uint16_t *first, const uint16_t *last, GUID &out) 
 } // namespace
 
 namespace ole32 {
+
+PVOID WINAPI CoTaskMemAlloc(SIZE_T cb) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoTaskMemAlloc(%llu)\n", static_cast<unsigned long long>(cb));
+	return wibo::heap::guestMalloc(cb, false);
+}
+
+void WINAPI CoTaskMemFree(PVOID pv) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoTaskMemFree(%p)\n", pv);
+	if (pv) {
+		wibo::heap::guestFree(pv);
+	}
+}
+
+HRESULT WINAPI CoCreateGuid(GUID *pguid) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoCreateGuid(%p)\n", pguid);
+	const auto status = rpcrt4::UuidCreate(pguid);
+	return status == 0 ? S_OK : static_cast<HRESULT>(0x80070000 | (status & 0xFFFF));
+}
 
 HRESULT WINAPI CoInitialize(LPVOID pvReserved) {
 	HOST_CONTEXT_GUARD();

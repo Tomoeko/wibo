@@ -25,6 +25,8 @@ union CLIENT_CALL_RETURN {
 
 namespace rpcrt4 {
 
+RPC_STATUS WINAPI UuidCreate(GUID *Uuid);
+
 RPC_STATUS WINAPI RpcStringBindingComposeW(RPC_WSTR objUuid, RPC_WSTR protSeq, RPC_WSTR networkAddr, RPC_WSTR endpoint,
 										   RPC_WSTR options, GUEST_PTR *stringBinding);
 RPC_STATUS WINAPI RpcBindingFromStringBindingW(RPC_WSTR stringBinding, GUEST_PTR *binding);

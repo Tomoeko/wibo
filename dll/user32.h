@@ -12,5 +12,7 @@ HWINSTA WINAPI GetProcessWindowStation();
 BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWORD nLength, LPDWORD lpnLengthNeeded);
 HWND WINAPI GetActiveWindow();
 DWORD WINAPI GetSysColor(int nIndex);
+UINT WINAPI RegisterWindowMessageA(LPCSTR lpString);
+UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString);
 
 } // namespace user32

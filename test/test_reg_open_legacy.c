@@ -88,6 +88,14 @@ int main(void) {
 	check_open_w(parent, NULL, ERROR_SUCCESS, TRUE);
 	check_open_w(parent, L"", ERROR_SUCCESS, TRUE);
 	HKEY original_child = create_owned_child(parent, "MiXeDChild");
+	HKEY legacy_child = NULL;
+	SetLastError(last_error_sentinel);
+	TEST_CHECK_EQ(ERROR_SUCCESS, RegCreateKeyW(parent, L"ViaLegacyCreate", &legacy_child));
+	TEST_CHECK_EQ(last_error_sentinel, GetLastError());
+	TEST_CHECK(legacy_child != NULL);
+	TEST_CHECK_EQ(ERROR_SUCCESS, RegCloseKey(legacy_child));
+	HKEY reopened = check_open_w(parent, L"vialegacycreate", ERROR_SUCCESS, FALSE);
+	TEST_CHECK_EQ(ERROR_SUCCESS, RegCloseKey(reopened));
 	HKEY child_a = check_open_a(parent, "mixedchild", ERROR_SUCCESS, FALSE);
 	HKEY child_w = check_open_w(parent, L"MIXEDCHILD", ERROR_SUCCESS, FALSE);
 	TEST_CHECK(child_a != original_child && child_w != original_child && child_a != child_w);

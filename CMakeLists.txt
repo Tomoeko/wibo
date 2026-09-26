@@ -264,6 +264,7 @@ endfunction()
 add_executable(wibo
     dll/advapi32.cpp
     dll/advapi32/evntrace.cpp
+    dll/advapi32/evntprov.cpp
     dll/advapi32/md5.c
     dll/advapi32/processthreadsapi.cpp
     dll/advapi32/securitybaseapi.cpp
@@ -305,6 +306,7 @@ add_executable(wibo
     dll/psapi.cpp
     dll/rpcrt4.cpp
     dll/shlwapi.cpp
+    dll/shell32.cpp
     dll/user32.cpp
     dll/vcruntime.cpp
     dll/version.cpp
@@ -458,6 +460,7 @@ endfunction()
 
 wibo_codegen_module(NAME advapi32 HEADERS
     dll/advapi32/evntrace.h
+    dll/advapi32/evntprov.h
     dll/advapi32/processthreadsapi.h
     dll/advapi32/securitybaseapi.h
     dll/advapi32/winbase.h
@@ -472,6 +475,7 @@ wibo_codegen_module(NAME version HEADERS dll/version.h)
 wibo_codegen_module(NAME winmm HEADERS dll/winmm.h)
 wibo_codegen_module(NAME rpcrt4 HEADERS dll/rpcrt4.h)
 wibo_codegen_module(NAME shlwapi HEADERS dll/shlwapi.h)
+wibo_codegen_module(NAME shell32 HEADERS dll/shell32.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
 wibo_codegen_module(NAME vcruntime HEADERS dll/vcruntime.h)
 wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
@@ -609,12 +613,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         endif()
         wibo_add_fixture_bin(NAME test_external_dll SOURCES test/test_external_dll.c)
+        wibo_add_fixture_bin(NAME test_dll_directory SOURCES test/test_dll_directory.c)
         wibo_add_fixture_bin(NAME test_dll_attach_failure SOURCES test/test_dll_attach_failure.c)
         wibo_add_fixture_bin(NAME test_thread_notifications SOURCES test/test_thread_notifications.c)
         wibo_add_fixture_bin(NAME test_thread_notifications_stress SOURCES test/test_thread_notifications_stress.c)
         wibo_add_fixture_bin(NAME test_bcrypt SOURCES test/test_bcrypt.c COMPILE_OPTIONS -lbcrypt)
         wibo_add_fixture_bin(NAME test_dbghelp SOURCES test/test_dbghelp.c COMPILE_OPTIONS -ldbghelp)
         wibo_add_fixture_bin(NAME test_user32 SOURCES test/test_user32.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_window_message SOURCES test/test_window_message.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)
+        wibo_add_fixture_bin(NAME test_special_folder SOURCES test/test_special_folder.c COMPILE_OPTIONS -lshell32 -lole32)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
@@ -646,6 +654,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_global_atoms SOURCES test/test_global_atoms.c)
         wibo_add_fixture_bin(NAME test_trace_registration SOURCES test/test_trace_registration.c COMPILE_OPTIONS -ladvapi32)
+        wibo_add_fixture_bin(NAME test_event_registration SOURCES test/test_event_registration.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_lstring SOURCES test/test_lstring.c)
         wibo_add_fixture_bin(NAME test_reg_open_legacy SOURCES test/test_reg_open_legacy.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_reg_values SOURCES test/test_reg_values.c COMPILE_OPTIONS -ladvapi32)
@@ -661,6 +670,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
         wibo_add_fixture_bin(NAME test_processes SOURCES test/test_processes.c)
+        wibo_add_fixture_bin(NAME test_process_attributes SOURCES test/test_process_attributes.c)
         wibo_add_fixture_bin(NAME test_heap SOURCES test/test_heap.c)
         wibo_add_fixture_bin(NAME test_heap_cross_thread SOURCES test/test_heap_cross_thread.c)
         wibo_add_fixture_bin(NAME test_actctx SOURCES test/test_actctx.c)

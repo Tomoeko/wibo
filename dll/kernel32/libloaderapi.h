@@ -8,6 +8,7 @@ BOOL WINAPI DisableThreadLibraryCalls(HMODULE hLibModule);
 HMODULE WINAPI GetModuleHandleA(LPCSTR lpModuleName);
 HMODULE WINAPI GetModuleHandleW(LPCWSTR lpModuleName);
 BOOL WINAPI GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule);
+BOOL WINAPI GetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE *phModule);
 DWORD WINAPI GetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize);
 DWORD WINAPI GetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize);
 HRSRC WINAPI FindResourceA(HMODULE hModule, LPCSTR lpName, LPCSTR lpType);

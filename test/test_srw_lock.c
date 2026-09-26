@@ -66,7 +66,11 @@ static void close_pair(HANDLE a, HANDLE b) {
 }
 
 static void test_shared_readers(void) {
-	SRWLOCK lock = SRWLOCK_INIT;
+	SRWLOCK lock;
+	memset(&lock, 0xff, sizeof(lock));
+	SetLastError(0x4321);
+	InitializeSRWLock(&lock);
+	TEST_CHECK_EQ(0x4321, GetLastError());
 
 	HANDLE ready1 = CreateEventA(NULL, FALSE, FALSE, NULL);
 	HANDLE release1 = CreateEventA(NULL, FALSE, FALSE, NULL);
@@ -190,6 +194,12 @@ static void test_try_acquire(void) {
 }
 
 int main(void) {
+	CONDITION_VARIABLE condition;
+	memset(&condition, 0xff, sizeof(condition));
+	SetLastError(0x4321);
+	InitializeConditionVariable(&condition);
+	TEST_CHECK_EQ(0x4321, GetLastError());
+	TEST_CHECK(condition.Ptr == NULL);
 	test_shared_readers();
 	test_exclusive_blocks_shared();
 	test_shared_then_exclusive();

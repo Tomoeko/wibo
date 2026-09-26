@@ -246,6 +246,52 @@ BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION
 	return TRUE;
 }
 
+BOOL WINAPI GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
+											PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buffer, PDWORD returnLength) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetLogicalProcessorInformationEx(%u, %p, %p)\n", relationship, buffer, returnLength);
+	if (!returnLength) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (relationship != RelationProcessorCore && relationship != RelationProcessorPackage && relationship != RelationGroup) {
+		// The single-group processor view does not include cache or NUMA discovery.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	SYSTEM_INFO system{};
+	GetSystemInfo(&system);
+	const DWORD count = relationship == RelationProcessorCore ? system.dwNumberOfProcessors : 1;
+	const DWORD recordSize = relationship == RelationGroup
+		? offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Group) + sizeof(GROUP_RELATIONSHIP)
+		: offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor) + sizeof(PROCESSOR_RELATIONSHIP);
+	const DWORD required = count * recordSize;
+	if (!buffer || *returnLength < required) {
+		*returnLength = required;
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	std::memset(buffer, 0, required);
+	for (DWORD i = 0; i < count; ++i) {
+		auto *record = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(reinterpret_cast<BYTE *>(buffer) + i * recordSize);
+		record->Relationship = relationship;
+		record->Size = recordSize;
+		if (relationship == RelationGroup) {
+			record->Group.MaximumGroupCount = 1;
+			record->Group.ActiveGroupCount = 1;
+			record->Group.GroupInfo[0].MaximumProcessorCount = sizeof(ULONG_PTR) * 8;
+			record->Group.GroupInfo[0].ActiveProcessorCount = system.dwNumberOfProcessors;
+			record->Group.GroupInfo[0].ActiveProcessorMask = system.dwActiveProcessorMask;
+		} else {
+			record->Processor.GroupCount = 1;
+			record->Processor.GroupMask[0].Mask = relationship == RelationProcessorCore
+				? static_cast<ULONG_PTR>(1) << i : system.dwActiveProcessorMask;
+		}
+	}
+	*returnLength = required;
+	return TRUE;
+}
+
 void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetSystemTime(%p)\n", lpSystemTime);

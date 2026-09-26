@@ -1367,6 +1367,17 @@ BOOL WINAPI CreateDirectoryA(LPCSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurity
 	return TRUE;
 }
 
+BOOL WINAPI CreateDirectoryW(LPCWSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateDirectoryW(%p, %p)\n", lpPathName, lpSecurityAttributes);
+	if (!lpPathName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const auto path = wideStringToString(lpPathName);
+	return CreateDirectoryA(path.c_str(), lpSecurityAttributes);
+}
+
 BOOL WINAPI RemoveDirectoryA(LPCSTR lpPathName) {
 	HOST_CONTEXT_GUARD();
 	if (!lpPathName) {

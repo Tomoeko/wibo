@@ -47,6 +47,20 @@ constexpr DWORD STARTF_USESHOWWINDOW = 0x00000001;
 constexpr DWORD STARTF_USESTDHANDLES = 0x00000100;
 constexpr WORD SW_SHOWNORMAL = 1;
 
+constexpr DWORD EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+constexpr DWORD_PTR PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
+
+struct ProcessAttribute {
+	DWORD_PTR key;
+	GUEST_PTR value;
+	SIZE_T size;
+};
+
+struct ProcessAttributeList {
+	DWORD capacity;
+	DWORD count;
+};
+
 FILETIME fileTimeFromTimeval(const struct timeval &value) {
 	uint64_t total = 0;
 	if (value.tv_sec > 0 || value.tv_usec > 0) {
@@ -197,6 +211,73 @@ void *threadTrampoline(void *param) {
 } // namespace
 
 namespace kernel32 {
+
+BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
+											 DWORD dwFlags, SIZE_T *lpSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("InitializeProcThreadAttributeList(%p, %u, %u, %p)\n", lpAttributeList, dwAttributeCount, dwFlags, lpSize);
+	constexpr SIZE_T headerSize = sizeof(ProcessAttributeList);
+	if (!lpSize || dwFlags ||
+		(dwAttributeCount && sizeof(ProcessAttribute) > (std::numeric_limits<SIZE_T>::max() - headerSize) / dwAttributeCount)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const SIZE_T required = headerSize + static_cast<SIZE_T>(dwAttributeCount) * sizeof(ProcessAttribute);
+	const SIZE_T available = lpAttributeList ? *lpSize : 0;
+	*lpSize = required;
+	if (!lpAttributeList || available < required) {
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	auto *list = reinterpret_cast<ProcessAttributeList *>(lpAttributeList);
+	list->capacity = dwAttributeCount;
+	list->count = 0;
+	return TRUE;
+}
+
+BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwFlags, DWORD_PTR Attribute,
+									 PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("UpdateProcThreadAttribute(%p, %u, 0x%llx, %p, %llu, %p, %p)\n", lpAttributeList, dwFlags,
+			  static_cast<unsigned long long>(Attribute), lpValue, static_cast<unsigned long long>(cbSize),
+			  lpPreviousValue, lpReturnSize);
+	if (!lpAttributeList || dwFlags || lpPreviousValue || lpReturnSize || !lpValue || !cbSize) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (Attribute != PROC_THREAD_ATTRIBUTE_HANDLE_LIST) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	if (cbSize % sizeof(HANDLE)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	auto *list = reinterpret_cast<ProcessAttributeList *>(lpAttributeList);
+	auto *attributes = reinterpret_cast<ProcessAttribute *>(list + 1);
+	for (DWORD i = 0; i < list->count; ++i) {
+		if (attributes[i].key == Attribute) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
+	}
+	if (list->count >= list->capacity) {
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	attributes[list->count++] = {Attribute, toGuestPtr(lpValue), cbSize};
+	return TRUE;
+}
+
+void WINAPI DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("DeleteProcThreadAttributeList(%p)\n", lpAttributeList);
+	if (lpAttributeList) {
+		auto *list = reinterpret_cast<ProcessAttributeList *>(lpAttributeList);
+		list->capacity = 0;
+		list->count = 0;
+	}
+}
 
 BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature) {
 	HOST_CONTEXT_GUARD();
@@ -735,6 +816,21 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 			  lpProcessInformation);
 
 	bool useSearchPath = lpApplicationName == nullptr;
+	if (dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) {
+		if (!lpStartupInfo || lpStartupInfo->cb != sizeof(STARTUPINFOEXA)) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
+		auto *extended = reinterpret_cast<STARTUPINFOEXA *>(lpStartupInfo);
+		if (extended->lpAttributeList) {
+			auto *list = reinterpret_cast<ProcessAttributeList *>(static_cast<uintptr_t>(extended->lpAttributeList));
+			if (list->count) {
+				// Guest handles cannot yet be transferred to an exec-created process.
+				setLastError(ERROR_NOT_SUPPORTED);
+				return FALSE;
+			}
+		}
+	}
 	std::string application;
 	std::string commandLine = lpCommandLine ? lpCommandLine : "";
 	if (lpApplicationName) {
@@ -809,7 +905,7 @@ BOOL WINAPI CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSE
 	LPCSTR applicationPtr = applicationUtf8.empty() ? nullptr : applicationUtf8.c_str();
 	LPCSTR directoryPtr = directoryUtf8.empty() ? nullptr : directoryUtf8.c_str();
 	return CreateProcessA(applicationPtr, commandPtr, lpProcessAttributes, lpThreadAttributes, bInheritHandles,
-						  dwCreationFlags, lpEnvironment, directoryPtr, nullptr /* TODO: lpStartupInfo */,
+						  dwCreationFlags, lpEnvironment, directoryPtr, reinterpret_cast<LPSTARTUPINFOA>(lpStartupInfo),
 						  lpProcessInformation);
 }
 

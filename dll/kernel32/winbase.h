@@ -103,6 +103,7 @@ UINT WINAPI SetHandleCount(UINT uNumber);
 PVOID WINAPI EncodePointer(PVOID Ptr);
 PVOID WINAPI DecodePointer(PVOID Ptr);
 BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName);
+BOOL WINAPI SetDllDirectoryW(LPCWSTR lpPathName);
 
 BOOL WINAPI FindActCtxSectionStringA(DWORD dwFlags, const GUID *lpExtensionGuid, ULONG ulSectionId,
 									 LPCSTR lpStringToFind, PACTCTX_SECTION_KEYED_DATA ReturnedData);

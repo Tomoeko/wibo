@@ -2,6 +2,8 @@
 
 #include "common.h"
 #include "context.h"
+#include "bcrypt.h"
+#include "errors.h"
 #include "heap.h"
 #include "modules.h"
 #include "types.h"
@@ -110,6 +112,22 @@ BindingHandleData *getBinding(RPC_BINDING_HANDLE handle) {
 } // namespace
 
 namespace rpcrt4 {
+
+RPC_STATUS WINAPI UuidCreate(GUID *Uuid) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("UuidCreate(%p)\n", Uuid);
+	if (!Uuid) {
+		return RPC_S_INVALID_ARG;
+	}
+	GUID value;
+	if (!bcrypt::ProcessPrng(reinterpret_cast<PBYTE>(&value), sizeof(value))) {
+		return ERROR_GEN_FAILURE;
+	}
+	value.Data3 = (value.Data3 & 0x0FFF) | 0x4000;
+	value.Data4[0] = (value.Data4[0] & 0x3F) | 0x80;
+	*Uuid = value;
+	return RPC_S_OK;
+}
 
 RPC_STATUS WINAPI RpcStringBindingComposeW(RPC_WSTR objUuid, RPC_WSTR protSeq, RPC_WSTR networkAddr, RPC_WSTR endpoint,
 										   RPC_WSTR options, GUEST_PTR *stringBinding) {

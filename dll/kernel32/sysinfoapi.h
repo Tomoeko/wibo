@@ -58,6 +58,45 @@ struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION {
 
 using PSYSTEM_LOGICAL_PROCESSOR_INFORMATION = SYSTEM_LOGICAL_PROCESSOR_INFORMATION *;
 
+struct GROUP_AFFINITY {
+	ULONG_PTR Mask;
+	WORD Group;
+	WORD Reserved[3];
+};
+
+struct PROCESSOR_RELATIONSHIP {
+	BYTE Flags;
+	BYTE EfficiencyClass;
+	BYTE Reserved[20];
+	WORD GroupCount;
+	GROUP_AFFINITY GroupMask[1];
+};
+
+struct PROCESSOR_GROUP_INFO {
+	BYTE MaximumProcessorCount;
+	BYTE ActiveProcessorCount;
+	BYTE Reserved[38];
+	ULONG_PTR ActiveProcessorMask;
+};
+
+struct GROUP_RELATIONSHIP {
+	WORD MaximumGroupCount;
+	WORD ActiveGroupCount;
+	BYTE Reserved[20];
+	PROCESSOR_GROUP_INFO GroupInfo[1];
+};
+
+struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX {
+	LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
+	DWORD Size;
+	union {
+		PROCESSOR_RELATIONSHIP Processor;
+		GROUP_RELATIONSHIP Group;
+	};
+};
+
+using PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX = SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *;
+
 struct OSVERSIONINFOA {
 	DWORD dwOSVersionInfoSize;
 	DWORD dwMajorVersion;
@@ -126,6 +165,8 @@ namespace kernel32 {
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 void WINAPI GetNativeSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer, PDWORD returnLength);
+BOOL WINAPI GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
+											PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buffer, PDWORD returnLength);
 void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime);
 void WINAPI GetLocalTime(LPSYSTEMTIME lpSystemTime);
 void WINAPI GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);

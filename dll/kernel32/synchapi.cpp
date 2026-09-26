@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "interlockedapi.h"
 #include "internal.h"
+#include "kernel32_trampolines.h"
 #include "processthreadsapi.h"
 #include "strutil.h"
 #include "types.h"
@@ -435,9 +436,12 @@ std::shared_ptr<InitOnceState> getInitOnceState(LPINIT_ONCE once) {
 	return it->second;
 }
 
-void eraseInitOnceState(LPINIT_ONCE once) {
+void eraseInitOnceState(LPINIT_ONCE once, const std::shared_ptr<InitOnceState> &state) {
 	std::lock_guard lk(g_initOnceMutex);
-	g_initOnceStates.erase(once);
+	auto it = g_initOnceStates.find(once);
+	if (it != g_initOnceStates.end() && it->second == state) {
+		g_initOnceStates.erase(it);
+	}
 }
 
 inline DWORD owningThreadId(LPCRITICAL_SECTION crit) { return __atomic_load_n(&crit->OwningThread, __ATOMIC_ACQUIRE); }
@@ -638,11 +642,20 @@ HANDLE WINAPI OpenEventA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpNa
 
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
 							   LPCWSTR lpName) {
+	return CreateSemaphoreExW(lpSemaphoreAttributes, lInitialCount, lMaximumCount, lpName, 0, SEMAPHORE_ALL_ACCESS);
+}
+
+HANDLE WINAPI CreateSemaphoreExW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
+								LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("CreateSemaphoreW(%p, %ld, %ld, %s)\n", lpSemaphoreAttributes, lInitialCount, lMaximumCount,
-			  wideStringToString(lpName).c_str());
+	DEBUG_LOG("CreateSemaphoreExW(%p, %ld, %ld, %s, %u, %u)\n", lpSemaphoreAttributes, lInitialCount, lMaximumCount,
+			  wideStringToString(lpName).c_str(), dwFlags, dwDesiredAccess);
+	if (dwFlags != 0) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
 	auto name = makeU16String(lpName);
-	const uint32_t granted = SEMAPHORE_ALL_ACCESS;
+	const uint32_t granted = dwDesiredAccess;
 	uint32_t hflags = 0;
 	if (lpSemaphoreAttributes && lpSemaphoreAttributes->bInheritHandle) {
 		hflags |= HANDLE_FLAG_INHERIT;
@@ -736,6 +749,16 @@ BOOL WINAPI ResetEvent(HANDLE hEvent) {
 	}
 	ev->reset();
 	return TRUE;
+}
+
+DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bAlertable) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WaitForSingleObjectEx(%p, %u, %d)\n", hHandle, dwMilliseconds, bAlertable);
+	if (bAlertable) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return WAIT_FAILED;
+	}
+	return WaitForSingleObject(hHandle, dwMilliseconds);
 }
 
 DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
@@ -1408,7 +1431,7 @@ BOOL WINAPI InitOnceComplete(LPINIT_ONCE lpInitOnce, DWORD dwFlags, LPVOID lpCon
 				syncState->context = markFailed ? GUEST_NULL : contextValue;
 			}
 			syncState->cv.notify_all();
-			eraseInitOnceState(lpInitOnce);
+			eraseInitOnceState(lpInitOnce, syncState);
 			return TRUE;
 		}
 		case 3:
@@ -1427,6 +1450,55 @@ BOOL WINAPI InitOnceComplete(LPINIT_ONCE lpInitOnce, DWORD dwFlags, LPVOID lpCon
 			return FALSE;
 		}
 	}
+}
+
+BOOL WINAPI InitOnceExecuteOnce(PINIT_ONCE InitOnce, PINIT_ONCE_FN InitFn, PVOID Parameter, GUEST_PTR *Context) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("InitOnceExecuteOnce(%p, %p, %p, %p)\n", InitOnce, InitFn, Parameter, Context);
+	BOOL pending = FALSE;
+	if (!InitOnceBeginInitialize(InitOnce, 0, &pending, Context)) {
+		return FALSE;
+	}
+	if (!pending) {
+		return TRUE;
+	}
+	// The callback needs a guest-addressable context even when the caller omits it.
+	auto *context = Context ? Context : static_cast<GUEST_PTR *>(wibo::heap::guestMalloc(sizeof(GUEST_PTR), true));
+	if (!context) {
+		InitOnceComplete(InitOnce, INIT_ONCE_INIT_FAILED, nullptr);
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	const BOOL success = call_PINIT_ONCE_FN(InitFn, InitOnce, Parameter, context);
+	const DWORD callbackError = getLastError();
+	const GUEST_PTR value = *context;
+	if (!Context) {
+		wibo::heap::guestFree(context);
+	}
+	if (!success) {
+		InitOnceComplete(InitOnce, INIT_ONCE_INIT_FAILED, nullptr);
+		setLastError(callbackError);
+		return FALSE;
+	}
+	if (!InitOnceComplete(InitOnce, 0, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(value)))) {
+		return FALSE;
+	}
+	if (Context) {
+		*Context = value;
+	}
+	return TRUE;
+}
+
+void WINAPI InitializeSRWLock(PSRWLOCK SRWLock) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("InitializeSRWLock(%p)\n", SRWLock);
+	__atomic_store_n(&SRWLock->Value, static_cast<ULONG_PTR>(0), __ATOMIC_RELAXED);
+}
+
+void WINAPI InitializeConditionVariable(PCONDITION_VARIABLE ConditionVariable) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("InitializeConditionVariable(%p)\n", ConditionVariable);
+	__atomic_store_n(&ConditionVariable->Ptr, static_cast<GUEST_PTR>(0), __ATOMIC_RELAXED);
 }
 
 void WINAPI AcquireSRWLockShared(PSRWLOCK SRWLock) {

@@ -1082,8 +1082,12 @@ PVOID WINAPI DecodePointer(PVOID Ptr) {
 BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetDllDirectoryA(%s)\n", lpPathName);
-	if (!lpPathName || lpPathName[0] == '\0') {
+	if (!lpPathName) {
 		wibo::clearDllDirectoryOverride();
+		return TRUE;
+	}
+	if (lpPathName[0] == '\0') {
+		wibo::setDllDirectoryOverride({});
 		return TRUE;
 	}
 
@@ -1095,6 +1099,16 @@ BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName) {
 
 	wibo::setDllDirectoryOverride(std::filesystem::absolute(hostPath));
 	return TRUE;
+}
+
+BOOL WINAPI SetDllDirectoryW(LPCWSTR lpPathName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetDllDirectoryW(%p)\n", lpPathName);
+	if (!lpPathName) {
+		return SetDllDirectoryA(nullptr);
+	}
+	const auto path = wideStringToString(lpPathName);
+	return SetDllDirectoryA(path.c_str());
 }
 
 BOOL WINAPI FindActCtxSectionStringA(DWORD dwFlags, const GUID *lpExtensionGuid, ULONG ulSectionId,

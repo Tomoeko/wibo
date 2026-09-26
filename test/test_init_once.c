@@ -183,7 +183,93 @@ static void test_async_init_once(void) {
 	TEST_CHECK(context == finalContext);
 }
 
+static LONG callback_count;
+
+static BOOL CALLBACK initialize_context(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+	TEST_CHECK(once != NULL);
+	TEST_CHECK(parameter == &callback_count);
+	TEST_CHECK(context != NULL);
+	InterlockedIncrement(&callback_count);
+	*context = (PVOID)0x1234;
+	return TRUE;
+}
+
+static BOOL CALLBACK fail_context(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+	(void)once;
+	TEST_CHECK(context == parameter);
+	TEST_CHECK(*context == (PVOID)0x4444);
+	*context = (PVOID)0x1234;
+	SetLastError(ERROR_ACCESS_DENIED);
+	return FALSE;
+}
+
+static void test_execute_once(void) {
+	INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+	PVOID context = (PVOID)0x4444;
+	TEST_CHECK(!InitOnceExecuteOnce(&once, fail_context, &context, &context));
+	TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+	TEST_CHECK(context == (PVOID)0x1234);
+	TEST_CHECK(InitOnceExecuteOnce(&once, initialize_context, &callback_count, &context));
+	TEST_CHECK(context == (PVOID)0x1234);
+	context = NULL;
+	TEST_CHECK(InitOnceExecuteOnce(&once, initialize_context, &callback_count, &context));
+	TEST_CHECK(context == (PVOID)0x1234);
+	TEST_CHECK_EQ(1, callback_count);
+	INIT_ONCE without_context = INIT_ONCE_STATIC_INIT;
+	TEST_CHECK(InitOnceExecuteOnce(&without_context, initialize_context, &callback_count, NULL));
+	TEST_CHECK_EQ(2, callback_count);
+}
+
+typedef struct {
+	INIT_ONCE once;
+	HANDLE start;
+	LONG calls;
+	LONG active;
+} ExecuteContext;
+
+static BOOL CALLBACK retry_initialization(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+	ExecuteContext *state = parameter;
+	TEST_CHECK(once == &state->once);
+	TEST_CHECK_EQ(1, InterlockedIncrement(&state->active));
+	LONG attempt = InterlockedIncrement(&state->calls);
+	Sleep(1);
+	*context = (PVOID)0x1234;
+	TEST_CHECK_EQ(0, InterlockedDecrement(&state->active));
+	return attempt != 1;
+}
+
+static DWORD WINAPI execute_worker(PVOID parameter) {
+	ExecuteContext *state = parameter;
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(state->start, 2000));
+	PVOID context = NULL;
+	while (!InitOnceExecuteOnce(&state->once, retry_initialization, state, &context)) {}
+	TEST_CHECK(context == (PVOID)0x1234);
+	return 0;
+}
+
+static void test_execute_once_contention(void) {
+	for (unsigned int round = 0; round < 16; ++round) {
+		ExecuteContext state = {0};
+		state.start = CreateEventA(NULL, TRUE, FALSE, NULL);
+		TEST_CHECK(state.start != NULL);
+		HANDLE workers[4];
+		for (unsigned int i = 0; i < 4; ++i) {
+			workers[i] = CreateThread(NULL, 0, execute_worker, &state, 0, NULL);
+			TEST_CHECK(workers[i] != NULL);
+		}
+		TEST_CHECK(SetEvent(state.start));
+		for (unsigned int i = 0; i < 4; ++i) {
+			TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(workers[i], 2000));
+			TEST_CHECK(CloseHandle(workers[i]));
+		}
+		TEST_CHECK_EQ(2, state.calls);
+		TEST_CHECK(CloseHandle(state.start));
+	}
+}
+
 int main(void) {
+	test_execute_once();
+	test_execute_once_contention();
 	test_basic_init_once();
 	test_init_once_failure();
 	test_async_init_once();

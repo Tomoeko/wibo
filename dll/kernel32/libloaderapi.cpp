@@ -84,7 +84,16 @@ HMODULE WINAPI GetModuleHandleW(LPCWSTR lpModuleName) {
 
 BOOL WINAPI GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("GetModuleHandleExW(%x, %p, %p)\n", dwFlags, lpModuleName, phModule);
+	if (!lpModuleName || (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS)) {
+		return GetModuleHandleExA(dwFlags, reinterpret_cast<LPCSTR>(lpModuleName), phModule);
+	}
+	const auto name = wideStringToString(lpModuleName);
+	return GetModuleHandleExA(dwFlags, name.c_str(), phModule);
+}
+
+BOOL WINAPI GetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE *phModule) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetModuleHandleExA(%x, %p, %p)\n", dwFlags, lpModuleName, phModule);
 	if (!phModule) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
@@ -100,8 +109,7 @@ BOOL WINAPI GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phM
 	if (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) {
 		module = wibo::moduleInfoFromAddress(const_cast<void *>(reinterpret_cast<const void *>(lpModuleName)));
 	} else if (lpModuleName) {
-		const auto lpModuleNameA = wideStringToString(lpModuleName);
-		module = wibo::findLoadedModule(lpModuleNameA.c_str());
+		module = wibo::findLoadedModule(lpModuleName);
 	} else {
 		module = wibo::findLoadedModule(nullptr);
 	}

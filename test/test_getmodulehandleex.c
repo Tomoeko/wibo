@@ -15,12 +15,20 @@ int main(void) {
 	TEST_CHECK_MSG(GetModuleHandleExW(0, NULL, &module), "GetModuleHandleExW(NULL) failed: %lu",
 				   (unsigned long)GetLastError());
 	TEST_CHECK_EQ((ULONG_PTR)processModule, (ULONG_PTR)module);
+	module = NULL;
+	TEST_CHECK(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+									 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+								 (LPCSTR)&g_address_probe, &module));
+	TEST_CHECK_EQ((ULONG_PTR)processModule, (ULONG_PTR)module);
 
 	HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
 	TEST_CHECK_MSG(kernel32 != NULL, "GetModuleHandleW(kernel32.dll) failed: %lu", (unsigned long)GetLastError());
 	module = NULL;
 	TEST_CHECK_MSG(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, L"kernel32.dll", &module),
 				   "GetModuleHandleExW(kernel32.dll) failed: %lu", (unsigned long)GetLastError());
+	TEST_CHECK_EQ((ULONG_PTR)kernel32, (ULONG_PTR)module);
+	module = NULL;
+	TEST_CHECK(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, "KERNEL32.DLL", &module));
 	TEST_CHECK_EQ((ULONG_PTR)kernel32, (ULONG_PTR)module);
 
 	module = NULL;
@@ -37,6 +45,10 @@ int main(void) {
 	SetLastError(0xdeadbeef);
 	TEST_CHECK(!GetModuleHandleExW(0, L"definitely_missing_wibo_test.dll", &module));
 	TEST_CHECK_EQ(0, (ULONG_PTR)module);
+	TEST_CHECK_EQ(ERROR_MOD_NOT_FOUND, GetLastError());
+	module = (HMODULE)(ULONG_PTR)0x12345678;
+	TEST_CHECK(!GetModuleHandleExA(0, "definitely_missing_wibo_test.dll", &module));
+	TEST_CHECK(module == NULL);
 	TEST_CHECK_EQ(ERROR_MOD_NOT_FOUND, GetLastError());
 
 	SetLastError(0xdeadbeef);

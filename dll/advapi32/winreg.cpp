@@ -228,6 +228,15 @@ LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWOR
 
 namespace advapi32 {
 
+LSTATUS WINAPI RegCreateKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegCreateKeyW(%p, %p, %p)\n", hKey, lpSubKey, phkResult);
+	const DWORD savedError = kernel32::getLastError();
+	const LSTATUS status = RegCreateKeyExW(hKey, lpSubKey, 0, nullptr, 0, kLegacyOpenAccess, nullptr, phkResult, nullptr);
+	kernel32::setLastError(savedError);
+	return status;
+}
+
 LSTATUS WINAPI RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD Reserved, LPWSTR lpClass, DWORD dwOptions,
 								 REGSAM samDesired, void *lpSecurityAttributes, PHKEY phkResult,
 								 LPDWORD lpdwDisposition) {

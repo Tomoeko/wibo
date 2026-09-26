@@ -59,12 +59,26 @@ struct STARTUPINFOW {
 
 using LPSTARTUPINFOW = STARTUPINFOW *;
 
+struct PROC_THREAD_ATTRIBUTE_LIST;
+using LPPROC_THREAD_ATTRIBUTE_LIST = PROC_THREAD_ATTRIBUTE_LIST *;
+
+struct STARTUPINFOEXA {
+	STARTUPINFOA StartupInfo;
+	GUEST_PTR lpAttributeList;
+};
+
 constexpr DWORD TLS_OUT_OF_INDEXES = 0xFFFFFFFFu;
 constexpr DWORD NORMAL_PRIORITY_CLASS = 0x00000020;
 
 typedef DWORD(_CC_STDCALL *LPTHREAD_START_ROUTINE)(LPVOID);
 
 namespace kernel32 {
+
+BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
+											 DWORD dwFlags, SIZE_T *lpSize);
+BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwFlags, DWORD_PTR Attribute,
+									 PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize);
+void WINAPI DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList);
 
 HANDLE WINAPI GetCurrentProcess();
 DWORD WINAPI GetCurrentProcessId();

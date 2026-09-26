@@ -32,7 +32,7 @@ typedef struct {
 static DWORD WINAPI semaphore_worker(LPVOID param) {
 	SemaphoreWorkerContext *ctx = (SemaphoreWorkerContext *)param;
 	for (int i = 0; i < ctx->iterations; ++i) {
-		DWORD wait = WaitForSingleObject(ctx->semaphore, 1000);
+		DWORD wait = WaitForSingleObjectEx(ctx->semaphore, 1000, FALSE);
 		TEST_CHECK_EQ(WAIT_OBJECT_0, wait);
 		TEST_CHECK(SetEvent(ctx->ackEvent));
 	}
@@ -87,10 +87,10 @@ static void test_mutex_contention(void) {
 }
 
 static void test_semaphore_waits(void) {
-	HANDLE semaphore = CreateSemaphoreA(NULL, 0, 3, NULL);
+	HANDLE semaphore = CreateSemaphoreExW(NULL, 0, 3, NULL, 0, SEMAPHORE_MODIFY_STATE | SYNCHRONIZE);
 	TEST_CHECK(semaphore != NULL);
 
-	DWORD wait = WaitForSingleObject(semaphore, 10);
+	DWORD wait = WaitForSingleObjectEx(semaphore, 10, FALSE);
 	TEST_CHECK_EQ(WAIT_TIMEOUT, wait);
 
 	HANDLE ack = CreateEventA(NULL, FALSE, FALSE, NULL);

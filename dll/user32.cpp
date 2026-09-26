@@ -6,10 +6,58 @@
 #include "kernel32/internal.h"
 #include "modules.h"
 #include "resources.h"
+#include "strutil.h"
 
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+
+namespace {
+
+std::mutex g_messageMutex;
+std::unordered_map<std::u16string, UINT> g_registeredMessages;
+
+} // namespace
 
 namespace user32 {
+
+UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegisterWindowMessageW(%p)\n", lpString);
+	if (!lpString || !*lpString) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	const size_t length = wstrnlen(lpString, 256);
+	if (length > 255) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::u16string name;
+	for (size_t i = 0; i < length; ++i) {
+		name.push_back(static_cast<char16_t>(wcharToLower(lpString[i])));
+	}
+	std::lock_guard lock(g_messageMutex);
+	if (auto it = g_registeredMessages.find(name); it != g_registeredMessages.end()) {
+		return it->second;
+	}
+	if (g_registeredMessages.size() == 0x4000) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	// Message registration is local to the process until interprocess messaging is supported.
+	const UINT message = 0xC000 + static_cast<UINT>(g_registeredMessages.size());
+	g_registeredMessages.emplace(std::move(name), message);
+	return message;
+}
+
+UINT WINAPI RegisterWindowMessageA(LPCSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegisterWindowMessageA(%s)\n", lpString);
+	const auto name = stringToWideString(lpString);
+	return RegisterWindowMessageW(lpString ? name.data() : nullptr);
+}
 
 constexpr uint32_t RT_STRING_ID = 6;
 constexpr HKL kDefaultKeyboardLayout = 0x04090409;
