@@ -770,6 +770,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)
         wibo_add_fixture_bin(NAME test_gettempfilename SOURCES test/test_gettempfilename.c)
         wibo_add_fixture_bin(NAME test_getprocaddress SOURCES test/test_getprocaddress.c)
+        wibo_add_fixture_bin(NAME test_api_set SOURCES test/test_api_set.c)
+        set_tests_properties(wibo.test_api_set PROPERTIES
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py")
+        foreach(fault failed truncated trailing path embedded-zero contract-host)
+            add_test(NAME wibo.test_api_set_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_api_set.exe)
+            set_tests_properties(wibo.test_api_set_${fault} PROPERTIES
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_API_SET_RESPONSE=${fault}")
+        endforeach()
         wibo_add_fixture_bin(NAME test_error_mode SOURCES test/test_error_mode.c)
         wibo_add_fixture_bin(NAME test_getmodulehandleex SOURCES test/test_getmodulehandleex.c)
         if(NOT WIBO_GUEST_64)

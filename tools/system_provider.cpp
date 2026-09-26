@@ -73,6 +73,33 @@ class Response {
 	bool good() const { return valid; }
 };
 
+bool apiSetHost(const WCHAR *contract) {
+	HMODULE module = LoadLibraryW(contract);
+	Response response;
+	if (!module) {
+		response.header(GetLastError());
+		return response.write();
+	}
+	constexpr DWORD kPathCapacity = 32768;
+	WCHAR path[kPathCapacity];
+	const DWORD length = GetModuleFileNameW(module, path, kPathCapacity);
+	DWORD status = ERROR_SUCCESS;
+	if (!length)
+		status = GetLastError();
+	else if (length >= kPathCapacity)
+		status = ERROR_INSUFFICIENT_BUFFER;
+	FreeLibrary(module);
+	response.header(status);
+	if (!status) {
+		const WCHAR *base = path;
+		for (const WCHAR *cursor = path; *cursor; ++cursor)
+			if (*cursor == L'\\' || *cursor == L'/')
+				base = cursor + 1;
+		response.bytes(base, wcslen(base) * sizeof(WCHAR));
+	}
+	return response.write();
+}
+
 bool timeZoneInformation() {
 	TIME_ZONE_INFORMATION zone{};
 	const DWORD state = GetTimeZoneInformation(&zone);
@@ -921,6 +948,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
 	else if (argc == 5 && wcscmp(argv[1], L"known-folder-path") == 0)
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
+	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
+		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"time-zone-information") == 0)
 		written = timeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"dynamic-time-zone-information") == 0)

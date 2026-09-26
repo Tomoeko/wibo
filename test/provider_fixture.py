@@ -41,6 +41,22 @@ if operation == 'known-folder-path':
     elif fault == 'embedded-zero':
         response = header() + text('C:\\Fixture\0suffix')
 
+elif operation == 'api-set-host':
+    response = header(126) if 'absent-synthetic' in arguments[0] else header() + text('kernel32.dll')
+    fault = os.environ.get('WIBO_FIXTURE_API_SET_RESPONSE')
+    if fault == 'failed':
+        response = header(126)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'path':
+        response = header() + text('..\\kernel32.dll')
+    elif fault == 'embedded-zero':
+        response = header() + text('kernel32.dll\0suffix')
+    elif fault == 'contract-host':
+        response = header() + text(arguments[0])
+
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)

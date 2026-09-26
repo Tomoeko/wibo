@@ -10,6 +10,7 @@
 #include "kernel32/internal.h"
 #include "setup.h"
 #include "strutil.h"
+#include "system_provider.h"
 #include "tls.h"
 #include "types.h"
 
@@ -1545,6 +1546,39 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 	return nullptr;
 }
 
+static std::optional<std::string> providerApiSetHost(const std::string &contract) {
+	std::vector<uint8_t> response;
+	if (!provider::request({"api-set-host", contract}, response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return std::nullopt;
+	}
+	provider::Reader reader(response);
+	int32_t status = 0;
+	constexpr DWORD kInvalidData = 13;
+	if (!reader.header(status)) {
+		kernel32::setLastError(kInvalidData);
+		return std::nullopt;
+	}
+	if (status) {
+		kernel32::setLastError(reader.done() ? static_cast<DWORD>(status) : kInvalidData);
+		return std::nullopt;
+	}
+	std::u16string wideHost;
+	std::string host;
+	if (!reader.text(wideHost) || wideHost.empty() || wideHost.size() > 260 || !reader.done() ||
+		wideHost.find_first_of(u"/\\:") != std::u16string::npos || wideHost.find(u'\0') != std::u16string::npos ||
+		!provider::encodeUtf8(wideHost, host)) {
+		kernel32::setLastError(kInvalidData);
+		return std::nullopt;
+	}
+	host = normalizeAlias(host);
+	if (!host.ends_with(".dll") || host.starts_with("api-") || host.starts_with("ext-")) {
+		kernel32::setLastError(kInvalidData);
+		return std::nullopt;
+	}
+	return host;
+}
+
 ModuleInfo *loadModule(const char *dllName) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (!dllName || *dllName == '\0') {
@@ -1564,6 +1598,23 @@ ModuleInfo *loadModule(const char *dllName) {
 			normalized = module;
 			break;
 		}
+	}
+
+	if (parsed.directory.empty() && (normalized.starts_with("api-") || normalized.starts_with("ext-")) &&
+		provider::configured()) {
+		if (findLoadedModule(normalized.c_str()))
+			return loadModuleInternal(normalized);
+		auto host = providerApiSetHost(normalized);
+		if (!host)
+			return nullptr;
+		DEBUG_LOG("  resolved api set %s -> %s\n", normalized.c_str(), host->c_str());
+		auto *info = loadModuleInternal(*host);
+		if (info) {
+			auto reg = registry();
+			registerAlias(*reg, normalized, info);
+			registerAlias(*reg, normalizeAlias(parsed.original), info);
+		}
+		return info;
 	}
 
 	// DWORD lastError = kernel32::getLastError();
