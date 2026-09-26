@@ -176,28 +176,30 @@ static void test_overlapped_read_without_event(void) {
 							  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
 	TEST_CHECK(file != INVALID_HANDLE_VALUE);
 
-	OVERLAPPED ov = {0};
-	ov.Offset = 4;
+	for (unsigned iteration = 0; iteration < 128; ++iteration) {
+		OVERLAPPED ov = {0};
+		ov.Offset = 4;
 
-	char buffer[16] = {0};
-	BOOL issued = ReadFile(file, buffer, 8, NULL, &ov);
-	if (!issued) {
-		TEST_CHECK_EQ(ERROR_IO_PENDING, GetLastError());
-		DWORD transferred = 0xFFFFFFFFU;
-		BOOL ready = GetOverlappedResult(file, &ov, &transferred, FALSE);
-		if (!ready) {
-			TEST_CHECK_EQ(ERROR_IO_INCOMPLETE, GetLastError());
-			TEST_CHECK_EQ(0xFFFFFFFFU, transferred); // untouched while pending
-		} else {
-			TEST_CHECK_EQ(8U, transferred);
+		char buffer[16] = {0};
+		BOOL issued = ReadFile(file, buffer, 8, NULL, &ov);
+		if (!issued) {
+			TEST_CHECK_EQ(ERROR_IO_PENDING, GetLastError());
+			DWORD transferred = 0xFFFFFFFFU;
+			BOOL ready = GetOverlappedResult(file, &ov, &transferred, FALSE);
+			if (!ready) {
+				TEST_CHECK_EQ(ERROR_IO_INCOMPLETE, GetLastError());
+				TEST_CHECK_EQ(0xFFFFFFFFU, transferred); // untouched while pending
+			} else {
+				TEST_CHECK_EQ(8U, transferred);
+			}
 		}
-	}
 
-	DWORD transferred = 0;
-	TEST_CHECK(GetOverlappedResult(file, &ov, &transferred, TRUE));
-	TEST_CHECK_EQ(8U, transferred);
-	buffer[8] = '\0';
-	TEST_CHECK_STR_EQ("456789AB", buffer);
+		DWORD transferred = 0;
+		TEST_CHECK(GetOverlappedResult(file, &ov, &transferred, TRUE));
+		TEST_CHECK_EQ(8U, transferred);
+		buffer[8] = '\0';
+		TEST_CHECK_STR_EQ("456789AB", buffer);
+	}
 
 	TEST_CHECK(CloseHandle(file));
 }

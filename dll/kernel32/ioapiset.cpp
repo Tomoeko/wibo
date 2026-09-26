@@ -50,7 +50,7 @@ BOOL WINAPI GetOverlappedResult(HANDLE hFile, LPOVERLAPPED lpOverlapped, LPDWORD
 		if (HANDLE waitHandle = kernel32::detail::normalizedOverlappedEventHandle(lpOverlapped)) {
 			WaitForSingleObject(waitHandle, INFINITE);
 		} else if (auto file = wibo::handles().getAs<FsObject>(hFile)) {
-			std::unique_lock lk(file->m);
+			std::unique_lock lk(file->overlappedMutex);
 			CompletionWait completionWait;
 			file->overlappedCv.wait(lk, [&] { return detail::loadOverlappedStatus(lpOverlapped) != STATUS_PENDING; });
 		} else {

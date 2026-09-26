@@ -42,8 +42,11 @@ inline void signalOverlappedCompletion(const std::shared_ptr<const CompletionBin
 inline void signalOverlappedEvent(FsObject *file, OVERLAPPED *ov, NTSTATUS status, size_t bytesTransferred) {
 	const auto binding = file ? std::atomic_load(&file->completion) : nullptr;
 	signalOverlappedCompletion(binding, ov, status, bytesTransferred);
-	if (file)
+	if (file && ov) {
+		// Synchronize notification with the waiter entering its condition-variable wait.
+		std::lock_guard lock(file->overlappedMutex);
 		file->overlappedCv.notify_all();
+	}
 }
 
 inline void resetOverlappedEvent(OVERLAPPED *ov) {

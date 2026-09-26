@@ -144,10 +144,12 @@ class DirectoryWatcher {
 				__atomic_store_n(&request->operation->Internal, static_cast<ULONG_PTR>(status), __ATOMIC_RELEASE);
 				const DWORD error = wibo::winErrorFromNtStatus(status);
 				queueIoCompletion(request->apc, request->callback, error, bytes, toGuestPtr(request->operation));
+				std::lock_guard completionLock(directory.overlappedMutex);
+				directory.overlappedCv.notify_all();
 			} else
 				detail::signalOverlappedEvent(&directory, request->operation, status, bytes);
 		}
-		directory.overlappedCv.notify_all();
+		directory.changesCv.notify_all();
 	}
 	void deliver() {
 		if (requests.empty() || (!overflow && notifications.empty()))
@@ -371,7 +373,7 @@ BOOL WINAPI ReadDirectoryChangesW(HANDLE handle, LPVOID buffer, DWORD length, BO
 	}
 	if (!operation) {
 		CompletionWait wait;
-		directory->overlappedCv.wait(lock, [&] { return request->done; });
+		directory->changesCv.wait(lock, [&] { return request->done; });
 		*returned = request->bytes;
 		if (request->status != STATUS_SUCCESS) {
 			setLastError(wibo::winErrorFromNtStatus(request->status));

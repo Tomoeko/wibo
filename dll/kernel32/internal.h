@@ -15,6 +15,7 @@ class DirectoryWatcher;
 
 struct FsObject : ObjectBase {
 	std::mutex m;
+	std::mutex overlappedMutex;
 	std::condition_variable overlappedCv;
 	std::shared_ptr<const CompletionBinding> completion;
 	bool overlapped = false;
@@ -69,6 +70,7 @@ struct DirectoryObject final : FsObject {
 	size_t enumCookie = 0;
 	bool enumStarted = false;
 	bool watchClosed = false;
+	std::condition_variable changesCv;
 	std::shared_ptr<DirectoryWatcher> watcher;
 	~DirectoryObject() override;
 	void onLastHandleClosed() noexcept override;
