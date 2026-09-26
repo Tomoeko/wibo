@@ -26,4 +26,6 @@ BOOL WINAPI FreeLibrary(HMODULE hLibModule);
 [[noreturn]] VOID WINAPI FreeLibraryAndExitThread(HMODULE module, DWORD exitCode);
 FARPROC WINAPI GetProcAddress(HMODULE hModule, LPCSTR lpProcName);
 
+BOOL WINAPI K32EnumProcessModules(HANDLE process, HMODULE *modules, DWORD capacity, LPDWORD needed);
+
 } // namespace kernel32

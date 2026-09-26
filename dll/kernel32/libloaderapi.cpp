@@ -5,6 +5,7 @@
 #include "errors.h"
 #include "files.h"
 #include "modules.h"
+#include "psapi.h"
 #include "resources.h"
 #include "strutil.h"
 #include "types.h"
@@ -363,6 +364,10 @@ FARPROC WINAPI GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 		setLastError(ERROR_PROC_NOT_FOUND);
 	}
 	return result;
+}
+
+BOOL WINAPI K32EnumProcessModules(HANDLE process, HMODULE *modules, DWORD capacity, LPDWORD needed) {
+	return psapi::EnumProcessModules(process, modules, capacity, needed);
 }
 
 } // namespace kernel32

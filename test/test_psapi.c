@@ -7,6 +7,12 @@
 #include "test_assert.h"
 
 int main(void) {
+	HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+	TEST_CHECK(kernel != NULL);
+	FARPROC address = GetProcAddress(kernel, "K32EnumProcessModules");
+	TEST_CHECK(address != NULL);
+	BOOL(WINAPI * enumerate)(HANDLE, HMODULE *, DWORD, LPDWORD);
+	memcpy(&enumerate, &address, sizeof(enumerate));
 	HANDLE process = GetCurrentProcess();
 	DWORD required = 0;
 	TEST_CHECK(EnumProcessModules(process, NULL, 0, &required));
@@ -16,6 +22,16 @@ int main(void) {
 	TEST_CHECK(EnumProcessModules(process, modules, sizeof(modules), &required));
 	TEST_CHECK(required <= sizeof(modules));
 
+	HMODULE aliasModules[64];
+	DWORD aliasRequired = 0;
+	TEST_CHECK(enumerate(process, aliasModules, sizeof(aliasModules), &aliasRequired));
+	TEST_CHECK_EQ(required, aliasRequired);
+	TEST_CHECK(memcmp(modules, aliasModules, required) == 0);
+	HMODULE truncated[2] = {NULL, (HMODULE)(ULONG_PTR)0x1234};
+	TEST_CHECK(enumerate(process, truncated, sizeof(HMODULE), &aliasRequired));
+	TEST_CHECK_EQ(required, aliasRequired);
+	TEST_CHECK(truncated[0] == modules[0]);
+	TEST_CHECK(truncated[1] == (HMODULE)(ULONG_PTR)0x1234);
 	HMODULE mainModule = GetModuleHandleA(NULL);
 	BOOL foundMain = FALSE;
 	for (DWORD i = 0; i < required / sizeof(HMODULE); ++i) {
