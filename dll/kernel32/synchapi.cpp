@@ -903,9 +903,14 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 }
 
 DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds) {
+	return WaitForMultipleObjectsEx(nCount, lpHandles, bWaitAll, dwMilliseconds, FALSE);
+}
+
+DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds,
+									  BOOL bAlertable) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("WaitForMultipleObjects(%u, %p, %d, %u)\n", nCount, lpHandles, static_cast<int>(bWaitAll),
-			  dwMilliseconds);
+	DEBUG_LOG("WaitForMultipleObjectsEx(%u, %p, %d, %u, %d)\n", nCount, lpHandles, static_cast<int>(bWaitAll),
+			  dwMilliseconds, static_cast<int>(bAlertable));
 
 	if (nCount == 0 || nCount > MAXIMUM_WAIT_OBJECTS || !lpHandles) {
 		setLastError(ERROR_INVALID_PARAMETER);
@@ -946,6 +951,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 		targets[i].pin = std::move(pin);
 	}
 
+	auto queue = bAlertable ? currentApcState() : nullptr;
 	DWORD waitResult = WAIT_TIMEOUT;
 	if (!hasPipe) {
 		struct WakeState {
@@ -959,6 +965,8 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 				state.cv.notify_one();
 			}
 		} wake;
+		if (queue)
+			queue->registerWaiter(&wake, 0, &WakeState::notify);
 		std::vector<WaitableObject *> ordered;
 		for (auto &target : targets) {
 			ordered.push_back(target.waitable);
@@ -1027,6 +1035,8 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 					}
 				}
 			}
+			if (waitResult == WAIT_TIMEOUT && queue && dispatchPendingApcs())
+				waitResult = WAIT_IO_COMPLETION;
 			if (waitResult != WAIT_TIMEOUT || dwMilliseconds == 0 ||
 				(dwMilliseconds != INFINITE && std::chrono::steady_clock::now() >= deadline))
 				break;
@@ -1040,6 +1050,8 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 		}
 		for (auto &target : targets)
 			target.waitable->unregisterWaiter(&wake);
+		if (queue)
+			queue->unregisterWaiter(&wake);
 		return waitResult;
 	} else {
 		WaitBlock block(bWaitAll, nCount);
@@ -1117,6 +1129,8 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 					break;
 				}
 			}
+			if (waitResult != WAIT_FAILED && !block.isCompleted(waitResult) && queue && dispatchPendingApcs())
+				return WAIT_IO_COMPLETION;
 			if (waitResult == WAIT_FAILED || block.isCompleted(waitResult) || dwMilliseconds == 0 ||
 				(dwMilliseconds != INFINITE && std::chrono::steady_clock::now() >= deadline)) {
 				break;
