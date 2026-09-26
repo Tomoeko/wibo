@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <string>
 
 #include <cstring>
 #include <unistd.h>
@@ -41,6 +43,21 @@ WORD makeVersion(BYTE major, BYTE minor) { return static_cast<WORD>(major | (min
 namespace ws2::detail {
 
 void setLastError(int error) { kernel32::setLastError(static_cast<DWORD>(error)); }
+
+bool localHostName(std::string &name) {
+	char host[256]{};
+	if (::gethostname(host, sizeof(host)) != 0) {
+		setLastError(socketError(errno));
+		return false;
+	}
+	const size_t length = strnlen(host, sizeof(host));
+	if (!length || length == sizeof(host)) {
+		setLastError(11003); // WSANO_RECOVERY
+		return false;
+	}
+	name.assign(host, length);
+	return true;
+}
 
 bool requireStarted() {
 	if (g_startupCount > 0) {
@@ -147,18 +164,14 @@ int WINAPI gethostname(LPSTR name, int namelen) {
 		return SOCKET_ERROR;
 	}
 
-	char host[256] = {};
-	if (::gethostname(host, sizeof(host) - 1) != 0 || host[0] == '\0') {
-		std::strncpy(host, "localhost", sizeof(host) - 1);
-	}
-
-	size_t length = std::strlen(host);
-	if (static_cast<size_t>(namelen) <= length) {
+	std::string host;
+	if (!detail::localHostName(host))
+		return SOCKET_ERROR;
+	if (static_cast<size_t>(namelen) <= host.size()) {
 		setLastError(WSAEFAULT);
 		return SOCKET_ERROR;
 	}
-
-	std::memcpy(name, host, length + 1);
+	std::memcpy(name, host.c_str(), host.size() + 1);
 	setLastError(0);
 	return 0;
 }

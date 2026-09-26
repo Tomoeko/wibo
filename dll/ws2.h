@@ -43,6 +43,29 @@ struct WSA_FD_SET {
 };
 static_assert(offsetof(WSA_FD_SET, sockets) == sizeof(SOCKET));
 
+struct AFPROTOCOLS {
+	int iAddressFamily;
+	int iProtocol;
+};
+struct WSAQUERYSETW {
+	DWORD dwSize;
+	GUEST_PTR lpszServiceInstanceName;
+	GUEST_PTR lpServiceClassId;
+	GUEST_PTR lpVersion;
+	GUEST_PTR lpszComment;
+	DWORD dwNameSpace;
+	GUEST_PTR lpNSProviderId;
+	GUEST_PTR lpszContext;
+	DWORD dwNumberOfProtocols;
+	GUEST_PTR lpafpProtocols;
+	GUEST_PTR lpszQueryString;
+	DWORD dwNumberOfCsAddrs;
+	GUEST_PTR lpcsaBuffer;
+	DWORD dwOutputFlags;
+	GUEST_PTR lpBlob;
+};
+static_assert(sizeof(WSAQUERYSETW) == (sizeof(GUEST_PTR) == 8 ? 120 : 60));
+
 namespace ws2 {
 
 HANDLE WINAPI WSACreateEvent();
@@ -75,6 +98,9 @@ int WINAPI WSAGetLastError();
 void WINAPI WSASetLastError(int error);
 int WINAPI getaddrinfo(LPCSTR node, LPCSTR service, const ADDRINFOA *hints, GUEST_PTR *result);
 void WINAPI freeaddrinfo(ADDRINFOA *result);
+int WINAPI WSALookupServiceBeginW(const WSAQUERYSETW *restrictions, DWORD flags, LPHANDLE lookup);
+int WINAPI WSALookupServiceNextW(HANDLE lookup, DWORD flags, LPDWORD length, WSAQUERYSETW *result);
+int WINAPI WSALookupServiceEnd(HANDLE lookup);
 int WINAPI gethostname(LPSTR name, int namelen);
 GUEST_PTR WINAPI gethostbyname(LPCSTR name);
 int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, const void *timeout);

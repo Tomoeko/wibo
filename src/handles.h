@@ -34,6 +34,7 @@ enum class ObjectType : uint16_t {
 	Timer,
 	ApcQueue,
 	CompletionPort,
+	ServiceLookup,
 };
 
 enum ObjectFlags : uint16_t {

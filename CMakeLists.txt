@@ -344,6 +344,7 @@ add_executable(wibo
     dll/version.cpp
     dll/winmm.cpp
     dll/ws2.cpp
+    dll/ws2/service_lookup.cpp
     dll/ws2/resolution.cpp
     dll/ws2/sockets.cpp
     dll/ws2/events.cpp
@@ -706,6 +707,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_socket_connect SOURCES test/test_socket_connect.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_socket_connect PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_lifetime SOURCES test/test_socket_lifetime.c COMPILE_OPTIONS -lws2_32)
+        wibo_add_fixture_bin(NAME test_service_lookup SOURCES test/test_service_lookup.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_service_lookup PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)

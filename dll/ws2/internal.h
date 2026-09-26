@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <sys/socket.h>
 
 namespace ws2::detail {
@@ -23,6 +24,7 @@ int failSocket(int error);
 int addressToNative(LPCVOID address, int length, sockaddr_storage &result, socklen_t &resultLength);
 int addressFromNative(const sockaddr *address, LPVOID result, int *length);
 
+bool localHostName(std::string &name);
 bool requireStarted();
 void setLastError(int error);
 
