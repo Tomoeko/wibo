@@ -70,6 +70,22 @@ elif operation == 'network-connectivity':
         response = header() + number(0x8000) + number(1) + number(1)
     elif fault == 'failed':
         response = header(0x80070005)
+elif operation == 'best-route':
+    luid, index, options, source, destination = arguments
+    destination = bytes.fromhex(destination)
+    route = bytearray(104)
+    struct.pack_into('<QI', route, 0, int(luid) if luid != 'none' else 0x0102030405060708, 1)
+    route[12:40] = destination
+    route[40] = 32
+    struct.pack_into('<H', route, 44, 2)
+    fault = os.environ.get('WIBO_FIXTURE_ROUTE_RESPONSE')
+    response = header() + blob(route[:-1] if fault == 'bad-size' else route) + blob(destination)
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'failed':
+        response = header(2)
 elif operation == 'ip-adapter-addresses':
     family, flags, width = map(int, arguments)
     pointer = ctypes.c_uint64 if width == 8 else ctypes.c_uint32

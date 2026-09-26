@@ -4,11 +4,14 @@
 #define COBJMACROS
 #include "../src/security_descriptor.h"
 #include <winsock2.h>
+#include <ws2ipdef.h>
+
 #include <windows.h>
 
 #include <fcntl.h>
 #include <io.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <netlistmgr.h>
 #include <oleauto.h>
 #include <wbemcli.h>
@@ -377,6 +380,44 @@ bool decodeHex(const WCHAR *source, std::string &result, bool allowZero = false)
 		result.push_back(static_cast<char>(value));
 	}
 	return true;
+}
+
+bool bestRoute(WCHAR **parameters) {
+	static_assert(sizeof(SOCKADDR_INET) == 28 && sizeof(MIB_IPFORWARD_ROW2) == 104);
+	NET_LUID luid{};
+	WCHAR *end = nullptr;
+	const bool hasLuid = wcscmp(parameters[0], L"none") != 0;
+	if (hasLuid) {
+		luid.Value = wcstoull(parameters[0], &end, 10);
+		if (!*parameters[0] || *end)
+			return false;
+	}
+	ULONG numbers[2]{};
+	for (unsigned i = 0; i < 2; ++i) {
+		const auto value = wcstoull(parameters[i + 1], &end, 10);
+		if (!*parameters[i + 1] || *end || value > 0xffffffffULL)
+			return false;
+		numbers[i] = static_cast<ULONG>(value);
+	}
+	std::string sourceBytes, destinationBytes;
+	if (!decodeHex(parameters[3], sourceBytes, true) || !decodeHex(parameters[4], destinationBytes, true) ||
+		(!sourceBytes.empty() && sourceBytes.size() != sizeof(SOCKADDR_INET)) ||
+		destinationBytes.size() != sizeof(SOCKADDR_INET))
+		return false;
+	SOCKADDR_INET source{}, destination{}, bestSource{};
+	if (!sourceBytes.empty())
+		std::memcpy(&source, sourceBytes.data(), sizeof(source));
+	std::memcpy(&destination, destinationBytes.data(), sizeof(destination));
+	MIB_IPFORWARD_ROW2 route{};
+	const DWORD status = GetBestRoute2(hasLuid ? &luid : nullptr, numbers[0], sourceBytes.empty() ? nullptr : &source,
+									   &destination, numbers[1], &route, &bestSource);
+	Response response;
+	response.header(status);
+	if (status == NO_ERROR) {
+		response.bytes(&route, sizeof(route));
+		response.bytes(&bestSource, sizeof(bestSource));
+	}
+	return response.write();
 }
 
 bool account(const WCHAR *system, const WCHAR *name, bool ansi) {
@@ -794,6 +835,8 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 3 && wcscmp(argv[1], L"ip-address-table") == 0 &&
 			 (wcscmp(argv[2], L"0") == 0 || wcscmp(argv[2], L"1") == 0))
 		written = ipAddressTable(wcscmp(argv[2], L"1") == 0);
+	else if (argc == 7 && wcscmp(argv[1], L"best-route") == 0)
+		written = bestRoute(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"ip-adapter-addresses") == 0) {
 		ULONG values[3]{};
 		for (unsigned i = 0; i < 3; ++i) {

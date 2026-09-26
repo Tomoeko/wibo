@@ -10,6 +10,41 @@
 #include <vector>
 
 namespace iphlpapi {
+ULONG WINAPI GetBestRoute2(const ULONGLONG *luid, ULONG index, LPCVOID source, LPCVOID destination, ULONG options,
+						   LPVOID route, LPVOID bestSource) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetBestRoute2(%p, %u, %p, %p, 0x%x, %p, %p)\n", luid, index, source, destination, options, route,
+			  bestSource);
+	constexpr size_t addressSize = 28, routeSize = 104;
+	if (!destination || !route || !bestSource)
+		return ERROR_INVALID_PARAMETER;
+	USHORT family = 0;
+	std::memcpy(&family, destination, sizeof(family));
+	if (family != 2 && family != 23)
+		return ERROR_INVALID_PARAMETER;
+	const auto encodeAddress = [](LPCVOID address) {
+		return address ? wibo::provider::encodeBytes({static_cast<const char *>(address), addressSize}) : std::string();
+	};
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"best-route", luid ? std::to_string(*luid) : "none", std::to_string(index),
+								  std::to_string(options), encodeAddress(source), encodeAddress(destination)},
+								 response))
+		return ERROR_NOT_SUPPORTED;
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status))
+		return 13;
+	if (status)
+		return reader.done() ? static_cast<ULONG>(status) : 13;
+	std::vector<uint8_t> routeBytes, sourceBytes;
+	if (!reader.bytes(routeBytes) || routeBytes.size() != routeSize || !reader.bytes(sourceBytes) ||
+		sourceBytes.size() != addressSize || !reader.done())
+		return 13;
+	std::memcpy(route, routeBytes.data(), routeBytes.size());
+	std::memcpy(bestSource, sourceBytes.data(), sourceBytes.size());
+	return ERROR_SUCCESS;
+}
+
 ULONG WINAPI GetAdaptersAddresses(ULONG family, ULONG flags, LPVOID reserved, LPVOID addresses, ULONG *size) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetAdaptersAddresses(%u, 0x%x, %p, %p, %p)\n", family, flags, reserved, addresses, size);
