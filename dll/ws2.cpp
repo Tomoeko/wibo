@@ -27,6 +27,8 @@
 #undef htons
 #endif
 
+extern const wibo::ModuleStub lib_mswsock;
+
 namespace {
 
 constexpr int SOCKET_ERROR = -1;
@@ -264,4 +266,40 @@ extern const wibo::ModuleStub lib_ws2 = {
 	},
 	ws2ThunkByName,
 	resolveNameByOrdinal,
+};
+
+namespace {
+const char *legacyNameByOrdinal(uint16_t ordinal) {
+	switch (ordinal) {
+	case 10:
+		return "inet_addr";
+	case 11:
+		return "inet_ntoa";
+	case 12:
+		return "ioctlsocket";
+	case 1141:
+		return "AcceptEx";
+	case 1142:
+		return "GetAcceptExSockaddrs";
+	default:
+		return resolveNameByOrdinal(ordinal);
+	}
+}
+
+void *legacyByName(const char *name) {
+	if (std::strcmp(name, "AcceptEx") == 0 || std::strcmp(name, "GetAcceptExSockaddrs") == 0)
+		return lib_mswsock.byName(name);
+	for (uint16_t ordinal = 1; ordinal <= 151; ++ordinal) {
+		const char *candidate = legacyNameByOrdinal(ordinal);
+		if (candidate && std::strcmp(candidate, name) == 0)
+			return ws2ThunkByName(name);
+	}
+	return nullptr;
+}
+} // namespace
+
+extern const wibo::ModuleStub lib_wsock32 = {
+	(const char *[]){"WSOCK32", nullptr},
+	legacyByName,
+	legacyNameByOrdinal,
 };

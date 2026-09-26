@@ -34,6 +34,28 @@ int main(void) {
 	LPFN_ACCEPTEX acceptEx = (LPFN_ACCEPTEX)extension(listener, (GUID)WSAID_ACCEPTEX);
 	LPFN_GETACCEPTEXSOCKADDRS addresses =
 		(LPFN_GETACCEPTEXSOCKADDRS)extension(listener, (GUID)WSAID_GETACCEPTEXSOCKADDRS);
+	HMODULE legacy = LoadLibraryA("wsock32.dll");
+	TEST_CHECK(legacy != NULL);
+	LPFN_ACCEPTEX legacyAccept = (LPFN_ACCEPTEX)(void *)GetProcAddress(legacy, MAKEINTRESOURCEA(1141));
+	TEST_CHECK(legacyAccept != NULL);
+	LPFN_GETACCEPTEXSOCKADDRS legacyAddresses =
+		(LPFN_GETACCEPTEXSOCKADDRS)(void *)GetProcAddress(legacy, MAKEINTRESOURCEA(1142));
+	TEST_CHECK(legacyAddresses != NULL);
+	typedef ULONG(WSAAPI * ParseAddress)(const char *);
+	typedef char *(WSAAPI * FormatAddress)(IN_ADDR);
+	typedef int(WSAAPI * ControlSocket)(SOCKET, long, ULONG *);
+	ParseAddress parse = (ParseAddress)(void *)GetProcAddress(legacy, MAKEINTRESOURCEA(10));
+	FormatAddress format = (FormatAddress)(void *)GetProcAddress(legacy, MAKEINTRESOURCEA(11));
+	ControlSocket control = (ControlSocket)(void *)GetProcAddress(legacy, MAKEINTRESOURCEA(12));
+	TEST_CHECK(parse && format && control);
+	IN_ADDR numeric;
+	numeric.S_un.S_addr = parse("127.0.0.1");
+	TEST_CHECK_EQ(0x0100007f, numeric.S_un.S_addr);
+	TEST_CHECK_STR_EQ("127.0.0.1", format(numeric));
+	ULONG mode = 0;
+	TEST_CHECK_EQ(0, control(listener, FIONBIO, &mode));
+	acceptEx = legacyAccept;
+	addresses = legacyAddresses;
 	GUID id = WSAID_ACCEPTEX;
 	void *unchanged = (void *)(ULONG_PTR)0x71;
 	DWORD returned = 0x51;
@@ -185,6 +207,7 @@ int main(void) {
 	for (unsigned i = 0; i < 32; ++i)
 		TEST_CHECK_EQ(0, closesocket(pending[i]));
 	TEST_CHECK(CloseHandle(port));
+	TEST_CHECK(FreeLibrary(legacy));
 	TEST_CHECK_EQ(0, WSACleanup());
 	return 0;
 }
