@@ -605,6 +605,36 @@ bool statusError(const WCHAR *statusText) {
 	return response.write();
 }
 
+bool systemQuery(const WCHAR *classText, const WCHAR *lengthText) {
+	WCHAR *end = nullptr;
+	const auto informationClass = wcstoull(classText, &end, 10);
+	if (!*classText || *end || (informationClass != 3 && informationClass != 8))
+		return false;
+	const auto length = wcstoull(lengthText, &end, 10);
+	if (!*lengthText || *end || length > 1024 * 1024)
+		return false;
+	using QuerySystem = LONG(WINAPI *)(ULONG, PVOID, ULONG, PULONG);
+	const auto query = reinterpret_cast<QuerySystem>(
+		reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation")));
+	Response response;
+	if (!query) {
+		response.header(GetLastError());
+		return response.write();
+	}
+	std::vector<BYTE> data(static_cast<size_t>(length ? length : 1));
+	ULONG returned = 0;
+	const LONG status = query(static_cast<ULONG>(informationClass), data.data(), static_cast<ULONG>(length), &returned);
+	if (status >= 0 && returned > length) {
+		response.header(ERROR_INVALID_DATA);
+		return response.write();
+	}
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(status));
+	response.number(returned);
+	response.bytes(data.data(), status >= 0 ? returned : 0);
+	return response.write();
+}
+
 bool volumeQuery(const WCHAR *path, const WCHAR *classText, const WCHAR *lengthText) {
 	WCHAR *end = nullptr;
 	const auto informationClass = wcstoull(classText, &end, 10);
@@ -766,6 +796,8 @@ int wmain(int argc, WCHAR **argv) {
 		written = memoryStatus();
 	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
 		written = systemMetrics(argv[2], argv[3]);
+	else if (argc == 4 && wcscmp(argv[1], L"system-query") == 0)
+		written = systemQuery(argv[2], argv[3]);
 	else if (argc == 5 && wcscmp(argv[1], L"volume-query") == 0)
 		written = volumeQuery(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"status-error") == 0)

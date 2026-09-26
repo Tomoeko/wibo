@@ -47,6 +47,8 @@ using PRTL_OSVERSIONINFOW = RTL_OSVERSIONINFOW *;
 namespace ntdll {
 
 ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);
+NTSTATUS WINAPI NtQuerySystemInformation(ULONG informationClass, PVOID information, ULONG length,
+										 PULONG returnedLength);
 NTSTATUS WINAPI NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
 									  PIO_STATUS_BLOCK ioStatus, ULONG control, PVOID input, ULONG inputLength,
 									  PVOID output, ULONG outputLength);
