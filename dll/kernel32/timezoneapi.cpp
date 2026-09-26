@@ -3,11 +3,35 @@
 #include "context.h"
 #include "errors.h"
 #include "internal.h"
+#include "system_provider.h"
 #include "timeutil.h"
 
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+
+namespace {
+bool transitionTime(const SYSTEMTIME &rule, WORD year, int64_t bias, __int128 &ticks) {
+	SYSTEMTIME date = rule;
+	if (!rule.wYear) {
+		if (rule.wMonth < 1 || rule.wMonth > 12 || rule.wDay < 1 || rule.wDay > 5 || rule.wDayOfWeek > 6)
+			return false;
+		date.wYear = year;
+		const auto firstWeekday =
+			static_cast<unsigned>((daysFromCivil(year, rule.wMonth, 1) + DAYS_TO_UNIX_EPOCH + 1) % 7);
+		unsigned day = 1 + (rule.wDayOfWeek + 7 - firstWeekday) % 7 + (rule.wDay - 1) * 7;
+		if (day > daysInMonth(year, rule.wMonth))
+			day -= 7;
+		date.wDay = static_cast<WORD>(day);
+	}
+	int64_t seconds = 0;
+	uint32_t hundreds = 0;
+	if (!systemTimeToUnixParts(date, seconds, hundreds))
+		return false;
+	ticks = (static_cast<__int128>(seconds) + bias * 60) * HUNDRED_NS_PER_SECOND + hundreds + UNIX_TIME_ZERO;
+	return true;
+}
+} // namespace
 
 namespace kernel32 {
 
@@ -24,7 +48,7 @@ BOOL WINAPI SystemTimeToFileTime(const SYSTEMTIME *lpSystemTime, LPFILETIME lpFi
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	FILETIME result;
+	FILETIME result{};
 	if (!unixPartsToFileTime(seconds, hundreds, result)) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
@@ -64,6 +88,53 @@ BOOL WINAPI FileTimeToSystemTime(const FILETIME *lpFileTime, LPSYSTEMTIME lpSyst
 	lpSystemTime->wSecond = static_cast<WORD>(secondsOfDay % 60U);
 	lpSystemTime->wMilliseconds = static_cast<WORD>(hundredNs / HUNDRED_NS_PER_MILLISECOND);
 	return TRUE;
+}
+
+BOOL WINAPI SystemTimeToTzSpecificLocalTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *utc,
+											LPSYSTEMTIME local) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SystemTimeToTzSpecificLocalTime(%p, %p, %p)\n", zone, utc, local);
+	if (!utc || !local) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	FILETIME input{};
+	if (!SystemTimeToFileTime(utc, &input))
+		return FALSE;
+	TIME_ZONE_INFORMATION current{};
+	if (!zone) {
+		if (!wibo::provider::configured()) {
+			FILETIME result{};
+			return FileTimeToLocalFileTime(&input, &result) && FileTimeToSystemTime(&result, local);
+		}
+		if (GetTimeZoneInformation(&current) == TIME_ZONE_ID_INVALID)
+			return FALSE;
+		zone = &current;
+	}
+	int64_t bias = zone->Bias;
+	const uint64_t inputTicks = fileTimeToDuration(input);
+	if (zone->DaylightDate.wMonth && zone->StandardDate.wMonth) {
+		const int64_t standardBias = bias + zone->StandardBias;
+		const int64_t daylightBias = bias + zone->DaylightBias;
+		__int128 daylight = 0, standard = 0;
+		// Transition clocks use the offset that was in effect before the change.
+		if (!transitionTime(zone->DaylightDate, utc->wYear, standardBias, daylight) ||
+			!transitionTime(zone->StandardDate, utc->wYear, daylightBias, standard)) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
+		const bool inDaylight = daylight < standard ? inputTicks >= daylight && inputTicks < standard
+													: inputTicks >= daylight || inputTicks < standard;
+		bias = inDaylight ? daylightBias : standardBias;
+	}
+	const __int128 result =
+		static_cast<__int128>(inputTicks) - static_cast<__int128>(bias) * 60 * HUNDRED_NS_PER_SECOND;
+	if (result < 0 || result >= MAX_VALID_FILETIME) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const FILETIME output = fileTimeFromDuration(static_cast<uint64_t>(result));
+	return FileTimeToSystemTime(&output, local);
 }
 
 BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *lpFileTime, LPFILETIME lpLocalFileTime) {
@@ -106,7 +177,7 @@ BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *lpFileTime, LPFILETIME lpLoc
 	}
 	int64_t offsetSeconds = localAsUtcSeconds - seconds;
 	int64_t localSeconds = seconds + offsetSeconds;
-	FILETIME result;
+	FILETIME result{};
 	if (!unixPartsToFileTime(localSeconds, hundreds, result)) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
@@ -148,7 +219,7 @@ BOOL WINAPI LocalFileTimeToFileTime(const FILETIME *lpLocalFileTime, LPFILETIME 
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	FILETIME result;
+	FILETIME result{};
 	if (!unixPartsToFileTime(static_cast<int64_t>(utcTime), hundredNs, result)) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
@@ -227,6 +298,32 @@ DWORD WINAPI GetTimeZoneInformation(LPTIME_ZONE_INFORMATION lpTimeZoneInformatio
 	if (!lpTimeZoneInformation) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return TIME_ZONE_ID_INVALID;
+	}
+	if (wibo::provider::configured()) {
+		std::vector<uint8_t> response;
+		if (!wibo::provider::request({"time-zone-information"}, response)) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return TIME_ZONE_ID_INVALID;
+		}
+		wibo::provider::Reader reader(response);
+		int32_t error = 0;
+		uint32_t state = 0;
+		std::vector<uint8_t> data;
+		if (!reader.header(error)) {
+			setLastError(13);
+			return TIME_ZONE_ID_INVALID;
+		}
+		if (error) {
+			setLastError(reader.done() ? static_cast<DWORD>(error) : 13);
+			return TIME_ZONE_ID_INVALID;
+		}
+		if (!reader.number(state) || state > TIME_ZONE_ID_DAYLIGHT || !reader.bytes(data) ||
+			data.size() != sizeof(*lpTimeZoneInformation) || !reader.done()) {
+			setLastError(13);
+			return TIME_ZONE_ID_INVALID;
+		}
+		std::memcpy(lpTimeZoneInformation, data.data(), data.size());
+		return state;
 	}
 	std::memset(lpTimeZoneInformation, 0, sizeof(*lpTimeZoneInformation));
 	tzset();

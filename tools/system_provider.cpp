@@ -60,6 +60,18 @@ class Response {
 	bool good() const { return valid; }
 };
 
+bool timeZoneInformation() {
+	TIME_ZONE_INFORMATION zone{};
+	const DWORD state = GetTimeZoneInformation(&zone);
+	Response response;
+	response.header(state == TIME_ZONE_ID_INVALID ? GetLastError() : ERROR_SUCCESS);
+	if (state != TIME_ZONE_ID_INVALID) {
+		response.number(state);
+		response.bytes(&zone, sizeof(zone));
+	}
+	return response.write();
+}
+
 bool environmentDefaults() {
 	constexpr const char *names[] = {"APPDATA",		 "LOCALAPPDATA", "ALLUSERSPROFILE", "PROGRAMDATA",
 									 "SYSTEMROOT",	 "WINDIR",		 "USERPROFILE",		"HOMEDRIVE",
@@ -858,6 +870,8 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 6 && wcscmp(argv[1], L"format-message") == 0 &&
 			 (wcscmp(argv[2], L"a") == 0 || wcscmp(argv[2], L"w") == 0))
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
+	else if (argc == 2 && wcscmp(argv[1], L"time-zone-information") == 0)
+		written = timeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"environment-defaults") == 0)
 		written = environmentDefaults();
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)

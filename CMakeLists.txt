@@ -818,6 +818,20 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_actctx SOURCES test/test_actctx.c)
         wibo_add_fixture_bin(NAME test_overlapped_io SOURCES test/test_overlapped_io.c)
         wibo_add_fixture_bin(NAME test_time SOURCES test/test_time.c)
+        wibo_add_fixture_bin(NAME test_timezone_conversion SOURCES test/test_timezone_conversion.c)
+        set_tests_properties(wibo.test_timezone_conversion PROPERTIES ENVIRONMENT "WIBO_FIXTURE_NATIVE_ZONE=1")
+        add_test(NAME wibo.test_timezone_provider
+            COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_timezone_conversion.exe)
+        set_tests_properties(wibo.test_timezone_provider PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        foreach(fault failed truncated trailing invalid-state)
+            add_test(NAME wibo.test_timezone_provider_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_timezone_conversion.exe)
+            set_tests_properties(wibo.test_timezone_provider_${fault} PROPERTIES
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_ZONE_RESPONSE=${fault}")
+        endforeach()
         wibo_add_fixture_bin(NAME test_logical_processor_information SOURCES test/test_logical_processor_information.c)
         wibo_add_fixture_bin(NAME test_ntdll_time SOURCES test/test_ntdll_time.c)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)

@@ -13,6 +13,8 @@ struct TIME_ZONE_INFORMATION {
 	LONG DaylightBias;
 };
 
+static_assert(sizeof(TIME_ZONE_INFORMATION) == 172);
+
 using LPTIME_ZONE_INFORMATION = TIME_ZONE_INFORMATION *;
 
 constexpr DWORD TIME_ZONE_ID_UNKNOWN = 0;
@@ -24,6 +26,8 @@ namespace kernel32 {
 
 BOOL WINAPI SystemTimeToFileTime(const SYSTEMTIME *lpSystemTime, LPFILETIME lpFileTime);
 BOOL WINAPI FileTimeToSystemTime(const FILETIME *lpFileTime, LPSYSTEMTIME lpSystemTime);
+BOOL WINAPI SystemTimeToTzSpecificLocalTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *utc,
+											LPSYSTEMTIME local);
 BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *lpFileTime, LPFILETIME lpLocalFileTime);
 BOOL WINAPI LocalFileTimeToFileTime(const FILETIME *lpLocalFileTime, LPFILETIME lpFileTime);
 BOOL WINAPI DosDateTimeToFileTime(WORD wFatDate, WORD wFatTime, LPFILETIME lpFileTime);

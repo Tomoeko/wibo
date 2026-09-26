@@ -29,7 +29,21 @@ def property_value(name, cim_type, variant_type, data, status=0):
 
 operation, *arguments = sys.argv[1:]
 response = header(0x80041008)
-if operation == 'environment-defaults':
+if operation == 'time-zone-information':
+    transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
+    zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)
+    zone += bytes(64) + transition(3, 2, 2) + number(-60)
+    response = header() + number(2) + blob(zone)
+    fault = os.environ.get('WIBO_FIXTURE_ZONE_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'invalid-state':
+        response = header() + number(3) + blob(zone)
+elif operation == 'environment-defaults':
     values = [('APPDATA', 'C:\\Fixture\\Roaming'), ('LOCALAPPDATA', 'C:\\Fixture\\Local')]
     response = header() + number(len(values)) + b''.join(blob(name.encode()) + blob(value.encode())
                                                        for name, value in values)
