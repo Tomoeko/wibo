@@ -33,18 +33,27 @@ int main(void) {
 	TEST_CHECK(truncated[0] == modules[0]);
 	TEST_CHECK(truncated[1] == (HMODULE)(ULONG_PTR)0x1234);
 	HMODULE mainModule = GetModuleHandleA(NULL);
-	BOOL foundMain = FALSE;
+	FARPROC timeZone = GetProcAddress(kernel, "GetTimeZoneInformation");
+	TEST_CHECK(timeZone != NULL);
+	BOOL foundMain = FALSE, foundKernel = FALSE;
 	for (DWORD i = 0; i < required / sizeof(HMODULE); ++i) {
 		if (modules[i] == mainModule) {
 			foundMain = TRUE;
-			break;
+		}
+		if (modules[i] == kernel) {
+			foundKernel = TRUE;
+			TEST_CHECK(GetProcAddress(modules[i], "GetTimeZoneInformation") == timeZone);
 		}
 	}
 	TEST_CHECK(foundMain);
+	TEST_CHECK(foundKernel);
 
 	char baseName[MAX_PATH];
 	TEST_CHECK(GetModuleBaseNameA(process, mainModule, baseName, sizeof(baseName)) > 0);
 	TEST_CHECK(strstr(baseName, "test_psapi") != NULL);
+
+	TEST_CHECK(GetModuleBaseNameA(process, kernel, baseName, sizeof(baseName)) > 0);
+	TEST_CHECK(_stricmp(baseName, "kernel32.dll") == 0);
 
 	MODULEINFO info;
 	TEST_CHECK(GetModuleInformation(process, mainModule, &info, sizeof(info)));

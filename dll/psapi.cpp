@@ -23,19 +23,25 @@ bool validateCurrentProcess(HANDLE process) {
 	return false;
 }
 
-std::vector<wibo::ModuleInfo *> mappedModules() {
-	std::vector<wibo::ModuleInfo *> result;
+std::vector<wibo::ModulePtr> loadedModules() {
+	std::vector<wibo::ModulePtr> result;
 	std::unordered_set<wibo::ModuleInfo *> seen;
 	for (const auto &[key, module] : wibo::allLoadedModules()) {
 		(void)key;
-		if (!module || !module->executable || !seen.insert(module.get()).second) {
+		if (!module || (!module->executable && !module->moduleStub) || !seen.insert(module.get()).second) {
 			continue;
 		}
-		result.push_back(module.get());
+		result.push_back(module);
 	}
-	std::sort(result.begin(), result.end(), [](const auto *left, const auto *right) {
-		return reinterpret_cast<uintptr_t>(left->executable->imageBase) <
-			   reinterpret_cast<uintptr_t>(right->executable->imageBase);
+	std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+		if (static_cast<bool>(left->executable) != static_cast<bool>(right->executable)) {
+			return static_cast<bool>(left->executable);
+		}
+		if (left->executable) {
+			return reinterpret_cast<uintptr_t>(left->executable->imageBase) <
+				   reinterpret_cast<uintptr_t>(right->executable->imageBase);
+		}
+		return left->handle < right->handle;
 	});
 	return result;
 }
@@ -54,7 +60,7 @@ BOOL WINAPI EnumProcessModules(HANDLE hProcess, HMODULE *lphModule, DWORD cb, LP
 		return FALSE;
 	}
 
-	auto modules = mappedModules();
+	auto modules = loadedModules();
 	const size_t required = modules.size() * sizeof(HMODULE);
 	*lpcbNeeded =
 		required > std::numeric_limits<DWORD>::max() ? std::numeric_limits<DWORD>::max() : static_cast<DWORD>(required);
@@ -81,8 +87,9 @@ DWORD WINAPI GetModuleBaseNameA(HANDLE hProcess, HMODULE hModule, LPSTR lpBaseNa
 		kernel32::setLastError(ERROR_INVALID_HANDLE);
 		return 0;
 	}
-	const std::string name =
-		module->resolvedPath.empty() ? module->originalName : module->resolvedPath.filename().string();
+	const std::string name = module->moduleStub				? module->normalizedName
+							 : module->resolvedPath.empty() ? module->originalName
+															: module->resolvedPath.filename().string();
 	const size_t count = std::min(name.size(), static_cast<size_t>(nSize - 1));
 	std::memcpy(lpBaseName, name.data(), count);
 	lpBaseName[count] = '\0';
