@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "context.h"
+#include "directory_changes.h"
 #include "errors.h"
 #include "files.h"
 #include "handles.h"
@@ -186,6 +187,7 @@ void threadCleanup(void *param) {
 		return;
 	}
 	ws2::detail::cancelSocketIoForThread(pthread_self());
+	kernel32::cancelDirectoryIoForThread(pthread_self());
 	kernel32::closeApcState();
 	wibo::notifyDllThreadDetach();
 	wibo::uninstallTebForCurrentThread();

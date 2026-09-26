@@ -1,6 +1,7 @@
 #include "ioapiset.h"
 
 #include "context.h"
+#include "directory_changes.h"
 #include "errors.h"
 #include "internal.h"
 #include "overlapped_util.h"
@@ -13,6 +14,13 @@ namespace kernel32 {
 BOOL WINAPI CancelIoEx(HANDLE handle, LPOVERLAPPED overlapped) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CancelIoEx(%p, %p)\n", handle, overlapped);
+	if (auto directory = wibo::handles().getAs<DirectoryObject>(handle); directory && directory->valid()) {
+		if (!cancelDirectoryChanges(*directory, overlapped)) {
+			setLastError(1168); // ERROR_NOT_FOUND
+			return FALSE;
+		}
+		return TRUE;
+	}
 	if (auto file = wibo::handles().getAs<FileObject>(handle); file && file->valid()) {
 		setLastError(ERROR_NOT_SUPPORTED);
 		return FALSE;
@@ -38,27 +46,27 @@ BOOL WINAPI GetOverlappedResult(HANDLE hFile, LPOVERLAPPED lpOverlapped, LPDWORD
 		return FALSE;
 	}
 
-	if (bWait && lpOverlapped->Internal == STATUS_PENDING) {
+	if (bWait && detail::loadOverlappedStatus(lpOverlapped) == STATUS_PENDING) {
 		if (HANDLE waitHandle = kernel32::detail::normalizedOverlappedEventHandle(lpOverlapped)) {
 			WaitForSingleObject(waitHandle, INFINITE);
-		} else if (auto file = wibo::handles().getAs<FileObject>(hFile)) {
+		} else if (auto file = wibo::handles().getAs<FsObject>(hFile)) {
 			std::unique_lock lk(file->m);
 			CompletionWait completionWait;
-			file->overlappedCv.wait(lk, [&] { return lpOverlapped->Internal != STATUS_PENDING; });
+			file->overlappedCv.wait(lk, [&] { return detail::loadOverlappedStatus(lpOverlapped) != STATUS_PENDING; });
 		} else {
 			setLastError(ERROR_INVALID_HANDLE);
 			return FALSE;
 		}
 	}
 
-	const auto status = static_cast<NTSTATUS>(lpOverlapped->Internal);
+	const auto status = detail::loadOverlappedStatus(lpOverlapped);
 	if (status == STATUS_PENDING) {
 		setLastError(ERROR_IO_INCOMPLETE);
 		return FALSE;
 	}
 
 	if (lpNumberOfBytesTransferred) {
-		*lpNumberOfBytesTransferred = static_cast<DWORD>(lpOverlapped->InternalHigh);
+		*lpNumberOfBytesTransferred = static_cast<DWORD>(detail::loadOverlappedBytes(lpOverlapped));
 	}
 
 	DWORD error = wibo::winErrorFromNtStatus(status);

@@ -71,8 +71,24 @@ bool dispatchPendingApcs() {
 			state->pending.pop_front();
 		}
 		dispatched = true;
-		call_PAPCFUNC(reinterpret_cast<PAPCFUNC>(entry.callback), entry.argument);
+		if (entry.ioCompletion)
+			call_LPOVERLAPPED_COMPLETION_ROUTINE(reinterpret_cast<LPOVERLAPPED_COMPLETION_ROUTINE>(entry.callback),
+												 static_cast<DWORD>(entry.argument), entry.ioBytes,
+												 fromGuestPtr<OVERLAPPED>(entry.ioOverlapped));
+		else
+			call_PAPCFUNC(reinterpret_cast<PAPCFUNC>(entry.callback), entry.argument);
 	}
+}
+
+void queueIoCompletion(const std::shared_ptr<ApcState> &state, GUEST_PTR callback, DWORD error, DWORD bytes,
+					   GUEST_PTR overlapped) {
+	{
+		std::lock_guard lock(state->m);
+		if (state->terminated)
+			return;
+		state->pending.push_back({callback, error, bytes, overlapped, true});
+	}
+	state->notifyWaiters(false);
 }
 
 DWORD WINAPI QueueUserAPC(PAPCFUNC callback, HANDLE thread, ULONG_PTR argument) {

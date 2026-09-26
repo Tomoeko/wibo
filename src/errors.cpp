@@ -67,12 +67,12 @@ NTSTATUS statusFromWinError(DWORD error) {
 	}
 }
 
-NTSTATUS statusFromErrno(int err) {
-	return statusFromWinError(winErrorFromErrno(err));
-}
+NTSTATUS statusFromErrno(int err) { return statusFromWinError(winErrorFromErrno(err)); }
 
 DWORD winErrorFromNtStatus(NTSTATUS status) {
 	switch (status) {
+	case STATUS_HANDLES_CLOSED:
+		return ERROR_HANDLES_CLOSED;
 	case STATUS_SUCCESS:
 		return ERROR_SUCCESS;
 	case STATUS_FILE_LOCK_CONFLICT:

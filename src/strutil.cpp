@@ -11,6 +11,48 @@
 #include <string>
 #include <vector>
 
+std::optional<std::u16string> utf8ToUtf16(std::string_view name) {
+	std::u16string result;
+	for (size_t i = 0; i < name.size();) {
+		uint32_t codePoint = static_cast<unsigned char>(name[i++]);
+		unsigned continuation = 0;
+		uint32_t minimum = 0;
+		if (codePoint >= 0xc2 && codePoint <= 0xdf) {
+			continuation = 1;
+			codePoint &= 0x1f;
+			minimum = 0x80;
+		} else if (codePoint >= 0xe0 && codePoint <= 0xef) {
+			continuation = 2;
+			codePoint &= 0xf;
+			minimum = 0x800;
+		} else if (codePoint >= 0xf0 && codePoint <= 0xf4) {
+			continuation = 3;
+			codePoint &= 7;
+			minimum = 0x10000;
+		} else if (codePoint >= 0x80) {
+			return std::nullopt;
+		}
+		if (continuation > name.size() - i)
+			return std::nullopt;
+		for (unsigned j = 0; j < continuation; ++j) {
+			uint32_t next = static_cast<unsigned char>(name[i++]);
+			if ((next & 0xc0) != 0x80)
+				return std::nullopt;
+			codePoint = (codePoint << 6) | (next & 0x3f);
+		}
+		if (codePoint < minimum || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff))
+			return std::nullopt;
+		if (codePoint < 0x10000) {
+			result.push_back(static_cast<char16_t>(codePoint));
+		} else {
+			codePoint -= 0x10000;
+			result.push_back(static_cast<char16_t>(0xd800 + (codePoint >> 10)));
+			result.push_back(static_cast<char16_t>(0xdc00 + (codePoint & 0x3ff)));
+		}
+	}
+	return result;
+}
+
 bool utf16ToUtf8(std::u16string_view input, std::string &output) {
 	output.clear();
 	for (size_t i = 0; i < input.size(); ++i) {

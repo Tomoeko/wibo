@@ -86,11 +86,11 @@ HANDLE WINAPI CreateIoCompletionPort(HANDLE fileHandle, HANDLE existingPort, ULO
 		setLastError(ERROR_INVALID_PARAMETER);
 		return NO_HANDLE;
 	}
-	Pin<FileObject> file;
+	Pin<FsObject> file;
 	std::shared_ptr<ws2::detail::Socket> socket;
 	std::shared_ptr<const CompletionBinding> *completion = nullptr;
 	if (fileHandle != INVALID_HANDLE_VALUE) {
-		file = wibo::handles().getAs<FileObject>(fileHandle);
+		file = wibo::handles().getAs<FsObject>(fileHandle);
 		bool overlapped = false;
 		if (file && file->valid()) {
 			completion = &file->completion;

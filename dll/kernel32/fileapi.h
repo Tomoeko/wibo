@@ -55,7 +55,11 @@ constexpr DWORD FILE_TYPE_PIPE = 0x0003;
 constexpr DWORD INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
 constexpr DWORD INVALID_FILE_SIZE = 0xFFFFFFFF;
 
+typedef void(_CC_STDCALL *LPOVERLAPPED_COMPLETION_ROUTINE)(DWORD, DWORD, LPOVERLAPPED);
+
 namespace kernel32 {
+BOOL WINAPI ReadDirectoryChangesW(HANDLE handle, LPVOID buffer, DWORD length, BOOL subtree, DWORD filter,
+								  LPDWORD returned, LPOVERLAPPED operation, LPOVERLAPPED_COMPLETION_ROUTINE callback);
 
 DWORD WINAPI GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, GUEST_PTR *lpFilePart);
 DWORD WINAPI GetFullPathNameW(LPCWSTR lpFileName, DWORD nBufferLength, LPWSTR lpBuffer, GUEST_PTR *lpFilePart);

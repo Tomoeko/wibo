@@ -185,48 +185,6 @@ std::vector<WCHAR> fileInformationName(const kernel32::FsObject &file) {
 	return wide;
 }
 
-std::optional<std::u16string> directoryNameToUtf16(std::string_view name) {
-	std::u16string result;
-	for (size_t i = 0; i < name.size();) {
-		uint32_t codePoint = static_cast<unsigned char>(name[i++]);
-		unsigned continuation = 0;
-		uint32_t minimum = 0;
-		if (codePoint >= 0xc2 && codePoint <= 0xdf) {
-			continuation = 1;
-			codePoint &= 0x1f;
-			minimum = 0x80;
-		} else if (codePoint >= 0xe0 && codePoint <= 0xef) {
-			continuation = 2;
-			codePoint &= 0xf;
-			minimum = 0x800;
-		} else if (codePoint >= 0xf0 && codePoint <= 0xf4) {
-			continuation = 3;
-			codePoint &= 7;
-			minimum = 0x10000;
-		} else if (codePoint >= 0x80) {
-			return std::nullopt;
-		}
-		if (continuation > name.size() - i)
-			return std::nullopt;
-		for (unsigned j = 0; j < continuation; ++j) {
-			uint32_t next = static_cast<unsigned char>(name[i++]);
-			if ((next & 0xc0) != 0x80)
-				return std::nullopt;
-			codePoint = (codePoint << 6) | (next & 0x3f);
-		}
-		if (codePoint < minimum || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff))
-			return std::nullopt;
-		if (codePoint < 0x10000) {
-			result.push_back(static_cast<char16_t>(codePoint));
-		} else {
-			codePoint -= 0x10000;
-			result.push_back(static_cast<char16_t>(0xd800 + (codePoint >> 10)));
-			result.push_back(static_cast<char16_t>(0xdc00 + (codePoint & 0x3ff)));
-		}
-	}
-	return result;
-}
-
 bool directoryNameMatches(std::u16string_view pattern, std::u16string_view name) {
 	size_t patternIndex = 0, nameIndex = 0;
 	size_t star = std::u16string_view::npos, retry = 0;
@@ -649,7 +607,7 @@ NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE 
 	size_t written = 0, previous = 0;
 	while (directory.enumCookie < directory.enumEntries.size()) {
 		const auto &name = directory.enumEntries[directory.enumCookie];
-		auto wide = directoryNameToUtf16(name);
+		auto wide = utf8ToUtf16(name);
 		if (!wide)
 			return finish(STATUS_OBJECT_NAME_INVALID);
 		if (!directoryNameMatches(directory.enumPattern, *wide)) {

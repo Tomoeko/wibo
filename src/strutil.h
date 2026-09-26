@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+std::optional<std::u16string> utf8ToUtf16(std::string_view name);
 
 bool utf16ToUtf8(std::u16string_view input, std::string &output);
 

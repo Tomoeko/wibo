@@ -1277,10 +1277,10 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		fsObject = make_pin<DirectoryObject>(fd);
 	} else {
 		auto fileObj = make_pin<FileObject>(fd);
-		fileObj->overlapped = overlapped;
 		fileObj->appendOnly = appendOnly;
 		fsObject = std::move(fileObj);
 	}
+	fsObject->overlapped = overlapped;
 	fsObject->canonicalPath = std::move(canonicalPath);
 	fsObject->shareAccess = shareMask;
 	fsObject->openFlags = dwFlagsAndAttributes;

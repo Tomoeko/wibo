@@ -295,6 +295,7 @@ add_executable(wibo
     dll/kernel32/errhandlingapi.cpp
     dll/kernel32/formatmessage.cpp
     dll/kernel32/fibersapi.cpp
+    dll/kernel32/directory_changes.cpp
     dll/kernel32/fileapi.cpp
     dll/kernel32/handleapi.cpp
     dll/kernel32/heapapi.cpp
@@ -431,7 +432,7 @@ target_link_libraries(wibo PRIVATE mimalloc-obj)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(wibo PRIVATE atomic)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_link_libraries(wibo PRIVATE c++ c++abi)
+    target_link_libraries(wibo PRIVATE c++ c++abi "-framework CoreServices" "-framework CoreFoundation")
 endif()
 if (WIBO_ENABLE_LIBURING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(wibo PRIVATE WIBO_ENABLE_LIBURING=1)
@@ -719,6 +720,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_socket_receive SOURCES test/test_socket_receive.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_socket_receive PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_address_text SOURCES test/test_address_text.c COMPILE_OPTIONS -lws2_32)
+        if(APPLE)
+            wibo_add_fixture_bin(NAME test_directory_changes SOURCES test/test_directory_changes.c)
+        endif()
         wibo_add_fixture_bin(NAME test_address_parse SOURCES test/test_address_parse.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_address_text PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_listen SOURCES test/test_socket_listen.c COMPILE_OPTIONS -lws2_32)

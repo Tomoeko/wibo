@@ -10,8 +10,14 @@
 namespace kernel32 {
 void initializeEnvironment();
 
+struct CompletionBinding;
+class DirectoryWatcher;
+
 struct FsObject : ObjectBase {
 	std::mutex m;
+	std::condition_variable overlappedCv;
+	std::shared_ptr<const CompletionBinding> completion;
+	bool overlapped = false;
 	int fd = -1;
 	std::filesystem::path canonicalPath;
 	uint32_t shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
@@ -32,18 +38,12 @@ struct FileRangeLock {
 	bool exclusive;
 };
 
-struct CompletionBinding;
-
 struct FileObject : FsObject {
-	std::shared_ptr<const CompletionBinding> completion;
 	std::vector<FileRangeLock> rangeLocks;
 	off_t filePos = 0;
-	bool overlapped = false;
 	bool appendOnly = false;
 	bool isPipe = false;
 	bool pipeMessageMode = false;
-	// Used to notify overlapped operations without an event handle
-	std::condition_variable overlappedCv;
 
 	explicit FileObject(int fd) : FileObject(ObjectType::File, fd) {}
 	FileObject(ObjectType type, int fd) : FsObject(type, fd) {
@@ -68,6 +68,10 @@ struct DirectoryObject final : FsObject {
 	std::u16string enumPattern;
 	size_t enumCookie = 0;
 	bool enumStarted = false;
+	bool watchClosed = false;
+	std::shared_ptr<DirectoryWatcher> watcher;
+	~DirectoryObject() override;
+	void onLastHandleClosed() noexcept override;
 
 	explicit DirectoryObject(int dirfd) : FsObject(kType, dirfd) {}
 };
@@ -104,6 +108,9 @@ struct ApcState final : WaitableObject {
 	struct Entry {
 		GUEST_PTR callback;
 		ULONG_PTR argument;
+		DWORD ioBytes = 0;
+		GUEST_PTR ioOverlapped = 0;
+		bool ioCompletion = false;
 	};
 	std::deque<Entry> pending;
 	bool terminated = false;
@@ -114,6 +121,8 @@ std::shared_ptr<ApcState> currentApcState();
 void installApcState(std::shared_ptr<ApcState> state);
 void closeApcState();
 bool dispatchPendingApcs();
+void queueIoCompletion(const std::shared_ptr<ApcState> &state, GUEST_PTR callback, DWORD error, DWORD bytes,
+					   GUEST_PTR overlapped);
 DWORD waitAlertable(HANDLE handle, WaitableObject *object, DWORD milliseconds);
 
 bool createWorkerThread(DWORD (*function)(void *), void *parameter, DWORD &error);

@@ -39,7 +39,7 @@ inline void signalOverlappedCompletion(const std::shared_ptr<const CompletionBin
 		binding->port->post({static_cast<DWORD>(bytesTransferred), binding->key, context, status});
 }
 
-inline void signalOverlappedEvent(FileObject *file, OVERLAPPED *ov, NTSTATUS status, size_t bytesTransferred) {
+inline void signalOverlappedEvent(FsObject *file, OVERLAPPED *ov, NTSTATUS status, size_t bytesTransferred) {
 	const auto binding = file ? std::atomic_load(&file->completion) : nullptr;
 	signalOverlappedCompletion(binding, ov, status, bytesTransferred);
 	if (file)
