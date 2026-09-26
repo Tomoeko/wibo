@@ -5,6 +5,7 @@
 #include "errors.h"
 #include "handles.h"
 #include "kernel32/internal.h"
+#include "kernel32/processenv.h"
 #include "strutil.h"
 #include "system_provider.h"
 
@@ -275,31 +276,33 @@ LSTATUS setRegistryValue(HKEY key, LPCWSTR name, DWORD reserved, DWORD type, con
 	return ERROR_SUCCESS;
 }
 
-LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWORD type, BYTE *data, LPDWORD size,
-						   bool ansi) {
-	if (reserved || (data && !size)) {
-		return ERROR_INVALID_PARAMETER;
-	}
+LSTATUS readRegistryValue(HKEY key, LPCWSTR name, RegistryValue &value) {
 	std::lock_guard<std::mutex> lock(g_registryMutex);
 	auto handle = handleDataFromHKeyLocked(key);
 	if (!handle) {
 		return ERROR_INVALID_HANDLE;
 	}
-	RegistryValue providerValue{};
-	const RegistryValue *selected = nullptr;
+	const auto canonicalName = canonicalizeValueName(name);
 	auto keyValues = g_registryValues.find(handle->canonicalPath);
 	if (keyValues != g_registryValues.end()) {
-		auto entry = keyValues->second.find(canonicalizeValueName(name));
-		if (entry != keyValues->second.end())
-			selected = &entry->second;
+		auto entry = keyValues->second.find(canonicalName);
+		if (entry != keyValues->second.end()) {
+			value = entry->second;
+			return ERROR_SUCCESS;
+		}
 	}
-	if (!selected) {
-		const LSTATUS status = providerQuery(*handle, canonicalizeValueName(name), providerValue);
-		if (status != ERROR_SUCCESS)
-			return status;
-		selected = &providerValue;
+	return providerQuery(*handle, canonicalName, value);
+}
+
+LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWORD type, BYTE *data, LPDWORD size,
+						   bool ansi) {
+	if (reserved || (data && !size)) {
+		return ERROR_INVALID_PARAMETER;
 	}
-	const RegistryValue &value = *selected;
+	RegistryValue value;
+	const LSTATUS status = readRegistryValue(key, name, value);
+	if (status != ERROR_SUCCESS)
+		return status;
 	const bool narrowString = ansi && isRegistryString(value.type);
 	const DWORD required = static_cast<DWORD>(narrowString ? value.data.size() / sizeof(WCHAR) : value.data.size());
 	const DWORD capacity = data ? *size : 0;
@@ -327,9 +330,138 @@ LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWOR
 	return ERROR_SUCCESS;
 }
 
+constexpr DWORD kRrfTypeMask = 0xFFFF;
+constexpr DWORD kRrfExpandString = 0x4;
+constexpr DWORD kRrfDword = 0x18;
+constexpr DWORD kRrfQword = 0x48;
+constexpr DWORD kRrfView64 = 0x10000;
+constexpr DWORD kRrfView32 = 0x20000;
+constexpr DWORD kRrfNoExpand = 0x10000000;
+constexpr DWORD kRrfZeroOnFailure = 0x20000000;
+constexpr LSTATUS kErrorDatatypeMismatch = 1629;
+constexpr LSTATUS kErrorUnsupportedType = 1630;
+
+DWORD registryTypeFlag(DWORD type) {
+	switch (type) {
+	case 0:
+		return 0x1; // REG_NONE
+	case 1:
+		return 0x2; // REG_SZ
+	case 2:
+		return 0x4; // REG_EXPAND_SZ
+	case 3:
+		return 0x8; // REG_BINARY
+	case 4:
+		return 0x10; // REG_DWORD
+	case 7:
+		return 0x20; // REG_MULTI_SZ
+	case 11:
+		return 0x40; // REG_QWORD
+	default:
+		return 0;
+	}
+}
+
+LSTATUS prepareRegistryString(RegistryValue &value, bool expand) {
+	if (!isRegistryString(value.type))
+		return ERROR_SUCCESS;
+	if (value.data.size() % sizeof(WCHAR))
+		return kErrorInvalidData;
+	if (value.data.empty() || value.data[value.data.size() - 2] || value.data.back())
+		value.data.resize(value.data.size() + sizeof(WCHAR), 0);
+	if (value.type != kRegExpandSz || !expand)
+		return ERROR_SUCCESS;
+	std::u16string source(value.data.size() / sizeof(WCHAR), u'\0');
+	std::memcpy(source.data(), value.data.data(), value.data.size());
+	DWORD required = kernel32::ExpandEnvironmentStringsW(reinterpret_cast<LPCWSTR>(source.c_str()), nullptr, 0);
+	for (unsigned attempt = 0; attempt < 3; ++attempt) {
+		if (!required)
+			return static_cast<LSTATUS>(kernel32::getLastError());
+		if (required > std::numeric_limits<DWORD>::max() / sizeof(WCHAR))
+			return ERROR_NOT_ENOUGH_MEMORY;
+		std::vector<WCHAR> expanded(required);
+		DWORD result =
+			kernel32::ExpandEnvironmentStringsW(reinterpret_cast<LPCWSTR>(source.c_str()), expanded.data(), required);
+		if (!result)
+			return static_cast<LSTATUS>(kernel32::getLastError());
+		if (result <= required) {
+			const auto *bytes = reinterpret_cast<const BYTE *>(expanded.data());
+			value.data.assign(bytes, bytes + static_cast<size_t>(result) * sizeof(WCHAR));
+			value.type = kRegSz;
+			return ERROR_SUCCESS;
+		}
+		required = result;
+	}
+	return kErrorMoreData;
+}
+
+LSTATUS getRegistryValue(HKEY key, LPCWSTR name, DWORD flags, LPDWORD type, PVOID data, LPDWORD size) {
+	RegistryValue value;
+	LSTATUS status = readRegistryValue(key, name, value);
+	if (status != ERROR_SUCCESS)
+		return status;
+	status = prepareRegistryString(value, !(flags & kRrfNoExpand));
+	if (status != ERROR_SUCCESS)
+		return status;
+	if (value.data.size() > std::numeric_limits<DWORD>::max())
+		return ERROR_NOT_ENOUGH_MEMORY;
+	const DWORD capacity = data ? *size : 0;
+	const DWORD required = static_cast<DWORD>(value.data.size());
+	if (type)
+		*type = value.type;
+	if (size)
+		*size = required;
+	const DWORD allowed = flags & kRrfTypeMask;
+	if (allowed != kRrfTypeMask && !(allowed & registryTypeFlag(value.type)))
+		return kErrorUnsupportedType;
+	if (value.type == 3 && ((allowed == kRrfDword && required != sizeof(DWORD)) ||
+							(allowed == kRrfQword && required != sizeof(ULONGLONG))))
+		return kErrorDatatypeMismatch;
+	if (!data)
+		return ERROR_SUCCESS;
+	if (capacity < required)
+		return kErrorMoreData;
+	if (required)
+		std::memcpy(data, value.data.data(), required);
+	return ERROR_SUCCESS;
+}
+
 } // namespace
 
 namespace advapi32 {
+
+LSTATUS WINAPI RegGetValueW(HKEY key, LPCWSTR subkey, LPCWSTR value, DWORD flags, LPDWORD type, PVOID data,
+							LPDWORD size) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegGetValueW(%p, %p, %p, 0x%x, %p, %p, %p)\n", key, subkey, value, flags, type, data, size);
+	const DWORD savedError = kernel32::getLastError();
+	const DWORD capacity = data && size ? *size : 0;
+	const auto status = [&]() -> LSTATUS {
+		const DWORD allowed = flags & kRrfTypeMask;
+		if ((data && !size) || (flags & ~(kRrfTypeMask | kRrfView64 | kRrfView32 | kRrfNoExpand | kRrfZeroOnFailure)) ||
+			(flags & (kRrfView64 | kRrfView32)) == (kRrfView64 | kRrfView32) ||
+			(!(flags & kRrfNoExpand) && (allowed & kRrfExpandString) && allowed != kRrfTypeMask))
+			return ERROR_INVALID_PARAMETER;
+		if (!subkey || !*subkey)
+			return getRegistryValue(key, value, flags, type, data, size);
+		HKEY opened = NO_HANDLE;
+		REGSAM access = 0x1; // KEY_QUERY_VALUE
+		if (flags & kRrfView64)
+			access |= KEY_WOW64_64KEY;
+		if (flags & kRrfView32)
+			access |= KEY_WOW64_32KEY;
+		LSTATUS result = RegOpenKeyExW(key, subkey, 0, access, &opened);
+		if (result == ERROR_SUCCESS) {
+			result = getRegistryValue(opened, value, flags, type, data, size);
+			RegCloseKey(opened);
+		}
+		return result;
+	}();
+	if (status != ERROR_SUCCESS && (flags & kRrfZeroOnFailure) && capacity)
+		std::memset(data, 0, capacity);
+	kernel32::setLastError(savedError);
+	return status;
+}
 
 LSTATUS WINAPI RegCreateKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult) {
 	HOST_CONTEXT_GUARD();

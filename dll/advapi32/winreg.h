@@ -34,6 +34,9 @@ constexpr REGSAM KEY_WOW64_32KEY = 0x00000200;
 
 namespace advapi32 {
 
+LSTATUS WINAPI RegGetValueW(HKEY key, LPCWSTR subkey, LPCWSTR value, DWORD flags, LPDWORD type, PVOID data,
+							LPDWORD size);
+
 LSTATUS WINAPI RegCreateKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult);
 
 LSTATUS WINAPI RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, LPSTR lpClass, DWORD dwOptions,
