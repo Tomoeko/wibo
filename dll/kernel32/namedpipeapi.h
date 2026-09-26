@@ -5,6 +5,9 @@
 
 namespace kernel32 {
 
+struct FileObject;
+NTSTATUS peekPipeControl(FileObject *pipe, void *output, ULONG length, ULONG_PTR &information);
+
 BOOL WINAPI CreatePipe(PHANDLE hReadPipe, PHANDLE hWritePipe, LPSECURITY_ATTRIBUTES lpPipeAttributes, DWORD nSize);
 BOOL WINAPI PeekNamedPipe(HANDLE hNamedPipe, LPVOID lpBuffer, DWORD nBufferSize, LPDWORD lpBytesRead,
 						  LPDWORD lpTotalBytesAvail, LPDWORD lpBytesLeftThisMessage);

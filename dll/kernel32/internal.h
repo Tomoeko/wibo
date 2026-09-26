@@ -36,6 +36,7 @@ struct FileObject : FsObject {
 	bool overlapped = false;
 	bool appendOnly = false;
 	bool isPipe = false;
+	bool pipeMessageMode = false;
 	// Used to notify overlapped operations without an event handle
 	std::condition_variable overlappedCv;
 

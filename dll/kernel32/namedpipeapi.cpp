@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <mutex>
 #include <optional>
+#include <poll.h>
 #include <string>
 #include <string_view>
 #include <sys/ioctl.h>
@@ -186,6 +187,7 @@ struct NamedPipeInstance final : FileObject {
 
 	NamedPipeInstance(int fd, Pin<NamedPipeState> st, int companion, DWORD open, DWORD mode)
 		: FileObject(kType, fd), state(std::move(st)), companionFd(companion), accessMode(open), pipeMode(mode) {
+		pipeMessageMode = (mode & PIPE_TYPE_MESSAGE) != 0;
 		if (state) {
 			state->registerInstance(this);
 		}
@@ -273,7 +275,67 @@ Pin<NamedPipeInstance> acquireConnectableInstance(Pin<NamedPipeState> &state, DW
 	return {};
 }
 
+struct PipePeek {
+	DWORD available = 0;
+	DWORD copied = 0;
+	bool closed = false;
+};
+
+// The caller holds the file lock so availability and data describe the same peek.
+DWORD peekPipeBytes(FileObject *pipe, void *buffer, DWORD capacity, PipePeek &result) {
+	int available = 0;
+	if (ioctl(pipe->fd, FIONREAD, &available) != 0)
+		return wibo::winErrorFromErrno(errno);
+	result.available = static_cast<DWORD>(std::max(available, 0));
+	pollfd descriptor{pipe->fd, POLLIN, 0};
+	int ready;
+	do {
+		ready = poll(&descriptor, 1, 0);
+	} while (ready < 0 && errno == EINTR);
+	if (ready < 0)
+		return wibo::winErrorFromErrno(errno);
+	result.closed = (descriptor.revents & POLLHUP) != 0;
+	if (buffer && capacity && result.available) {
+		// Socketpairs support a non-consuming peek; Unix FIFOs cannot peek payloads.
+		const size_t requested = std::min<size_t>({capacity, result.available, SSIZE_MAX});
+		ssize_t count;
+		do {
+			count = recv(pipe->fd, buffer, requested, MSG_PEEK | MSG_DONTWAIT);
+		} while (count < 0 && errno == EINTR);
+		if (count < 0)
+			return errno == ENOTSOCK ? ERROR_NOT_SUPPORTED : wibo::winErrorFromErrno(errno);
+		result.copied = static_cast<DWORD>(count);
+	}
+	return ERROR_SUCCESS;
+}
+
 } // namespace
+
+NTSTATUS peekPipeControl(FileObject *pipe, void *output, ULONG length, ULONG_PTR &information) {
+	constexpr ULONG kHeaderSize = 4 * sizeof(ULONG);
+	if (length < kHeaderSize)
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (!output)
+		return STATUS_ACCESS_VIOLATION;
+	if (pipe->pipeMessageMode)
+		return STATUS_NOT_SUPPORTED;
+	if (auto *instance = ::detail::castTo<NamedPipeInstance>(pipe)) {
+		std::lock_guard connectLock(instance->connectMutex);
+		if (!instance->clientConnected)
+			return STATUS_INVALID_PIPE_STATE;
+	}
+	std::lock_guard lock(pipe->m);
+	PipePeek result;
+	const DWORD error = peekPipeBytes(pipe, static_cast<BYTE *>(output) + kHeaderSize, length - kHeaderSize, result);
+	if (error)
+		return error == ERROR_NOT_SUPPORTED ? STATUS_NOT_SUPPORTED : wibo::statusFromWinError(error);
+	if (result.closed && !result.available)
+		return STATUS_PIPE_BROKEN;
+	const ULONG header[] = {result.closed ? 4U : 3U, result.available, 0, 0};
+	memcpy(output, header, sizeof(header));
+	information = kHeaderSize + result.copied;
+	return STATUS_SUCCESS;
+}
 
 bool tryCreateFileNamedPipeA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
 							 LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
@@ -326,6 +388,7 @@ bool tryCreateFileNamedPipeA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwS
 	}
 	clientFd = -1;
 
+	clientObj->pipeMessageMode = instancePin->pipeMessageMode;
 	clientObj->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
 	clientObj->overlapped = (dwFlagsAndAttributes & FILE_FLAG_OVERLAPPED) != 0;
 
@@ -418,39 +481,16 @@ BOOL WINAPI PeekNamedPipe(HANDLE hNamedPipe, LPVOID lpBuffer, DWORD nBufferSize,
 	}
 
 	std::lock_guard lock(pipe->m);
-	int available = 0;
-	if (ioctl(pipe->fd, FIONREAD, &available) != 0) {
-		setLastErrorFromErrno();
+	PipePeek result;
+	const DWORD error = peekPipeBytes(pipe.get(), lpBuffer, nBufferSize, result);
+	if (error) {
+		setLastError(error);
 		return FALSE;
 	}
-	if (available < 0) {
-		available = 0;
-	}
-
-	DWORD bytesRead = 0;
-	if (lpBuffer && nBufferSize != 0 && available != 0) {
-		// Named duplex pipes use socketpairs, which provide a true non-consuming
-		// peek.  A Unix FIFO has no equivalent operation; consuming and writing
-		// bytes back would reorder the stream when another writer is active.
-		size_t requested = std::min<size_t>(nBufferSize, static_cast<size_t>(available));
-		requested = std::min<size_t>(requested, SSIZE_MAX);
-		ssize_t rc;
-		do {
-			rc = recv(pipe->fd, lpBuffer, requested, MSG_PEEK);
-		} while (rc < 0 && errno == EINTR);
-		if (rc < 0) {
-			setLastError(errno == ENOTSOCK ? ERROR_NOT_SUPPORTED : wibo::winErrorFromErrno(errno));
-			return FALSE;
-		}
-		bytesRead = static_cast<DWORD>(rc);
-	}
-
-	if (lpBytesRead) {
-		*lpBytesRead = bytesRead;
-	}
-	if (lpTotalBytesAvail) {
-		*lpTotalBytesAvail = static_cast<DWORD>(available);
-	}
+	if (lpBytesRead)
+		*lpBytesRead = result.copied;
+	if (lpTotalBytesAvail)
+		*lpTotalBytesAvail = result.available;
 	// Wibo's named-pipe transport is byte-stream based. There is therefore no
 	// remainder in a discrete message to report.
 	if (lpBytesLeftThisMessage) {
