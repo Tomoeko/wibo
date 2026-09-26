@@ -273,6 +273,40 @@ int WINAPI bind(SOCKET handle, LPCVOID address, int length) {
 		return detail::failSocket(detail::socketError(errno));
 	return 0;
 }
+int WINAPI connect(SOCKET handle, LPCVOID address, int length) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("connect(0x%llx, %p, %d)\n", static_cast<unsigned long long>(handle), address, length);
+	const auto state = detail::findSocket(handle);
+	if (!state)
+		return -1;
+	sockaddr_storage native{};
+	socklen_t nativeLength = 0;
+	const int status = detail::addressToNative(address, length, native, nativeLength);
+	if (status)
+		return detail::failSocket(status);
+	if ((native.ss_family == AF_INET ? AF_INET : kWinInet6) != state->family)
+		return detail::failSocket(10047);
+	int type = 0;
+	socklen_t typeLength = sizeof(type);
+	if (::getsockopt(state->descriptor, SOL_SOCKET, SO_TYPE, &type, &typeLength) < 0)
+		return detail::failSocket(detail::socketError(errno));
+	const bool unspecified = native.ss_family == AF_INET
+								 ? reinterpret_cast<const sockaddr_in *>(&native)->sin_addr.s_addr == 0
+								 : IN6_IS_ADDR_UNSPECIFIED(&reinterpret_cast<const sockaddr_in6 *>(&native)->sin6_addr);
+	if (unspecified) {
+		if (type != SOCK_DGRAM)
+			return detail::failSocket(10049);
+		native = {};
+		native.ss_family = AF_UNSPEC;
+		nativeLength = sizeof(sockaddr);
+#if defined(__APPLE__)
+		native.ss_len = nativeLength;
+#endif
+	}
+	if (::connect(state->descriptor, reinterpret_cast<sockaddr *>(&native), nativeLength) < 0)
+		return detail::failSocket(errno == EINPROGRESS ? 10035 : detail::socketError(errno));
+	return 0;
+}
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("getsockname(0x%llx, %p, %p)\n", static_cast<unsigned long long>(handle), address, length);

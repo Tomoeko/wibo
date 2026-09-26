@@ -193,6 +193,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "bind";
 	case 3:
 		return "closesocket";
+	case 4:
+		return "connect";
 	case 6:
 		return "getsockname";
 	case 23:
@@ -217,6 +219,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "gethostbyname";
 	case 57:
 		return "gethostname";
+	case 111:
+		return "WSAGetLastError";
 	case 115:
 		return "WSAStartup";
 	case 116:
