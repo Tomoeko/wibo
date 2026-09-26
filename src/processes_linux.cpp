@@ -45,6 +45,7 @@ class LinuxProcessManager final : public wibo::detail::ProcessManagerImpl {
 	bool init() override;
 	void shutdown() override;
 	bool addProcess(Pin<ProcessObject> po) override;
+	Pin<ProcessObject> findProcess(pid_t pid) override;
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
@@ -179,6 +180,13 @@ bool LinuxProcessManager::registerProcess(int pidfd, const Pin<ProcessObject> &p
 		}
 	}
 	return false;
+}
+Pin<ProcessObject> LinuxProcessManager::findProcess(pid_t pid) {
+	std::lock_guard lock(m);
+	for (const auto &entry : mReg)
+		if (entry.process && entry.process->pid == pid)
+			return entry.process.clone();
+	return {};
 }
 
 Pin<ProcessObject> LinuxProcessManager::takeProcess(int pidfd) {

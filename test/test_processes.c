@@ -115,6 +115,28 @@ static void test_createprocess_failure(void) {
 
 static int parent_main(void) {
 	test_createprocess_failure();
+	HANDLE current = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, TRUE, GetCurrentProcessId());
+	TEST_CHECK(current != NULL);
+	DWORD handleFlags = 0, currentExit = 0;
+	TEST_CHECK(GetHandleInformation(current, &handleFlags));
+	TEST_CHECK_EQ(HANDLE_FLAG_INHERIT, handleFlags & HANDLE_FLAG_INHERIT);
+	TEST_CHECK(GetExitCodeProcess(current, &currentExit));
+	TEST_CHECK_EQ(STILL_ACTIVE, currentExit);
+	TEST_CHECK_EQ(WAIT_FAILED, WaitForSingleObject(current, 0));
+	TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+	TEST_CHECK_EQ(WAIT_FAILED, WaitForMultipleObjects(1, &current, FALSE, 0));
+	TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+	TEST_CHECK(!TerminateProcess(current, 99));
+	TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+	TEST_CHECK(CloseHandle(current));
+	current = OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId());
+	TEST_CHECK(current != NULL);
+	TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForSingleObject(current, 0));
+	TEST_CHECK(!GetExitCodeProcess(current, &currentExit));
+	TEST_CHECK_EQ(ERROR_ACCESS_DENIED, GetLastError());
+	TEST_CHECK(CloseHandle(current));
+	TEST_CHECK(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, 0) == NULL);
+	TEST_CHECK_EQ(ERROR_INVALID_PARAMETER, GetLastError());
 
 	char modulePath[MAX_PATH];
 	DWORD pathLen = GetModuleFileNameA(NULL, modulePath, (DWORD)sizeof(modulePath));
@@ -134,6 +156,8 @@ static int parent_main(void) {
 
 	TEST_CHECK(CreateProcessA(modulePath, commandLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi));
 	TEST_CHECK(pi.hProcess != NULL);
+	HANDLE reopened = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pi.dwProcessId);
+	TEST_CHECK(reopened != NULL && reopened != pi.hProcess);
 
 	HANDLE processHandle = NULL;
 	TEST_CHECK(DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &processHandle, 0, FALSE,
@@ -157,6 +181,10 @@ static int parent_main(void) {
 
 	TEST_CHECK(GetExitCodeProcess(processHandle, &exitCode));
 	TEST_CHECK_EQ(childExitCode, exitCode);
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(reopened, 0));
+	TEST_CHECK(GetExitCodeProcess(reopened, &exitCode));
+	TEST_CHECK_EQ(childExitCode, exitCode);
+	TEST_CHECK(CloseHandle(reopened));
 
 	TEST_CHECK(CloseHandle(processHandle));
 	if (pi.hThread) {

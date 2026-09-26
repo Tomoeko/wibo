@@ -51,8 +51,9 @@ BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, H
 
 	auto &handles = wibo::handles();
 	if (isPseudoCurrentProcessHandle(hSourceHandle)) {
-		auto po = make_pin<ProcessObject>(getpid(), -1, false);
-		auto handle = handles.alloc(std::move(po), 0, 0);
+		auto po = make_pin<ProcessObject>(getpid(), -1);
+		const auto access = (dwOptions & DUPLICATE_SAME_ACCESS) ? PROCESS_ALL_ACCESS : dwDesiredAccess;
+		auto handle = handles.alloc(std::move(po), access, bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
 		DEBUG_LOG("DuplicateHandle: created process handle for current process -> %p\n", handle);
 		*lpTargetHandle = handle;
 		return TRUE;

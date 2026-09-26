@@ -232,6 +232,14 @@ class Handles {
 		return std::move(obj).downcast<T>();
 	}
 	bool setInformation(HANDLE h, uint32_t mask, uint32_t value);
+	template <ObjectBaseType T, class Predicate> Pin<T> findAs(Predicate &&predicate) {
+		std::shared_lock lock(m);
+		for (const auto &entry : mSlots) {
+			if (auto *object = detail::castTo<T>(entry.obj); object && std::invoke(predicate, object))
+				return Pin<T>::acquire(object);
+		}
+		return {};
+	}
 	bool getInformation(HANDLE h, uint32_t *outFlags) const;
 	bool duplicateTo(HANDLE src, Handles &dst, HANDLE &out, uint32_t desiredAccess, bool inherit, uint32_t options);
 

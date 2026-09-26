@@ -87,6 +87,9 @@ bool ProcessManager::addProcess(Pin<ProcessObject> po) {
 }
 
 bool ProcessManager::running() const { return mImpl && mImpl->running(); }
+Pin<ProcessObject> ProcessManager::findProcess(pid_t pid) {
+	return mImpl ? mImpl->findProcess(pid) : Pin<ProcessObject>{};
+}
 
 ProcessManager &processes() {
 	static ProcessManager mgr;

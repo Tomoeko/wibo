@@ -68,6 +68,10 @@ struct STARTUPINFOEXA {
 };
 
 constexpr DWORD TLS_OUT_OF_INDEXES = 0xFFFFFFFFu;
+constexpr DWORD PROCESS_TERMINATE = 0x0001;
+constexpr DWORD PROCESS_QUERY_INFORMATION = 0x0400;
+constexpr DWORD PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+constexpr DWORD PROCESS_ALL_ACCESS = STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0xFFFF;
 constexpr DWORD NORMAL_PRIORITY_CLASS = 0x00000020;
 constexpr DWORD THREAD_SUSPEND_RESUME = 0x0002;
 constexpr DWORD THREAD_SET_INFORMATION = 0x0020;
@@ -96,6 +100,7 @@ DWORD WINAPI GetCurrentProcessId();
 DWORD WINAPI GetCurrentThreadId();
 HANDLE WINAPI GetCurrentThread();
 HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId);
+HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId);
 DWORD WINAPI GetThreadId(HANDLE Thread);
 BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature);
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask);

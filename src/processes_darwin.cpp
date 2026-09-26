@@ -69,6 +69,7 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 	bool init() override;
 	void shutdown() override;
 	bool addProcess(Pin<ProcessObject> po) override;
+	Pin<ProcessObject> findProcess(pid_t pid) override;
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
@@ -180,6 +181,11 @@ void DarwinProcessManager::shutdown() {
 bool DarwinProcessManager::registerProcess(pid_t pid, const Pin<ProcessObject> &process) {
 	std::lock_guard lk(m);
 	return mProcesses.emplace(pid, process.clone()).second;
+}
+Pin<ProcessObject> DarwinProcessManager::findProcess(pid_t pid) {
+	std::lock_guard lock(m);
+	const auto found = mProcesses.find(pid);
+	return found == mProcesses.end() ? Pin<ProcessObject>{} : found->second.clone();
 }
 
 Pin<ProcessObject> DarwinProcessManager::takeProcess(pid_t pid) {

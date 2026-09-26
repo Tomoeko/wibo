@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -426,6 +427,36 @@ DWORD WINAPI GetCurrentProcessId() {
 	DEBUG_LOG("GetCurrentProcessId() -> %u\n", pid);
 	return pid;
 }
+HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenProcess(0x%x, %d, %u)\n", access, inherit, processId);
+	if (!processId || processId > static_cast<DWORD>(INT_MAX)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	if (access & ~PROCESS_ALL_ACCESS) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	}
+	const auto pid = static_cast<pid_t>(processId);
+	auto process = wibo::handles().findAs<ProcessObject>([&](const auto *object) { return object->pid == pid; });
+	if (!process) {
+		if (pid == getpid())
+			process = make_pin<ProcessObject>(pid, -1);
+		else
+			process = wibo::processes().findProcess(pid);
+	}
+	if (!process) {
+		const int result = ::kill(pid, 0);
+		setLastError(result == 0	  ? ERROR_NOT_SUPPORTED
+					 : errno == EPERM ? ERROR_ACCESS_DENIED
+									  : ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	if (access & PROCESS_QUERY_INFORMATION)
+		access |= PROCESS_QUERY_LIMITED_INFORMATION;
+	return wibo::handles().alloc(std::move(process), access, inherit ? HANDLE_FLAG_INHERIT : 0);
+}
 
 DWORD WINAPI GetCurrentThreadId() {
 	HOST_CONTEXT_GUARD();
@@ -569,11 +600,18 @@ BOOL WINAPI TerminateProcess(HANDLE hProcess, UINT uExitCode) {
 	if (isPseudoCurrentProcessHandle(hProcess)) {
 		exitInternal(uExitCode);
 	}
-	auto process = wibo::handles().getAs<ProcessObject>(hProcess);
+	HandleMeta meta{};
+	auto process = wibo::handles().getAs<ProcessObject>(hProcess, &meta);
 	if (!process) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	if (!(meta.grantedAccess & PROCESS_TERMINATE)) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+	if (process->pid == getpid())
+		exitInternal(uExitCode);
 	std::lock_guard lk(process->m);
 	if (process->signaled) {
 		return TRUE;
@@ -623,12 +661,17 @@ BOOL WINAPI GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode) {
 		*lpExitCode = STILL_ACTIVE;
 		return TRUE;
 	}
-	auto process = wibo::handles().getAs<ProcessObject>(hProcess);
+	HandleMeta meta{};
+	auto process = wibo::handles().getAs<ProcessObject>(hProcess, &meta);
 	if (!process) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
 	DWORD exitCode = STILL_ACTIVE;
+	if (!(meta.grantedAccess & (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION))) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
 	std::lock_guard lk(process->m);
 	if (process->signaled) {
 		exitCode = process->exitCode;
@@ -1011,9 +1054,9 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 	if (lpProcessInformation) {
 		lpProcessInformation->dwProcessId = static_cast<DWORD>(obj->pid);
 		lpProcessInformation->dwThreadId = static_cast<DWORD>(obj->pid); // Use the process ID as the thread ID
-		lpProcessInformation->hProcess = wibo::handles().alloc(obj.clone(), 0 /* TODO: access */, 0);
+		lpProcessInformation->hProcess = wibo::handles().alloc(obj.clone(), PROCESS_ALL_ACCESS, 0);
 		// Give hThread a process handle for now
-		lpProcessInformation->hThread = wibo::handles().alloc(std::move(obj), 0 /* TODO: access */, 0);
+		lpProcessInformation->hThread = wibo::handles().alloc(std::move(obj), PROCESS_ALL_ACCESS, 0);
 	}
 	(void)lpProcessAttributes;
 	(void)lpThreadAttributes;

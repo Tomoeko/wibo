@@ -880,6 +880,10 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 		return ok ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
 	}
 	case ObjectType::Process: {
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
 		auto po = std::move(obj).downcast<ProcessObject>();
 		std::unique_lock lk(po->m);
 		if (!po->signaled && !po->waitable) {
@@ -923,7 +927,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread) &&
+		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread || pin->type == ObjectType::Process) &&
 			!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;

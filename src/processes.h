@@ -31,6 +31,7 @@ class ProcessManagerImpl {
 	virtual bool init() = 0;
 	virtual void shutdown() = 0;
 	virtual bool addProcess(Pin<ProcessObject> po) = 0;
+	virtual Pin<ProcessObject> findProcess(pid_t pid) = 0;
 	[[nodiscard]] virtual bool running() const = 0;
 };
 
@@ -53,6 +54,7 @@ class ProcessManager {
 	bool init();
 	void shutdown();
 	bool addProcess(Pin<ProcessObject> po);
+	Pin<ProcessObject> findProcess(pid_t pid);
 	[[nodiscard]] bool running() const;
 
   private:
