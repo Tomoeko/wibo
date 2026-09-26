@@ -59,6 +59,7 @@ USHORT WINAPI(htons)(USHORT value);
 int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData);
 int WINAPI WSACleanup();
 int WINAPI WSAGetLastError();
+void WINAPI WSASetLastError(int error);
 int WINAPI getaddrinfo(LPCSTR node, LPCSTR service, const ADDRINFOA *hints, GUEST_PTR *result);
 void WINAPI freeaddrinfo(ADDRINFOA *result);
 int WINAPI gethostname(LPSTR name, int namelen);

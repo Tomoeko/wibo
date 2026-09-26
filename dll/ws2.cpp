@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "context.h"
+#include "kernel32/internal.h"
 #include "modules.h"
 #include "ws2/internal.h"
 
@@ -31,7 +32,6 @@ constexpr int WSAEFAULT = 10014;
 constexpr int WSAHOST_NOT_FOUND = 11001;
 constexpr int WSANOTINITIALISED = 10093;
 
-thread_local int g_lastError = 0;
 std::atomic<unsigned> g_startupCount = 0;
 
 WORD makeVersion(BYTE major, BYTE minor) { return static_cast<WORD>(major | (minor << 8)); }
@@ -40,7 +40,7 @@ WORD makeVersion(BYTE major, BYTE minor) { return static_cast<WORD>(major | (min
 
 namespace ws2::detail {
 
-void setLastError(int error) { g_lastError = error; }
+void setLastError(int error) { kernel32::setLastError(static_cast<DWORD>(error)); }
 
 bool requireStarted() {
 	if (g_startupCount > 0) {
@@ -125,8 +125,15 @@ int WINAPI WSACleanup() {
 
 int WINAPI WSAGetLastError() {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("WSAGetLastError() -> %d\n", g_lastError);
-	return g_lastError;
+	const int error = static_cast<int>(kernel32::getLastError());
+	DEBUG_LOG("WSAGetLastError() -> %d\n", error);
+	return error;
+}
+
+void WINAPI WSASetLastError(int error) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WSASetLastError(%d)\n", error);
+	setLastError(error);
 }
 
 int WINAPI gethostname(LPSTR name, int namelen) {
@@ -221,6 +228,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "gethostname";
 	case 111:
 		return "WSAGetLastError";
+	case 112:
+		return "WSASetLastError";
 	case 115:
 		return "WSAStartup";
 	case 116:
