@@ -1,4 +1,5 @@
 #include "processthreadsapi.h"
+#include "ws2/internal.h"
 
 #include "common.h"
 #include "context.h"
@@ -183,6 +184,7 @@ void threadCleanup(void *param) {
 	if (!obj) {
 		return;
 	}
+	ws2::detail::cancelSocketIoForThread(pthread_self());
 	kernel32::closeApcState();
 	wibo::notifyDllThreadDetach();
 	wibo::uninstallTebForCurrentThread();

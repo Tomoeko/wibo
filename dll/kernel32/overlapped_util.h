@@ -14,8 +14,8 @@ inline HANDLE normalizedOverlappedEventHandle(const OVERLAPPED *ov) {
 	return ov->hEvent & ~HANDLE{1};
 }
 
-inline void signalOverlappedEvent(FileObject *file, OVERLAPPED *ov, NTSTATUS status, size_t bytesTransferred) {
-	const auto binding = file ? std::atomic_load(&file->completion) : nullptr;
+inline void signalOverlappedCompletion(const std::shared_ptr<const CompletionBinding> &binding, OVERLAPPED *ov,
+									   NTSTATUS status, size_t bytesTransferred) {
 	const bool postCompletion = binding && ov && !(ov->hEvent & 1U);
 	const auto context = toGuestPtr(ov);
 	const HANDLE eventHandle = normalizedOverlappedEventHandle(ov);
@@ -28,11 +28,15 @@ inline void signalOverlappedEvent(FileObject *file, OVERLAPPED *ov, NTSTATUS sta
 			ev->set();
 		}
 	}
-	if (file) {
-		file->overlappedCv.notify_all();
-	}
 	if (postCompletion)
 		binding->port->post({static_cast<DWORD>(bytesTransferred), binding->key, context, status});
+}
+
+inline void signalOverlappedEvent(FileObject *file, OVERLAPPED *ov, NTSTATUS status, size_t bytesTransferred) {
+	const auto binding = file ? std::atomic_load(&file->completion) : nullptr;
+	signalOverlappedCompletion(binding, ov, status, bytesTransferred);
+	if (file)
+		file->overlappedCv.notify_all();
 }
 
 inline void resetOverlappedEvent(OVERLAPPED *ov) {

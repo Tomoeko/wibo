@@ -42,6 +42,8 @@ NTSTATUS statusFromWinError(DWORD error) {
 	switch (error) {
 	case ERROR_SUCCESS:
 		return STATUS_SUCCESS;
+	case ERROR_OPERATION_ABORTED:
+		return static_cast<NTSTATUS>(0xC0000120);
 	case ERROR_INVALID_HANDLE:
 		return STATUS_INVALID_HANDLE;
 	case ERROR_INVALID_PARAMETER:
@@ -75,6 +77,8 @@ DWORD winErrorFromNtStatus(NTSTATUS status) {
 		return ERROR_IO_PENDING;
 	case STATUS_END_OF_FILE:
 		return ERROR_HANDLE_EOF;
+	case static_cast<NTSTATUS>(0xC0000120):
+		return ERROR_OPERATION_ABORTED;
 	case STATUS_INVALID_HANDLE:
 		return ERROR_INVALID_HANDLE;
 	case STATUS_INVALID_PARAMETER:

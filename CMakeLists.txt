@@ -348,6 +348,7 @@ add_executable(wibo
     dll/vcruntime.cpp
     dll/version.cpp
     dll/winmm.cpp
+    dll/ws2/accept_ex.cpp
     dll/ws2.cpp
     dll/ws2/service_lookup.cpp
     dll/ws2/resolution.cpp
@@ -528,6 +529,7 @@ wibo_codegen_module(NAME iphlpapi HEADERS dll/iphlpapi.h)
 wibo_codegen_module(NAME shlwapi HEADERS dll/shlwapi.h)
 wibo_codegen_module(NAME shell32 HEADERS dll/shell32.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
+wibo_codegen_module(NAME mswsock HEADERS dll/mswsock.h)
 wibo_codegen_module(NAME vcruntime HEADERS dll/vcruntime.h)
 wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
 wibo_codegen_module(NAME network_proxy HEADERS dll/network_proxy.h)
@@ -711,6 +713,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_socket_events SOURCES test/test_socket_events.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_connect SOURCES test/test_socket_connect.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_socket_connect PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_accept_ex SOURCES test/test_accept_ex.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_accept_ex PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_completion SOURCES test/test_socket_completion.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_handle_flags SOURCES test/test_socket_handle_flags.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_lifetime SOURCES test/test_socket_lifetime.c COMPILE_OPTIONS -lws2_32)

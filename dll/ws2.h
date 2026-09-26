@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kernel32/minwinbase.h"
 #include "types.h"
 
 struct WSADATA {
@@ -86,6 +87,9 @@ LPSTR WINAPI inet_ntoa(ULONG address);
 ULONG WINAPI inet_addr(LPCSTR text);
 int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int length);
 int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *length);
+int WINAPI WSAIoctl(SOCKET handle, DWORD operation, LPCVOID input, DWORD inputLength, LPVOID output, DWORD outputLength,
+					LPDWORD returned, LPOVERLAPPED overlapped, GUEST_PTR completionRoutine);
+int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags);
 int WINAPI ioctlsocket(SOCKET handle, LONG command, ULONG *value);
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length);
 ULONG WINAPI(ntohl)(ULONG netlong);

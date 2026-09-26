@@ -216,6 +216,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "inet_addr";
 	case 16:
 		return "recv";
+	case 19:
+		return "send";
 	case 17:
 		return "recvfrom";
 	case 13:

@@ -74,6 +74,7 @@ extern const wibo::ModuleStub lib_vcruntime;
 extern const wibo::ModuleStub lib_version;
 extern const wibo::ModuleStub lib_winmm;
 extern const wibo::ModuleStub lib_ws2;
+extern const wibo::ModuleStub lib_mswsock;
 
 // setup.S
 #ifdef WIBO_GUEST_64
@@ -337,6 +338,7 @@ LockedRegistry registry() {
 			&lib_version,
 			&lib_winmm,
 			&lib_ws2,
+			&lib_mswsock,
 #if WIBO_HAS_MSVCRT
 			&lib_msvcrt,
 #endif

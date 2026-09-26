@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 
 namespace ws2 {
@@ -97,5 +98,25 @@ int WINAPI recvfrom(SOCKET handle, LPSTR buffer, int length, int flags, LPVOID a
 	DEBUG_LOG("recvfrom(0x%llx, %p, %d, %d, %p, %p)\n", static_cast<unsigned long long>(handle), buffer, length, flags,
 			  address, addressLength);
 	return receive(handle, buffer, length, flags, address, addressLength);
+}
+int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("send(0x%llx, %p, %d, %d)\n", static_cast<unsigned long long>(handle), buffer, length, flags);
+	const auto state = detail::findSocket(handle);
+	if (!state)
+		return -1;
+	if (length < 0 || (flags & ~3U))
+		return detail::failSocket(10022);
+	if (!buffer && length)
+		return detail::failSocket(10014);
+	int nativeFlags = ((flags & 1) ? MSG_OOB : 0) | ((flags & 2) ? MSG_DONTROUTE : 0);
+#ifdef MSG_NOSIGNAL
+	nativeFlags |= MSG_NOSIGNAL;
+#endif
+	ssize_t sent;
+	do {
+		sent = ::send(state->descriptor, buffer, length, nativeFlags);
+	} while (sent < 0 && errno == EINTR);
+	return sent < 0 ? detail::failSocket(detail::socketError(errno)) : static_cast<int>(sent);
 }
 } // namespace ws2

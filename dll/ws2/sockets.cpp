@@ -11,6 +11,9 @@
 #include <fcntl.h>
 #include <mutex>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <unordered_map>
 
@@ -86,6 +89,32 @@ SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UI
 } // namespace
 
 namespace ws2::detail {
+bool copySocketOptions(int source, int destination) {
+	constexpr int options[] = {SO_REUSEADDR, SO_KEEPALIVE, SO_DONTROUTE, SO_BROADCAST, SO_OOBINLINE,
+							   SO_SNDBUF,	 SO_RCVBUF,	   SO_SNDTIMEO,	 SO_RCVTIMEO,  SO_LINGER};
+	for (int option : options) {
+		std::array<uint8_t, std::max(sizeof(timeval), sizeof(linger))> value{};
+		socklen_t length = value.size();
+		if (::getsockopt(source, SOL_SOCKET, option, value.data(), &length) < 0)
+			return false;
+#ifdef __linux__
+		if (option == SO_SNDBUF || option == SO_RCVBUF) {
+			int size;
+			std::memcpy(&size, value.data(), sizeof(size));
+			size /= 2;
+			std::memcpy(value.data(), &size, sizeof(size));
+		}
+#endif
+		if (::setsockopt(destination, SOL_SOCKET, option, value.data(), length) < 0)
+			return false;
+	}
+	int noDelay = 0;
+	socklen_t length = sizeof(noDelay);
+	if (::getsockopt(source, IPPROTO_TCP, TCP_NODELAY, &noDelay, &length) < 0 ||
+		::setsockopt(destination, IPPROTO_TCP, TCP_NODELAY, &noDelay, length) < 0)
+		return false;
+	return true;
+}
 Socket::~Socket() { ::close(descriptor); }
 std::shared_ptr<Socket> findSocket(SOCKET handle) {
 	if (!requireStarted())
@@ -118,6 +147,7 @@ bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags) {
 	mask &= HANDLE_FLAG_INHERIT | HANDLE_FLAG_PROTECT_FROM_CLOSE;
 	const DWORD updated = (found->second->handleFlags & ~mask) | (flags & mask);
 	if (mask & HANDLE_FLAG_INHERIT) {
+		std::lock_guard socketLock(found->second->ioMutex);
 		const int descriptor = found->second->descriptor;
 		const int current = ::fcntl(descriptor, F_GETFD);
 		if (current < 0 || ::fcntl(descriptor, F_SETFD,
@@ -131,9 +161,13 @@ bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags) {
 void cleanupSockets() {
 	auto &registry = socketRegistry();
 	std::lock_guard lock(registry.mutex);
-	for (const auto &[handle, state] : registry.sockets)
+	for (const auto &[handle, state] : registry.sockets) {
+		std::lock_guard socketLock(state->ioMutex);
+		state->closed = true;
 		::shutdown(state->descriptor, SHUT_RDWR);
+	}
 	registry.sockets.clear();
+	wakeSocketIo();
 }
 int socketError(int error) {
 	switch (error) {
@@ -294,8 +328,13 @@ int WINAPI closesocket(SOCKET handle) {
 	const auto found = registry.sockets.find(handle);
 	if (found == registry.sockets.end())
 		return detail::failSocket(10038);
-	::shutdown(found->second->descriptor, SHUT_RDWR);
+	{
+		std::lock_guard socketLock(found->second->ioMutex);
+		found->second->closed = true;
+		::shutdown(found->second->descriptor, SHUT_RDWR);
+	}
 	registry.sockets.erase(found);
+	detail::wakeSocketIo();
 	return 0;
 }
 int WINAPI bind(SOCKET handle, LPCVOID address, int length) {
@@ -404,15 +443,35 @@ SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength) {
 		return fail(10014);
 	sockaddr_storage peer{};
 	int descriptor;
-	do {
-		size = sizeof(peer);
-		descriptor = ::accept(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &size);
-	} while (descriptor < 0 && errno == EINTR);
+	while (true) {
+		bool blocking;
+		{
+			std::unique_lock lock(state->ioMutex);
+			const int flags = state->pendingAccepts ? state->acceptOriginalFlags : ::fcntl(state->descriptor, F_GETFL);
+			blocking = flags >= 0 && !(flags & O_NONBLOCK);
+			if (!state->pendingAccepts)
+				lock.unlock();
+			size = sizeof(peer);
+			descriptor = ::accept(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &size);
+		}
+		if (descriptor >= 0)
+			break;
+		if (errno == EINTR)
+			continue;
+		if ((errno != EAGAIN && errno != EWOULDBLOCK) || !blocking || state->closed)
+			break;
+		pollfd ready{state->descriptor, POLLIN, 0};
+		while (::poll(&ready, 1, -1) < 0 && errno == EINTR) {
+		}
+	}
 	if (descriptor < 0)
 		return fail(detail::socketError(errno));
 	auto accepted = std::make_shared<detail::Socket>(descriptor, state->family);
 	accepted->overlapped = state->overlapped;
-	const int parentMode = ::fcntl(state->descriptor, F_GETFL);
+	const int parentMode = [&] {
+		std::lock_guard socketLock(state->ioMutex);
+		return state->pendingAccepts ? state->acceptOriginalFlags : ::fcntl(state->descriptor, F_GETFL);
+	}();
 	const int mode = ::fcntl(descriptor, F_GETFL);
 	if (parentMode < 0 || mode < 0 ||
 		::fcntl(descriptor, F_SETFL, (mode & ~O_NONBLOCK) | (parentMode & O_NONBLOCK)) < 0)

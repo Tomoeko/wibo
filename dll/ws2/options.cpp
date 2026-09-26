@@ -2,15 +2,19 @@
 
 #include "common.h"
 #include "context.h"
+#include "modules.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <limits>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
+
+extern const wibo::ModuleStub lib_mswsock;
 
 namespace {
 enum class ValueKind { Integer, Boolean, Linger, Timeout, Error, Listening };
@@ -92,6 +96,21 @@ int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int leng
 	const auto state = detail::findSocket(handle);
 	if (!state)
 		return -1;
+	if (level == 0xFFFF && name == 0x700B) {
+		if (!value || length != sizeof(SOCKET))
+			return detail::failSocket(10014);
+		SOCKET listenerHandle;
+		std::memcpy(&listenerHandle, value, sizeof(listenerHandle));
+		const auto listener = detail::findSocket(listenerHandle);
+		if (!listener || !listener->listening || listener->family != state->family)
+			return detail::failSocket(10022);
+		std::lock_guard lock(state->ioMutex);
+		if (!state->acceptedByExtension)
+			return detail::failSocket(10022);
+		if (!detail::copySocketOptions(listener->descriptor, state->descriptor))
+			return detail::failSocket(detail::socketError(errno));
+		return 0;
+	}
 	Option option;
 	if (!mapOption(level, name, option) || !option.writable)
 		return detail::failSocket(10042);
@@ -186,11 +205,71 @@ int WINAPI ioctlsocket(SOCKET handle, LONG command, ULONG *value) {
 	const uint32_t operation = static_cast<uint32_t>(command);
 	if (operation != 0x8004667EU && operation != 0x4004667FU)
 		return detail::failSocket(10022);
+	std::lock_guard lock(state->ioMutex);
+	if (operation == 0x8004667EU && state->pendingAccepts) {
+		state->acceptOriginalFlags =
+			*value ? state->acceptOriginalFlags | O_NONBLOCK : state->acceptOriginalFlags & ~O_NONBLOCK;
+		return 0;
+	}
 	int native = *value != 0;
 	if (::ioctl(state->descriptor, operation == 0x8004667EU ? FIONBIO : FIONREAD, &native) < 0)
 		return detail::failSocket(detail::socketError(errno));
 	if (operation == 0x4004667FU)
 		*value = static_cast<ULONG>(native);
 	return 0;
+}
+int WINAPI WSAIoctl(SOCKET handle, DWORD operation, LPCVOID input, DWORD inputLength, LPVOID output, DWORD outputLength,
+					LPDWORD returned, LPOVERLAPPED overlapped, GUEST_PTR completionRoutine) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WSAIoctl(0x%llx, 0x%x, %p, %u, %p, %u, %p, %p, %p)\n", static_cast<unsigned long long>(handle),
+			  operation, input, inputLength, output, outputLength, returned, overlapped,
+			  fromGuestPtr<void>(completionRoutine));
+	if (!detail::findSocket(handle))
+		return -1;
+	if (!returned)
+		return detail::failSocket(10014);
+	if (overlapped || completionRoutine)
+		return detail::failSocket(10045);
+	if (operation == 0xC8000006U) {
+		if (!input || inputLength < sizeof(GUID) || !output || outputLength < sizeof(GUEST_PTR))
+			return detail::failSocket(10014);
+		GUID id{};
+		std::memcpy(&id, input, sizeof(id));
+		constexpr GUID acceptId{0xb5367df1, 0xcbac, 0x11cf, {0x95, 0xca, 0, 0x80, 0x5f, 0x48, 0xa1, 0x92}};
+		constexpr GUID addressId{0xb5367df2, 0xcbac, 0x11cf, {0x95, 0xca, 0, 0x80, 0x5f, 0x48, 0xa1, 0x92}};
+		const char *name = std::memcmp(&id, &acceptId, sizeof(id)) == 0	   ? "AcceptEx"
+						   : std::memcmp(&id, &addressId, sizeof(id)) == 0 ? "GetAcceptExSockaddrs"
+																		   : nullptr;
+		if (!name)
+			return detail::failSocket(10022);
+		const GUEST_PTR pointer = toGuestPtr(lib_mswsock.byName(name));
+		if (!pointer)
+			return detail::failSocket(10045);
+		std::memcpy(output, &pointer, sizeof(pointer));
+		*returned = sizeof(pointer);
+		return 0;
+	}
+	if (operation == 0x8004667EU) {
+		if (!input || inputLength < sizeof(ULONG))
+			return detail::failSocket(10014);
+		ULONG value;
+		std::memcpy(&value, input, sizeof(value));
+		const int result = ioctlsocket(handle, static_cast<LONG>(operation), &value);
+		if (!result)
+			*returned = 0;
+		return result;
+	}
+	if (operation == 0x4004667FU) {
+		if (!output || outputLength < sizeof(ULONG))
+			return detail::failSocket(10014);
+		ULONG value = 0;
+		const int result = ioctlsocket(handle, static_cast<LONG>(operation), &value);
+		if (!result) {
+			std::memcpy(output, &value, sizeof(value));
+			*returned = sizeof(value);
+		}
+		return result;
+	}
+	return detail::failSocket(10045);
 }
 } // namespace ws2
