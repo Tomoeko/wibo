@@ -22,6 +22,12 @@ typedef struct {
 typedef NTSTATUS(WINAPI *QueryDirectoryFn)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
 										   FILE_INFORMATION_CLASS, BOOLEAN, UNICODE_STRING *, BOOLEAN);
 static QueryDirectoryFn queryDirectory;
+static FILE_INFORMATION_CLASS informationClass = FileDirectoryInformation;
+static size_t nameOffset = offsetof(DirectoryInformation, FileName);
+
+static const WCHAR *entry_name(const DirectoryInformation *entry) {
+	return (const WCHAR *)((const char *)entry + nameOffset);
+}
 static const char *directory = "wibo_ntquerydirectory_fixture";
 static const WCHAR *names[] = {L"alpha.bin", L"long-name.bin", L"plain", L"subdir"};
 
@@ -42,22 +48,27 @@ static NTSTATUS query(HANDLE handle, void *buffer, ULONG length, BOOLEAN single,
 		search.Buffer = (WCHAR *)pattern;
 	}
 	memset(io, 0xa5, sizeof(*io));
-	return queryDirectory(handle, NULL, NULL, NULL, io, buffer, length, FileDirectoryInformation, single,
+	return queryDirectory(handle, NULL, NULL, NULL, io, buffer, length, informationClass, single,
 						  pattern ? &search : NULL, restart);
 }
 
 static int name_is(const DirectoryInformation *entry, const WCHAR *name) {
 	size_t length = wcslen(name) * sizeof(WCHAR);
-	return entry->FileNameLength == length && memcmp(entry->FileName, name, length) == 0;
+	return entry->FileNameLength == length && memcmp(entry_name(entry), name, length) == 0;
 }
 
 static void check_records(void *buffer, ULONG_PTR bytes, unsigned *seen, unsigned *count) {
 	ULONG_PTR offset = 0;
 	for (;;) {
-		TEST_CHECK(bytes - offset >= offsetof(DirectoryInformation, FileName));
+		TEST_CHECK(bytes - offset >= nameOffset);
 		DirectoryInformation *entry = (DirectoryInformation *)((char *)buffer + offset);
 		TEST_CHECK(entry->FileNameLength % sizeof(WCHAR) == 0);
-		TEST_CHECK(bytes - offset >= offsetof(DirectoryInformation, FileName) + entry->FileNameLength);
+		if (informationClass == FileFullDirectoryInformation) {
+			ULONG eaSize;
+			memcpy(&eaSize, (const char *)entry + 64, sizeof(eaSize));
+			TEST_CHECK_EQ(0, eaSize);
+		}
+		TEST_CHECK(bytes - offset >= nameOffset + entry->FileNameLength);
 		unsigned bit = 0;
 		if (name_is(entry, L"."))
 			bit = 1;
@@ -82,7 +93,7 @@ static void check_records(void *buffer, ULONG_PTR bytes, unsigned *seen, unsigne
 		if (!entry->NextEntryOffset)
 			break;
 		TEST_CHECK(entry->NextEntryOffset % 8 == 0);
-		TEST_CHECK(entry->NextEntryOffset >= offsetof(DirectoryInformation, FileName) + entry->FileNameLength);
+		TEST_CHECK(entry->NextEntryOffset >= nameOffset + entry->FileNameLength);
 		TEST_CHECK(entry->NextEntryOffset < bytes - offset);
 		offset += entry->NextEntryOffset;
 	}
@@ -134,7 +145,7 @@ static void test_search(void) {
 	TEST_CHECK_EQ(ST_SUCCESS, query(handle, buffer.bytes, sizeof(buffer.bytes), TRUE, L"*.BIN", FALSE, &io));
 	DirectoryInformation first = *(DirectoryInformation *)buffer.bytes;
 	WCHAR firstName[64];
-	memcpy(firstName, ((DirectoryInformation *)buffer.bytes)->FileName, first.FileNameLength);
+	memcpy(firstName, entry_name((DirectoryInformation *)buffer.bytes), first.FileNameLength);
 	firstName[first.FileNameLength / sizeof(WCHAR)] = 0;
 	TEST_CHECK_EQ(0, first.NextEntryOffset);
 	TEST_CHECK_EQ(ST_SUCCESS, query(handle, buffer.bytes, sizeof(buffer.bytes), TRUE, L"plain", FALSE, &io));
@@ -174,7 +185,7 @@ static void test_buffers(void) {
 	TEST_CHECK_EQ(ST_OVERFLOW, status);
 	TEST_CHECK_EQ(small, io.Information);
 	TEST_CHECK_EQ(wcslen(L"long-name.bin") * sizeof(WCHAR), ((DirectoryInformation *)buffer.bytes)->FileNameLength);
-	TEST_CHECK_EQ(L'l', ((DirectoryInformation *)buffer.bytes)->FileName[0]);
+	TEST_CHECK_EQ(L'l', entry_name((DirectoryInformation *)buffer.bytes)[0]);
 	TEST_CHECK_EQ((unsigned char)0xcc, (unsigned char)buffer.bytes[small]);
 	status = query(handle, buffer.bytes, sizeof(buffer.bytes), TRUE, NULL, FALSE, &io);
 	TEST_CHECK_EQ(ST_NO_MORE, status);
@@ -229,7 +240,7 @@ static void test_invalid_requests(void) {
 					  query(handle, buffer.bytes, sizeof(buffer.bytes), FALSE, L"caf\u00e9", FALSE, &io));
 		TEST_CHECK_EQ((NTSTATUS)0xc00000bb,
 					  queryDirectory(handle, NULL, NULL, NULL, &io, buffer.bytes, sizeof(buffer.bytes),
-									 FileFullDirectoryInformation, FALSE, NULL, FALSE));
+									 FileBothDirectoryInformation, FALSE, NULL, FALSE));
 		TEST_CHECK_EQ((NTSTATUS)0xc00000bb,
 					  queryDirectory(handle, (HANDLE)1, NULL, NULL, &io, buffer.bytes, sizeof(buffer.bytes),
 									 FileDirectoryInformation, FALSE, NULL, FALSE));
@@ -284,13 +295,17 @@ int main(void) {
 	char subdir[MAX_PATH];
 	snprintf(subdir, sizeof(subdir), "%s/subdir", directory);
 	TEST_CHECK(CreateDirectoryA(subdir, NULL));
-	test_enumeration(FALSE, 4096);
-	test_enumeration(FALSE, 160);
-	test_enumeration(TRUE, 4096);
-	test_search();
-	test_buffers();
-	test_invalid_requests();
-	test_utf8_directory();
+	for (unsigned mode = 1; mode <= 2; ++mode) {
+		informationClass = (FILE_INFORMATION_CLASS)mode;
+		nameOffset = mode == 2 ? 68 : 64;
+		test_enumeration(FALSE, 4096);
+		test_enumeration(FALSE, 160);
+		test_enumeration(TRUE, 4096);
+		test_search();
+		test_buffers();
+		test_invalid_requests();
+		test_utf8_directory();
+	}
 	TEST_CHECK(RemoveDirectoryA(subdir));
 	for (unsigned i = 0; i != 3; ++i) {
 		char path[MAX_PATH];

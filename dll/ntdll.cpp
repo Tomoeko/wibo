@@ -550,7 +550,7 @@ NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE 
 	static_assert(sizeof(FILE_DIRECTORY_INFORMATION) == 72);
 	if (!ioStatus || !information)
 		return STATUS_ACCESS_VIOLATION;
-	if (informationClass != FileDirectoryInformation)
+	if (informationClass != FileDirectoryInformation && informationClass != FileFullDirectoryInformation)
 		return STATUS_NOT_SUPPORTED;
 	if (length < sizeof(FILE_DIRECTORY_INFORMATION))
 		return STATUS_INFO_LENGTH_MISMATCH;
@@ -603,7 +603,11 @@ NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE 
 			return finish(status);
 		directory.enumStarted = true;
 	}
-	constexpr size_t prefix = offsetof(FILE_DIRECTORY_INFORMATION, FileName);
+	static_assert(offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName) == 68);
+	static_assert(sizeof(FILE_FULL_DIRECTORY_INFORMATION) == 72);
+	const size_t prefix = informationClass == FileFullDirectoryInformation
+							  ? offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName)
+							  : offsetof(FILE_DIRECTORY_INFORMATION, FileName);
 	size_t written = 0, previous = 0;
 	while (directory.enumCookie < directory.enumEntries.size()) {
 		const auto &name = directory.enumEntries[directory.enumCookie];
@@ -633,7 +637,7 @@ NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE 
 			break;
 		FILE_BASIC_INFORMATION basic{};
 		populateBasicInformation(st, basic);
-		FILE_DIRECTORY_INFORMATION entry{};
+		FILE_FULL_DIRECTORY_INFORMATION entry{};
 		entry.CreationTime = basic.CreationTime;
 		entry.LastAccessTime = basic.LastAccessTime;
 		entry.LastWriteTime = basic.LastWriteTime;

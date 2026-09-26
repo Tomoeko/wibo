@@ -308,6 +308,7 @@ add_executable(wibo
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
     dll/kernel32/thread_control.cpp
+    dll/kernel32/system_times.cpp
     dll/kernel32/profileapi.cpp
     dll/kernel32/stringapiset.cpp
     dll/kernel32/synchapi.cpp
@@ -839,6 +840,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_actctx SOURCES test/test_actctx.c)
         wibo_add_fixture_bin(NAME test_overlapped_io SOURCES test/test_overlapped_io.c)
         wibo_add_fixture_bin(NAME test_time SOURCES test/test_time.c)
+        wibo_add_fixture_bin(NAME test_system_times SOURCES test/test_system_times.c)
         wibo_add_fixture_bin(NAME test_provider_stream SOURCES test/test_provider_stream.c NO_TEST)
         foreach(mode fresh concurrent exit truncated oversized timeout)
             add_test(NAME wibo.test_provider_stream_${mode}
