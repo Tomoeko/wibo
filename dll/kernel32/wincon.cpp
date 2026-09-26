@@ -8,21 +8,29 @@
 
 namespace kernel32 {
 
+namespace {
+BOOL rejectUnavailableConsole(HANDLE handle) {
+	auto file = wibo::handles().getAs<FileObject>(handle);
+	if (!file || !file->valid() || !isatty(file->fd)) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	// A host terminal is not a Windows console buffer with a mode/event backend.
+	setLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+} // namespace
+
 BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetConsoleMode(%p)\n", hConsoleHandle);
-	if (lpMode) {
-		*lpMode = 0;
-	}
-	return TRUE;
+	DEBUG_LOG("GetConsoleMode(%p, %p)\n", hConsoleHandle, lpMode);
+	return rejectUnavailableConsole(hConsoleHandle);
 }
 
 BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetConsoleMode(%p, 0x%x)\n", hConsoleHandle, dwMode);
-	(void)hConsoleHandle;
-	(void)dwMode;
-	return TRUE;
+	DEBUG_LOG("SetConsoleMode(%p, 0x%x)\n", hConsoleHandle, dwMode);
+	return rejectUnavailableConsole(hConsoleHandle);
 }
 
 UINT WINAPI GetConsoleCP() {
