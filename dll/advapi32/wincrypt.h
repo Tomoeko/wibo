@@ -15,6 +15,7 @@ constexpr DWORD HP_HASHVAL = 0x00000002;
 constexpr DWORD HP_HASHSIZE = 0x00000004;
 
 namespace advapi32 {
+BYTE WINAPI SystemFunction036(LPVOID buffer, ULONG length);
 
 BOOL WINAPI CryptReleaseContext(HCRYPTPROV hProv, DWORD dwFlags);
 BOOL WINAPI CryptAcquireContextW(HCRYPTPROV *phProv, LPCWSTR pszContainer, LPCWSTR pszProvider, DWORD dwProvType,

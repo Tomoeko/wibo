@@ -1,5 +1,6 @@
 #include "wincrypt.h"
 
+#include "bcrypt.h"
 #include "common.h"
 #include "context.h"
 #include "errors.h"
@@ -11,7 +12,6 @@
 #include "sha1.h"
 
 #include <cstring>
-#include <sys/random.h>
 
 namespace {
 
@@ -55,6 +55,11 @@ DWORD hashSizeForAlgid(ALG_ID algid) {
 } // namespace
 
 namespace advapi32 {
+BYTE WINAPI SystemFunction036(LPVOID buffer, ULONG length) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SystemFunction036(%p, %u)\n", buffer, length);
+	return bcrypt::ProcessPrng(static_cast<BYTE *>(buffer), length) ? TRUE : FALSE;
+}
 
 BOOL WINAPI CryptReleaseContext(HCRYPTPROV hProv, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
@@ -88,15 +93,10 @@ BOOL WINAPI CryptGenRandom(HCRYPTPROV hProv, DWORD dwLen, BYTE *pbBuffer) {
 		return FALSE;
 	}
 
-#ifdef __APPLE__
-	arc4random_buf(pbBuffer, dwLen);
-#else
-	ssize_t ret = getrandom(pbBuffer, dwLen, 0);
-	if (ret < 0 || static_cast<DWORD>(ret) != dwLen) {
+	if (!bcrypt::ProcessPrng(pbBuffer, dwLen)) {
 		kernel32::setLastError(ERROR_NOT_SUPPORTED);
 		return FALSE;
 	}
-#endif
 	return TRUE;
 }
 
