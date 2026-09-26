@@ -22,6 +22,17 @@ bool configured() {
 	return path && *path;
 }
 
+std::string encodeBytes(std::string_view input) {
+	std::string result;
+	constexpr char digits[] = "0123456789abcdef";
+	result.reserve(input.size() * 2);
+	for (unsigned char byte : input) {
+		result.push_back(digits[byte >> 4]);
+		result.push_back(digits[byte & 15]);
+	}
+	return result;
+}
+
 bool encodeUtf8(std::u16string_view input, std::string &output) {
 	output.clear();
 	for (size_t i = 0; i < input.size(); ++i) {

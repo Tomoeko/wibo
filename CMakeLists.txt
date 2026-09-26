@@ -59,10 +59,10 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
     set(_provider_image ${CMAKE_CURRENT_BINARY_DIR}/tools/system_provider.exe)
     add_custom_command(OUTPUT ${_provider_image}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
-        COMMAND ${WIBO_PROVIDER_CXX} -Wall -Wextra -O2 -municode -static
+        COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
             -lole32 -loleaut32 -lwbemuuid -o ${_provider_image}
-        DEPENDS tools/system_provider.cpp VERBATIM)
+        DEPENDS tools/system_provider.cpp src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
 set(WIBO_GUEST_ARCH "x86" CACHE STRING "Windows guest architecture (x86 or x86_64)")
@@ -705,14 +705,18 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
+        wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
+        set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
         wibo_add_fixture_bin(NAME test_provider_account SOURCES test/test_provider_account.c)
         wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
         wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
-        set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account PROPERTIES
+        set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account wibo.test_file_security PROPERTIES
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1"
             TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
+        wibo_add_fixture_bin(NAME test_ole_initialize SOURCES test/test_ole_initialize.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_rtl SOURCES test/test_rtl.c)
         wibo_add_fixture_bin(NAME test_rtl_bitmap SOURCES test/test_rtl_bitmap.c)
         wibo_add_fixture_bin(NAME test_ntquery SOURCES test/test_ntquery.c)

@@ -82,18 +82,6 @@ LUID lookupOrGeneratePrivilegeLuid(const std::string &normalizedName) {
 	return luid;
 }
 
-std::string encodeBytes(LPCSTR text) {
-	std::string result;
-	constexpr char digits[] = "0123456789abcdef";
-	if (text)
-		for (; *text; ++text) {
-			const auto byte = static_cast<unsigned char>(*text);
-			result.push_back(digits[byte >> 4]);
-			result.push_back(digits[byte & 15]);
-		}
-	return result;
-}
-
 BOOL providerFailure(DWORD status) {
 	kernel32::setLastError(status);
 	return FALSE;
@@ -166,8 +154,9 @@ BOOL WINAPI LookupAccountNameA(LPCSTR system, LPCSTR account, PSID sid, LPDWORD 
 			  use);
 	if (!account)
 		return providerFailure(ERROR_INVALID_PARAMETER);
-	return lookupAccount({"account-lookup-a", encodeBytes(system), encodeBytes(account)}, true, sid, sidSize, domain,
-						 domainSize, use);
+	return lookupAccount(
+		{"account-lookup-a", wibo::provider::encodeBytes(system ? system : ""), wibo::provider::encodeBytes(account)},
+		true, sid, sidSize, domain, domainSize, use);
 }
 
 BOOL WINAPI LookupAccountNameW(LPCWSTR system, LPCWSTR account, PSID sid, LPDWORD sidSize, LPWSTR domain,
@@ -187,8 +176,8 @@ BOOL WINAPI LookupAccountNameW(LPCWSTR system, LPCWSTR account, PSID sid, LPDWOR
 	return lookupAccount({"account-lookup-w", systemText, accountText}, false, sid, sidSize, domain, domainSize, use);
 }
 
-BOOL WINAPI LookupAccountSidW(LPCWSTR lpSystemName, PSID Sid, LPWSTR Name, LPDWORD cchName,
-								LPWSTR ReferencedDomainName, LPDWORD cchReferencedDomainName, SID_NAME_USE *peUse) {
+BOOL WINAPI LookupAccountSidW(LPCWSTR lpSystemName, PSID Sid, LPWSTR Name, LPDWORD cchName, LPWSTR ReferencedDomainName,
+							  LPDWORD cchReferencedDomainName, SID_NAME_USE *peUse) {
 	HOST_CONTEXT_GUARD();
 	std::string systemName = lpSystemName ? wideStringToString(lpSystemName) : std::string("(null)");
 	DEBUG_LOG("LookupAccountSidW(%s, %p, %p, %p, %p, %p, %p)\n", systemName.c_str(), Sid, Name, cchName,

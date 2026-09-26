@@ -36,12 +36,24 @@ struct SECURITY_DESCRIPTOR {
 	GUEST_PTR Dacl;
 };
 
+struct SECURITY_DESCRIPTOR_RELATIVE {
+	BYTE Revision;
+	BYTE Sbz1;
+	WORD Control;
+	DWORD Owner;
+	DWORD Group;
+	DWORD Sacl;
+	DWORD Dacl;
+};
+static_assert(sizeof(SECURITY_DESCRIPTOR_RELATIVE) == 20);
+
 using PSECURITY_DESCRIPTOR = SECURITY_DESCRIPTOR *;
 using PACL = ACL *;
 using PSID_IDENTIFIER_AUTHORITY = SID_IDENTIFIER_AUTHORITY *;
 using SECURITY_INFORMATION = DWORD;
 
 constexpr DWORD SECURITY_DESCRIPTOR_REVISION = 1;
+constexpr WORD SE_SELF_RELATIVE = 0x8000;
 constexpr WORD SE_DACL_PRESENT = 0x0004;
 constexpr WORD SE_DACL_DEFAULTED = 0x0008;
 
@@ -83,6 +95,16 @@ enum TOKEN_INFORMATION_CLASS : DWORD {
 
 namespace advapi32 {
 
+BOOL WINAPI SetFileSecurityA(LPCSTR path, SECURITY_INFORMATION information, PSECURITY_DESCRIPTOR descriptor);
+BOOL WINAPI SetFileSecurityW(LPCWSTR path, SECURITY_INFORMATION information, PSECURITY_DESCRIPTOR descriptor);
+BOOL WINAPI GetFileSecurityA(LPCSTR path, SECURITY_INFORMATION information, PSECURITY_DESCRIPTOR descriptor,
+							 DWORD length, LPDWORD needed);
+BOOL WINAPI GetFileSecurityW(LPCWSTR path, SECURITY_INFORMATION information, PSECURITY_DESCRIPTOR descriptor,
+							 DWORD length, LPDWORD needed);
+BOOL WINAPI AddAce(PACL acl, DWORD revision, DWORD index, LPVOID list, DWORD length);
+BOOL WINAPI GetAce(PACL acl, DWORD index, GUEST_PTR *ace);
+DWORD WINAPI GetLengthSid(PSID sid);
+BOOL WINAPI GetAclInformation(PACL acl, LPVOID information, DWORD length, DWORD informationClass);
 BOOL WINAPI InitializeAcl(PACL pAcl, DWORD nAclLength, DWORD dwAclRevision);
 BOOL WINAPI AddAccessAllowedAce(PACL pAcl, DWORD dwAceRevision, DWORD AccessMask, PSID pSid);
 BOOL WINAPI FindFirstFreeAce(PACL pAcl, GUEST_PTR *pAce);

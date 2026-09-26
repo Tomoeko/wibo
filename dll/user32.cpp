@@ -15,16 +15,10 @@
 
 namespace {
 
-std::mutex g_messageMutex;
-std::unordered_map<std::u16string, UINT> g_registeredMessages;
+std::mutex g_atomMutex;
+std::unordered_map<std::u16string, UINT> g_registeredAtoms;
 
-} // namespace
-
-namespace user32 {
-
-UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("RegisterWindowMessageW(%p)\n", lpString);
+UINT registerAtom(LPCWSTR lpString) {
 	if (!lpString || !*lpString) {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
@@ -38,18 +32,41 @@ UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString) {
 	for (size_t i = 0; i < length; ++i) {
 		name.push_back(static_cast<char16_t>(wcharToLower(lpString[i])));
 	}
-	std::lock_guard lock(g_messageMutex);
-	if (auto it = g_registeredMessages.find(name); it != g_registeredMessages.end()) {
+	std::lock_guard lock(g_atomMutex);
+	if (auto it = g_registeredAtoms.find(name); it != g_registeredAtoms.end()) {
 		return it->second;
 	}
-	if (g_registeredMessages.size() == 0x4000) {
+	if (g_registeredAtoms.size() == 0x4000) {
 		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return 0;
 	}
-	// Message registration is local to the process until interprocess messaging is supported.
-	const UINT message = 0xC000 + static_cast<UINT>(g_registeredMessages.size());
-	g_registeredMessages.emplace(std::move(name), message);
+	// Registration is local to the process until interprocess data exchange is supported.
+	const UINT message = 0xC000 + static_cast<UINT>(g_registeredAtoms.size());
+	g_registeredAtoms.emplace(std::move(name), message);
 	return message;
+}
+
+} // namespace
+
+namespace user32 {
+
+UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegisterWindowMessageW(%p)\n", lpString);
+	return registerAtom(lpString);
+}
+
+UINT WINAPI RegisterClipboardFormatW(LPCWSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegisterClipboardFormatW(%p)\n", name);
+	return registerAtom(name);
+}
+
+UINT WINAPI RegisterClipboardFormatA(LPCSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegisterClipboardFormatA(%p)\n", name);
+	const auto wide = stringToWideString(name);
+	return registerAtom(name ? wide.data() : nullptr);
 }
 
 UINT WINAPI RegisterWindowMessageA(LPCSTR lpString) {

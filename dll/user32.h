@@ -15,5 +15,7 @@ HWND WINAPI GetActiveWindow();
 DWORD WINAPI GetSysColor(int nIndex);
 UINT WINAPI RegisterWindowMessageA(LPCSTR lpString);
 UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString);
+UINT WINAPI RegisterClipboardFormatA(LPCSTR name);
+UINT WINAPI RegisterClipboardFormatW(LPCWSTR name);
 
 } // namespace user32

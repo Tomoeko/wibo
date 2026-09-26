@@ -16,6 +16,7 @@ constexpr size_t kMaxResponse = 8 * 1024 * 1024;
 constexpr int32_t kUnavailable = static_cast<int32_t>(0x80041001);
 
 bool configured();
+std::string encodeBytes(std::string_view input);
 bool encodeUtf8(std::u16string_view input, std::string &output);
 bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &response, int timeoutMs = 10000,
 			 bool *timedOut = nullptr);

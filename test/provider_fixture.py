@@ -53,6 +53,22 @@ elif operation == 'management-query':
     elif query == 'exit-failed':
         sys.stdout.buffer.write(response)
         sys.exit(1)
+elif operation in ('set-file-security-a', 'set-file-security-w'):
+    descriptor = bytes.fromhex(arguments[2])
+    revision, reserved, control, owner, group, sacl, dacl = struct.unpack_from('<BBHIIII', descriptor)
+    valid = revision == 1 and control == 0x8004 and dacl == 20 and len(descriptor) == 48 and arguments[1] == '4'
+    response = header(0 if valid else 1338)
+elif operation in ('file-security-a', 'file-security-w'):
+    path = bytes.fromhex(arguments[0]).decode('ascii') if operation.endswith('-a') else arguments[0]
+    sid = bytes([1, 1, 0, 0, 0, 0, 0, 5]) + number(18)
+    ace = struct.pack('<BBH', 0, 0, 20) + number(0x80000000) + sid
+    acl = struct.pack('<BBHHH', 2, 0, 28, 1, 0) + ace
+    descriptor = struct.pack('<BBHIIII', 1, 0, 0x8004, 0, 0, 0, 20) + acl
+    if path == 'bad-offset':
+        descriptor = struct.pack('<BBHIIII', 1, 0, 0x8004, 0, 0, 0, 0xffffffff) + acl
+    elif path == 'bad-ace':
+        descriptor = descriptor[:-1]
+    response = header() + blob(descriptor)
 elif operation == 'user-name':
     response = header() + text('FixtureUser') + blob(b'FixtureUser')
 elif operation in ('account-lookup-a', 'account-lookup-w'):

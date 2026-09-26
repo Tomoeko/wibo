@@ -147,6 +147,7 @@ HRESULT WINAPI CoCreateGuid(GUID *pguid) {
 namespace {
 thread_local unsigned int apartmentReferences = 0;
 thread_local DWORD apartmentMode = 0;
+thread_local unsigned int oleReferences = 0;
 } // namespace
 
 HRESULT WINAPI CoInitializeEx(LPVOID pvReserved, DWORD flags) {
@@ -171,6 +172,24 @@ void WINAPI CoUninitialize() {
 	DEBUG_LOG("CoUninitialize()\n");
 	if (apartmentReferences)
 		--apartmentReferences;
+}
+
+HRESULT WINAPI OleInitialize(LPVOID pvReserved) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OleInitialize(%p)\n", pvReserved);
+	const HRESULT result = CoInitializeEx(pvReserved, 2);
+	if (result < 0)
+		return result;
+	return oleReferences++ ? 1 : S_OK;
+}
+
+void WINAPI OleUninitialize() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OleUninitialize()\n");
+	if (oleReferences) {
+		--oleReferences;
+		CoUninitialize();
+	}
 }
 
 HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwClsContext, const GUID *riid,

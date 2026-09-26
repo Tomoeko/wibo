@@ -2,6 +2,7 @@
 // link ole32, oleaut32, and wbemuuid. The caller selects its execution environment.
 #define CINTERFACE
 #define COBJMACROS
+#include "../src/security_descriptor.h"
 #include <windows.h>
 
 #include <fcntl.h>
@@ -254,7 +255,7 @@ bool userName() {
 	return response.write();
 }
 
-bool decodeHex(const WCHAR *source, std::string &result) {
+bool decodeHex(const WCHAR *source, std::string &result, bool allowZero = false) {
 	result.clear();
 	while (*source) {
 		unsigned value = 0;
@@ -269,7 +270,7 @@ bool decodeHex(const WCHAR *source, std::string &result) {
 				return false;
 			value = value * 16 + digit;
 		}
-		if (!value)
+		if (!value && !allowZero)
 			return false;
 		result.push_back(static_cast<char>(value));
 	}
@@ -319,6 +320,64 @@ bool account(const WCHAR *system, const WCHAR *name, bool ansi) {
 		response.bytes(domain.data(), domain.size());
 		response.number(use);
 	}
+	return response.write();
+}
+
+bool setFileSecurity(const WCHAR *path, const WCHAR *information, const WCHAR *serialized, bool ansi) {
+	WCHAR *end = nullptr;
+	const unsigned long long parsed = wcstoull(information, &end, 10);
+	if (!*information || *end || parsed > 0xFFFFFFFFULL)
+		return false;
+	std::string narrow, decoded;
+	if ((ansi && !decodeHex(path, narrow)) || !decodeHex(serialized, decoded, true))
+		return false;
+	std::vector<BYTE> data(decoded.begin(), decoded.end());
+	DWORD status = ERROR_INVALID_SECURITY_DESCR;
+	if (wibo::security::validRelativeDescriptor(data) && IsValidSecurityDescriptor(data.data())) {
+		const BOOL applied = ansi ? SetFileSecurityA(narrow.c_str(), static_cast<DWORD>(parsed), data.data())
+								  : SetFileSecurityW(path, static_cast<DWORD>(parsed), data.data());
+		status = applied ? ERROR_SUCCESS : GetLastError();
+	}
+	Response response;
+	response.header(status);
+	return response.write();
+}
+
+bool fileSecurity(const WCHAR *path, const WCHAR *information, bool ansi) {
+	WCHAR *end = nullptr;
+	const unsigned long long parsed = wcstoull(information, &end, 10);
+	if (!*information || *end || parsed > 0xFFFFFFFFULL)
+		return false;
+	const DWORD requested = static_cast<DWORD>(parsed);
+	std::string narrow;
+	if (ansi && !decodeHex(path, narrow))
+		return false;
+	DWORD size = 0;
+	if (ansi)
+		GetFileSecurityA(narrow.c_str(), requested, nullptr, 0, &size);
+	else
+		GetFileSecurityW(path, requested, nullptr, 0, &size);
+	DWORD status = GetLastError();
+	std::vector<BYTE> descriptor;
+	if (status == ERROR_INSUFFICIENT_BUFFER) {
+		if (size > kMaxResponse - 16)
+			status = ERROR_NOT_ENOUGH_MEMORY;
+		else {
+			descriptor.resize(size);
+			BOOL found = ansi ? GetFileSecurityA(narrow.c_str(), requested, descriptor.data(), size, &size)
+							  : GetFileSecurityW(path, requested, descriptor.data(), size, &size);
+			status = found ? ERROR_SUCCESS : GetLastError();
+			if (found) {
+				descriptor.resize(size);
+				if (!IsValidSecurityDescriptor(descriptor.data()))
+					status = ERROR_INVALID_SECURITY_DESCR;
+			}
+		}
+	}
+	Response response;
+	response.header(status);
+	if (status == ERROR_SUCCESS)
+		response.bytes(descriptor.data(), descriptor.size());
 	return response.write();
 }
 
@@ -421,6 +480,14 @@ int wmain(int argc, WCHAR **argv) {
 		written = management(argv[2], nullptr, argc == 8 ? argv + 3 : nullptr);
 	else if ((argc == 4 || argc == 9) && wcscmp(argv[1], L"management-query") == 0)
 		written = management(argv[2], argv[3], argc == 9 ? argv + 4 : nullptr);
+	else if (argc == 5 && wcscmp(argv[1], L"set-file-security-a") == 0)
+		written = setFileSecurity(argv[2], argv[3], argv[4], true);
+	else if (argc == 5 && wcscmp(argv[1], L"set-file-security-w") == 0)
+		written = setFileSecurity(argv[2], argv[3], argv[4], false);
+	else if (argc == 4 && wcscmp(argv[1], L"file-security-a") == 0)
+		written = fileSecurity(argv[2], argv[3], true);
+	else if (argc == 4 && wcscmp(argv[1], L"file-security-w") == 0)
+		written = fileSecurity(argv[2], argv[3], false);
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
 		written = userName();
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)
