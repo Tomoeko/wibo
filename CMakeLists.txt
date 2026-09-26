@@ -324,6 +324,7 @@ add_executable(wibo
     dll/shell32.cpp
     dll/user32.cpp
     dll/user32/image.cpp
+    dll/user32/window_class.cpp
     dll/vcruntime.cpp
     dll/version.cpp
     dll/winmm.cpp
@@ -712,6 +713,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
         wibo_add_fixture_bin(NAME test_load_cursor SOURCES test/test_load_cursor.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_memory_status SOURCES test/test_memory_status.c)
+        wibo_add_fixture_bin(NAME test_window_class SOURCES test/test_window_class.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_provider_account SOURCES test/test_provider_account.c)
         wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
         wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
