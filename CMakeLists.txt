@@ -329,6 +329,7 @@ add_executable(wibo
     dll/shell32.cpp
     dll/user32.cpp
     dll/user32/image.cpp
+    dll/user32/metrics.cpp
     dll/user32/window_class.cpp
     dll/vcruntime.cpp
     dll/version.cpp
@@ -731,6 +732,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
         wibo_add_fixture_bin(NAME test_waitable_timer SOURCES test/test_waitable_timer.c)
         wibo_add_fixture_bin(NAME test_alertable_wait SOURCES test/test_alertable_wait.c)
+        wibo_add_fixture_bin(NAME test_system_metrics SOURCES test/test_system_metrics.c COMPILE_OPTIONS -luser32)
+        set_tests_properties(wibo.test_system_metrics PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         set_tests_properties(wibo.test_waitable_timer PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
         wibo_add_fixture_bin(NAME test_processes SOURCES test/test_processes.c)

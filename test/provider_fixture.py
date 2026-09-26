@@ -91,6 +91,17 @@ elif operation == 'memory-status':
         response = response[:-1]
     elif fault == 'bad-load':
         response = header() + blob(struct.pack('<II7Q', 64, 101, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
+elif operation == 'system-metrics':
+    index, last_error = map(int, arguments)
+    values = {0: 1280, 1: 720, 11: 32, 12: 32, 13: 32, 14: 32, 76: -1280, 80: 2}
+    response = header() + number(values.get(index, 0)) + number(last_error)
+    fault = os.environ.get('WIBO_FIXTURE_METRICS_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'failed':
+        response = header(5)
 elif operation == 'image-load':
     image_type, image, kind, name = arguments
     if kind != 'id' or image:

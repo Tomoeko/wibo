@@ -570,6 +570,24 @@ bool memoryStatus() {
 	return response.write();
 }
 
+bool systemMetrics(const WCHAR *indexText, const WCHAR *errorText) {
+	WCHAR *end = nullptr;
+	const auto index = wcstoll(indexText, &end, 10);
+	if (!*indexText || *end || index < INT32_MIN || index > INT32_MAX)
+		return false;
+	const auto error = wcstoull(errorText, &end, 10);
+	if (!*errorText || *end || error > UINT32_MAX)
+		return false;
+	SetLastError(static_cast<DWORD>(error));
+	const int value = GetSystemMetrics(static_cast<int>(index));
+	const DWORD lastError = GetLastError();
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(value));
+	response.number(lastError);
+	return response.write();
+}
+
 bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
@@ -690,6 +708,8 @@ int wmain(int argc, WCHAR **argv) {
 		written = ipAddressTable(wcscmp(argv[2], L"1") == 0);
 	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
 		written = memoryStatus();
+	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
+		written = systemMetrics(argv[2], argv[3]);
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
 		written = userName();
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)
