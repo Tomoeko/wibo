@@ -33,6 +33,7 @@ enum class ObjectType : uint16_t {
 	UserImage,
 	Timer,
 	ApcQueue,
+	CompletionPort,
 };
 
 enum ObjectFlags : uint16_t {

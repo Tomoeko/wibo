@@ -24,6 +24,7 @@ BOOL WINAPI GetOverlappedResult(HANDLE hFile, LPOVERLAPPED lpOverlapped, LPDWORD
 			WaitForSingleObject(waitHandle, INFINITE);
 		} else if (auto file = wibo::handles().getAs<FileObject>(hFile)) {
 			std::unique_lock lk(file->m);
+			CompletionWait completionWait;
 			file->overlappedCv.wait(lk, [&] { return lpOverlapped->Internal != STATUS_PENDING; });
 		} else {
 			setLastError(ERROR_INVALID_HANDLE);

@@ -1,4 +1,5 @@
 #include "synchapi.h"
+#include "completion_port.h"
 
 #include "common.h"
 #include "context.h"
@@ -502,6 +503,7 @@ void WINAPI Sleep(DWORD dwMilliseconds) {
 		std::this_thread::yield();
 		return;
 	}
+	CompletionWait completionWait;
 	std::mutex mutex;
 	std::condition_variable cv;
 	std::unique_lock lock(mutex);
@@ -800,6 +802,11 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 #endif
 
 	auto doWait = [&](auto &lk, auto &cv, auto pred) -> bool {
+		if (pred())
+			return true;
+		if (!dwMilliseconds)
+			return false;
+		CompletionWait completionWait;
 		if (dwMilliseconds == INFINITE) {
 			cv.wait(lk, pred);
 			return true;
@@ -1032,6 +1039,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 				break;
 			std::unique_lock lock(wake.mutex);
 			auto changed = [&] { return wake.generation != generation; };
+			CompletionWait completionWait;
 			if (dwMilliseconds == INFINITE)
 				wake.cv.wait(lock, changed);
 			else if (!wake.cv.wait_until(lock, deadline, changed))
@@ -1077,9 +1085,12 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 				fd.revents = 0;
 			}
 			int pollResult;
-			do {
-				pollResult = poll(pollFds.data(), pollFds.size(), timeoutMs);
-			} while (pollResult < 0 && errno == EINTR);
+			{
+				CompletionWait completionWait(timeoutMs != 0);
+				do {
+					pollResult = poll(pollFds.data(), pollFds.size(), timeoutMs);
+				} while (pollResult < 0 && errno == EINTR);
+			}
 			if (pollResult < 0) {
 				setLastErrorFromErrno();
 				waitResult = WAIT_FAILED;

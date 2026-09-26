@@ -30,7 +30,10 @@ struct FileRangeLock {
 	bool exclusive;
 };
 
+struct CompletionBinding;
+
 struct FileObject : FsObject {
+	std::shared_ptr<const CompletionBinding> completion;
 	std::vector<FileRangeLock> rangeLocks;
 	off_t filePos = 0;
 	bool overlapped = false;

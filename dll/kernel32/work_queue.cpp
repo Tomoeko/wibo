@@ -1,6 +1,7 @@
 #include "processthreadsapi.h"
 
 #include "common.h"
+#include "completion_port.h"
 #include "context.h"
 #include "errors.h"
 #include "internal.h"
@@ -52,6 +53,7 @@ class WorkQueue {
 				++busy;
 			}
 			call_LPTHREAD_START_ROUTINE(item.function, item.context);
+			kernel32::detachCompletionThread();
 			{
 				std::lock_guard lock(mutex);
 				--busy;

@@ -1,3 +1,4 @@
+#include "completion_port.h"
 #include "internal.h"
 
 #include "context.h"
@@ -132,6 +133,7 @@ DWORD waitAlertable(HANDLE handle, WaitableObject *object, DWORD milliseconds) {
 			return WAIT_TIMEOUT;
 		std::unique_lock lock(wake.mutex);
 		auto changed = [&] { return generation != wake.generation; };
+		CompletionWait completionWait;
 		if (milliseconds == INFINITE)
 			wake.cv.wait(lock, changed);
 		else if (!wake.cv.wait_until(lock, deadline, changed))
