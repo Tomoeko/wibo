@@ -1,11 +1,12 @@
 #pragma once
 
-#include "types.h"
 #include "automation.h"
+#include "types.h"
 
 namespace oleaut32 {
 
-HRESULT WINAPI VariantChangeType(AutomationVariant *destination, const AutomationVariant *source, WORD flags, WORD type);
+HRESULT WINAPI VariantChangeType(AutomationVariant *destination, const AutomationVariant *source, WORD flags,
+								 WORD type);
 void WINAPI VariantInit(AutomationVariant *value);
 HRESULT WINAPI VariantClear(AutomationVariant *value);
 

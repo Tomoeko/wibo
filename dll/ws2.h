@@ -14,6 +14,7 @@ struct WSADATA {
 
 namespace ws2 {
 
+ULONG WINAPI(ntohl)(ULONG netlong);
 int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData);
 int WINAPI WSACleanup();
 int WINAPI WSAGetLastError();

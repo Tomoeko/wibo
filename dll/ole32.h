@@ -5,7 +5,7 @@
 namespace ole32 {
 
 HRESULT WINAPI CoSetProxyBlanket(GUEST_PTR proxy, DWORD authentication, DWORD authorization, LPCWSTR principal,
-	DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities);
+								 DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities);
 HRESULT WINAPI CoCreateGuid(GUID *pguid);
 PVOID WINAPI CoTaskMemAlloc(SIZE_T cb);
 void WINAPI CoTaskMemFree(PVOID pv);

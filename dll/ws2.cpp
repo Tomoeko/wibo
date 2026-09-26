@@ -7,6 +7,10 @@
 #include <cstring>
 #include <unistd.h>
 
+#ifdef ntohl
+#undef ntohl
+#endif
+
 namespace {
 
 constexpr int SOCKET_ERROR = -1;
@@ -32,6 +36,13 @@ bool requireStarted() {
 } // namespace
 
 namespace ws2 {
+
+ULONG WINAPI ntohl(ULONG netlong) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("ntohl(0x%x)\n", netlong);
+	return ((netlong & 0xFF) << 24) | ((netlong & 0xFF00) << 8) | ((netlong & 0xFF0000) >> 8) |
+		   ((netlong & 0xFF000000) >> 24);
+}
 
 int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData) {
 	HOST_CONTEXT_GUARD();
@@ -133,6 +144,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 	// GHS 5.3.22 imports WS2_32.dll with the legacy winsock ordinal table.
 	// Keep these mappings tied to observed call sites rather than modern WS2_32 export ordinals.
 	switch (ordinal) {
+	case 14:
+		return "ntohl";
 	case 18:
 		return "select";
 	case 52:

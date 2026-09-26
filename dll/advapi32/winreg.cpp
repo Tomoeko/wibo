@@ -74,6 +74,8 @@ constexpr LSTATUS kErrorMoreData = 234;
 // Provider data is a read-only process snapshot. Guest writes remain in the
 // existing local store and never modify the provider's environment.
 std::unordered_map<std::u16string, LSTATUS> g_providerKeys;
+std::unordered_map<std::u16string, RegistryValues> g_providerSnapshots;
+std::u16string canonicalizeValueName(LPCWSTR name);
 struct ProviderValue {
 	LSTATUS status = ERROR_FILE_NOT_FOUND;
 	RegistryValue value;
@@ -81,23 +83,58 @@ struct ProviderValue {
 std::unordered_map<std::u16string, ProviderValue> g_providerValues;
 
 LSTATUS providerOpen(const std::u16string &path, const std::string &view) {
-	if (!wibo::provider::configured()) return ERROR_FILE_NOT_FOUND;
+	if (!wibo::provider::configured())
+		return ERROR_FILE_NOT_FOUND;
 	const std::u16string cacheKey = path + (view == "64" ? u"|64" : u"|32");
-	if (auto found = g_providerKeys.find(cacheKey); found != g_providerKeys.end()) return found->second;
+	if (auto found = g_providerKeys.find(cacheKey); found != g_providerKeys.end())
+		return found->second;
 	std::string encoded;
-	if (!wibo::provider::encodeUtf8(path, encoded)) return ERROR_INVALID_PARAMETER;
+	if (!wibo::provider::encodeUtf8(path, encoded))
+		return ERROR_INVALID_PARAMETER;
 	std::vector<uint8_t> response;
-	if (!wibo::provider::request({"registry-open", encoded, view}, response)) return ERROR_NOT_SUPPORTED;
+	const bool snapshot = wibo::provider::request({"registry-snapshot", encoded, view}, response);
+	if (!snapshot && !wibo::provider::request({"registry-open", encoded, view}, response))
+		return ERROR_NOT_SUPPORTED;
 	wibo::provider::Reader reader(response);
 	int32_t status = 0;
-	if (!reader.header(status) || !reader.done()) return kErrorInvalidData;
+	if (!reader.header(status))
+		return kErrorInvalidData;
+	RegistryValues values;
+	if (status == ERROR_SUCCESS && snapshot) {
+		uint32_t count = 0;
+		if (!reader.number(count) || count > 4096)
+			return kErrorInvalidData;
+		for (uint32_t i = 0; i < count; ++i) {
+			std::u16string name;
+			RegistryValue value;
+			if (!reader.text(name) || name.find(u'\0') != std::u16string::npos || !reader.number(value.type) ||
+				!reader.bytes(value.data))
+				return kErrorInvalidData;
+			values.insert_or_assign(canonicalizeValueName(reinterpret_cast<LPCWSTR>(name.c_str())), std::move(value));
+		}
+	}
+	if (!reader.done())
+		return kErrorInvalidData;
+	if (snapshot && status == ERROR_SUCCESS)
+		g_providerSnapshots.emplace(cacheKey, std::move(values));
 	g_providerKeys.emplace(cacheKey, status);
 	return status;
 }
 
 LSTATUS providerQuery(const RegistryKeyObject &key, const std::u16string &name, RegistryValue &value) {
-	if (!wibo::provider::configured()) return ERROR_FILE_NOT_FOUND;
+	if (!wibo::provider::configured())
+		return ERROR_FILE_NOT_FOUND;
+	const LSTATUS opened = providerOpen(key.canonicalPath, key.providerView);
+	if (opened != ERROR_SUCCESS)
+		return opened;
 	std::u16string cacheKey = key.canonicalPath + (key.providerView == "64" ? u"|64" : u"|32");
+	if (auto snapshot = g_providerSnapshots.find(cacheKey); snapshot != g_providerSnapshots.end()) {
+		auto entry = snapshot->second.find(name);
+		if (entry == snapshot->second.end())
+			return ERROR_FILE_NOT_FOUND;
+		value = entry->second;
+		return ERROR_SUCCESS;
+	}
 	cacheKey.push_back(0);
 	cacheKey += name;
 	if (auto found = g_providerValues.find(cacheKey); found != g_providerValues.end()) {
@@ -105,17 +142,21 @@ LSTATUS providerQuery(const RegistryKeyObject &key, const std::u16string &name, 
 		return found->second.status;
 	}
 	std::string pathText, nameText;
-	if (!wibo::provider::encodeUtf8(key.canonicalPath, pathText) ||
-		!wibo::provider::encodeUtf8(name, nameText)) return ERROR_INVALID_PARAMETER;
+	if (!wibo::provider::encodeUtf8(key.canonicalPath, pathText) || !wibo::provider::encodeUtf8(name, nameText))
+		return ERROR_INVALID_PARAMETER;
 	std::vector<uint8_t> response;
-	if (!wibo::provider::request({"registry-query", pathText, nameText, key.providerView}, response)) return ERROR_NOT_SUPPORTED;
+	if (!wibo::provider::request({"registry-query", pathText, nameText, key.providerView}, response))
+		return ERROR_NOT_SUPPORTED;
 	wibo::provider::Reader reader(response);
 	int32_t status = 0;
-	if (!reader.header(status)) return kErrorInvalidData;
+	if (!reader.header(status))
+		return kErrorInvalidData;
 	if (status == ERROR_SUCCESS) {
-		if (!reader.number(value.type) || !reader.bytes(value.data)) return kErrorInvalidData;
+		if (!reader.number(value.type) || !reader.bytes(value.data))
+			return kErrorInvalidData;
 	}
-	if (!reader.done()) return kErrorInvalidData;
+	if (!reader.done())
+		return kErrorInvalidData;
 	g_providerValues.emplace(std::move(cacheKey), ProviderValue{status, value});
 	return status;
 }
@@ -249,11 +290,13 @@ LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWOR
 	auto keyValues = g_registryValues.find(handle->canonicalPath);
 	if (keyValues != g_registryValues.end()) {
 		auto entry = keyValues->second.find(canonicalizeValueName(name));
-		if (entry != keyValues->second.end()) selected = &entry->second;
+		if (entry != keyValues->second.end())
+			selected = &entry->second;
 	}
 	if (!selected) {
 		const LSTATUS status = providerQuery(*handle, canonicalizeValueName(name), providerValue);
-		if (status != ERROR_SUCCESS) return status;
+		if (status != ERROR_SUCCESS)
+			return status;
 		selected = &providerValue;
 	}
 	const RegistryValue &value = *selected;
@@ -461,13 +504,16 @@ LSTATUS WINAPI RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSA
 		return ERROR_INVALID_HANDLE;
 	}
 	std::string providerView = baseHandle->providerView;
-	if (samDesired & KEY_WOW64_64KEY) providerView = "64";
-	if (samDesired & KEY_WOW64_32KEY) providerView = "32";
+	if (samDesired & KEY_WOW64_64KEY)
+		providerView = "64";
+	if (samDesired & KEY_WOW64_32KEY)
+		providerView = "32";
 	if ((samDesired & (KEY_WOW64_64KEY | KEY_WOW64_32KEY)) == (KEY_WOW64_64KEY | KEY_WOW64_32KEY))
 		return ERROR_INVALID_PARAMETER;
 	if (g_existingKeys.find(targetPath) == g_existingKeys.end()) {
 		const LSTATUS status = providerOpen(targetPath, providerView);
-		if (status != ERROR_SUCCESS) return status;
+		if (status != ERROR_SUCCESS)
+			return status;
 	}
 	if (!lpSubKey || lpSubKey[0] == 0) {
 		if (baseHandle->predefined) {

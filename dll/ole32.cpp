@@ -129,11 +129,12 @@ void WINAPI CoTaskMemFree(PVOID pv) {
 }
 
 HRESULT WINAPI CoSetProxyBlanket(GUEST_PTR proxy, DWORD authentication, DWORD authorization, LPCWSTR principal,
-	DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities) {
+								 DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoSetProxyBlanket(%p, %u, %u, %p, %u, %u, %p, 0x%x)\n", fromGuestPtr(proxy), authentication,
-		authorization, principal, level, impersonation, fromGuestPtr(identity), capabilities);
-	return wibo::management::setProxyBlanket(proxy, authentication, authorization, principal, level, impersonation, identity, capabilities);
+			  authorization, principal, level, impersonation, fromGuestPtr(identity), capabilities);
+	return wibo::management::setProxyBlanket(proxy, authentication, authorization, principal, level, impersonation,
+											 identity, capabilities);
 }
 
 HRESULT WINAPI CoCreateGuid(GUID *pguid) {
@@ -146,14 +147,16 @@ HRESULT WINAPI CoCreateGuid(GUID *pguid) {
 namespace {
 thread_local unsigned int apartmentReferences = 0;
 thread_local DWORD apartmentMode = 0;
-}
+} // namespace
 
 HRESULT WINAPI CoInitializeEx(LPVOID pvReserved, DWORD flags) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoInitializeEx(%p, 0x%x)\n", pvReserved, flags);
-	if (pvReserved || (flags & ~DWORD(0xE))) return E_INVALIDARG;
+	if (pvReserved || (flags & ~DWORD(0xE)))
+		return E_INVALIDARG;
 	const DWORD mode = flags & 2;
-	if (apartmentReferences && apartmentMode != mode) return static_cast<HRESULT>(0x80010106);
+	if (apartmentReferences && apartmentMode != mode)
+		return static_cast<HRESULT>(0x80010106);
 	apartmentMode = mode;
 	return apartmentReferences++ ? 1 : S_OK;
 }
@@ -166,7 +169,8 @@ HRESULT WINAPI CoInitialize(LPVOID pvReserved) {
 void WINAPI CoUninitialize() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoUninitialize()\n");
-	if (apartmentReferences) --apartmentReferences;
+	if (apartmentReferences)
+		--apartmentReferences;
 }
 
 HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwClsContext, const GUID *riid,

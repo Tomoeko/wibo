@@ -53,17 +53,32 @@ elif operation == 'management-query':
     elif query == 'exit-failed':
         sys.stdout.buffer.write(response)
         sys.exit(1)
+elif operation == 'user-name':
+    response = header() + text('FixtureUser') + blob(b'FixtureUser')
+elif operation in ('account-lookup-a', 'account-lookup-w'):
+    name = bytes.fromhex(arguments[1]).decode('ascii') if operation.endswith('-a') else arguments[1]
+    if name != 'FixtureUser':
+        response = header(1332)
+    else:
+        sid = bytes([1, 5, 0, 0, 0, 0, 0, 5]) + struct.pack('<IIIII', 21, 11, 22, 33, 1001)
+        domain = b'FixtureHost' if operation.endswith('-a') else 'FixtureHost'.encode('utf-16-le')
+        response = header() + blob(sid) + blob(domain) + number(1)
 elif operation.startswith('registry-'):
     path = arguments[0].lower()
     exists = path == 'hkey_current_user\\software\\wiboproviderfixture'
     response = header(0 if exists else 2)
-    if operation == 'registry-query' and exists:
+    if operation in ('registry-query', 'registry-snapshot') and exists:
         values = {
             'text': (1, '\u4e2d\0\U0001f600\0'.encode('utf-16-le')),
             'number': (4, number(0xfedcba98)),
-            'view': (4, number(int(arguments[2]))),
+            'view': (4, number(int(arguments[-1]))),
             '': (3, b'\0\xff\x17'),
         }
-        value = values.get(arguments[1].lower())
-        response = header() + number(value[0]) + blob(value[1]) if value else header(2)
+        if operation == 'registry-snapshot':
+            response = header() + number(len(values))
+            for name, (kind, data) in values.items():
+                response += text(name) + number(kind) + blob(data)
+        else:
+            value = values.get(arguments[1].lower())
+            response = header() + number(value[0]) + blob(value[1]) if value else header(2)
 sys.stdout.buffer.write(response)

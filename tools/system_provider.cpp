@@ -227,7 +227,102 @@ bool management(const WCHAR *spaceName, const WCHAR *queryText, WCHAR **security
 	return response.write();
 }
 
-bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view) {
+bool userName() {
+	DWORD wideSize = 0, narrowSize = 0;
+	GetUserNameW(nullptr, &wideSize);
+	DWORD status = GetLastError();
+	std::vector<WCHAR> wide;
+	std::vector<char> narrow;
+	if (status == ERROR_INSUFFICIENT_BUFFER && wideSize <= 32768) {
+		wide.resize(wideSize);
+		status = GetUserNameW(wide.data(), &wideSize) ? ERROR_SUCCESS : GetLastError();
+	}
+	if (status == ERROR_SUCCESS) {
+		GetUserNameA(nullptr, &narrowSize);
+		status = GetLastError();
+		if (status == ERROR_INSUFFICIENT_BUFFER && narrowSize <= 32768) {
+			narrow.resize(narrowSize);
+			status = GetUserNameA(narrow.data(), &narrowSize) ? ERROR_SUCCESS : GetLastError();
+		}
+	}
+	Response response;
+	response.header(status);
+	if (status == ERROR_SUCCESS) {
+		response.bytes(wide.data(), wcslen(wide.data()) * sizeof(WCHAR));
+		response.bytes(narrow.data(), strlen(narrow.data()));
+	}
+	return response.write();
+}
+
+bool decodeHex(const WCHAR *source, std::string &result) {
+	result.clear();
+	while (*source) {
+		unsigned value = 0;
+		for (unsigned i = 0; i < 2; ++i) {
+			WCHAR ch = *source++;
+			unsigned digit;
+			if (ch >= '0' && ch <= '9')
+				digit = ch - '0';
+			else if (ch >= 'a' && ch <= 'f')
+				digit = ch - 'a' + 10;
+			else
+				return false;
+			value = value * 16 + digit;
+		}
+		if (!value)
+			return false;
+		result.push_back(static_cast<char>(value));
+	}
+	return true;
+}
+
+bool account(const WCHAR *system, const WCHAR *name, bool ansi) {
+	std::string narrowSystem, narrowName;
+	if (ansi && (!decodeHex(system, narrowSystem) || !decodeHex(name, narrowName)))
+		return false;
+	DWORD sidSize = 0, domainSize = 0;
+	SID_NAME_USE use = SidTypeUnknown;
+	if (ansi)
+		LookupAccountNameA(narrowSystem.empty() ? nullptr : narrowSystem.c_str(), narrowName.c_str(), nullptr, &sidSize,
+						   nullptr, &domainSize, &use);
+	else
+		LookupAccountNameW(*system ? system : nullptr, name, nullptr, &sidSize, nullptr, &domainSize, &use);
+	DWORD status = GetLastError();
+	std::vector<BYTE> sid, domain;
+	if (status == ERROR_INSUFFICIENT_BUFFER) {
+		if (sidSize > SECURITY_MAX_SID_SIZE || domainSize > 32768)
+			status = ERROR_NOT_ENOUGH_MEMORY;
+		else {
+			sid.resize(sidSize);
+			domain.resize(domainSize * (ansi ? 1 : sizeof(WCHAR)));
+			BOOL found;
+			if (ansi)
+				found = LookupAccountNameA(narrowSystem.empty() ? nullptr : narrowSystem.c_str(), narrowName.c_str(),
+										   sid.data(), &sidSize, reinterpret_cast<char *>(domain.data()), &domainSize,
+										   &use);
+			else
+				found = LookupAccountNameW(*system ? system : nullptr, name, sid.data(), &sidSize,
+										   reinterpret_cast<WCHAR *>(domain.data()), &domainSize, &use);
+			status = found ? ERROR_SUCCESS : GetLastError();
+			if (found) {
+				sid.resize(GetLengthSid(sid.data()));
+				const size_t length = ansi ? strlen(reinterpret_cast<char *>(domain.data()))
+										   : wcslen(reinterpret_cast<WCHAR *>(domain.data())) * sizeof(WCHAR);
+				domain.resize(length);
+			}
+		}
+	}
+	Response response;
+	response.header(status);
+	if (status == ERROR_SUCCESS) {
+		response.bytes(sid.data(), sid.size());
+		response.bytes(domain.data(), domain.size());
+		response.number(use);
+	}
+	return response.write();
+}
+
+bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
 	const auto rootName = path.substr(0, separator);
@@ -265,11 +360,53 @@ bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view) {
 				value.resize(size);
 		}
 	}
+	struct Value {
+		std::vector<WCHAR> name;
+		DWORD type;
+		std::vector<BYTE> bytes;
+	};
+	std::vector<Value> values;
+	if (snapshot && status == ERROR_SUCCESS) {
+		size_t total = 16;
+		for (DWORD index = 0;; ++index) {
+			Value entry{{}, 0, {}};
+			entry.name.resize(16384);
+			DWORD characters = static_cast<DWORD>(entry.name.size()), bytes = 0;
+			status = RegEnumValueW(key, index, entry.name.data(), &characters, nullptr, &entry.type, nullptr, &bytes);
+			if (status == ERROR_NO_MORE_ITEMS) {
+				status = ERROR_SUCCESS;
+				break;
+			}
+			if (status != ERROR_SUCCESS)
+				break;
+			if (total + bytes + characters * sizeof(WCHAR) + 12 > kMaxResponse || index >= 4096) {
+				status = ERROR_NOT_ENOUGH_MEMORY;
+				break;
+			}
+			entry.bytes.resize(bytes);
+			characters = static_cast<DWORD>(entry.name.size());
+			status = RegEnumValueW(key, index, entry.name.data(), &characters, nullptr, &entry.type, entry.bytes.data(),
+								   &bytes);
+			if (status != ERROR_SUCCESS)
+				break;
+			entry.name.resize(characters);
+			entry.bytes.resize(bytes);
+			total += 12 + bytes + characters * sizeof(WCHAR);
+			values.push_back(std::move(entry));
+		}
+	}
 	if (key)
 		RegCloseKey(key);
 	Response response;
 	response.header(status);
-	if (name && status == ERROR_SUCCESS) {
+	if (snapshot && status == ERROR_SUCCESS) {
+		response.number(static_cast<uint32_t>(values.size()));
+		for (const auto &entry : values) {
+			response.bytes(entry.name.data(), entry.name.size() * sizeof(WCHAR));
+			response.number(entry.type);
+			response.bytes(entry.bytes.data(), entry.bytes.size());
+		}
+	} else if (name && status == ERROR_SUCCESS) {
 		response.number(type);
 		response.bytes(value.data(), value.size());
 	}
@@ -284,6 +421,14 @@ int wmain(int argc, WCHAR **argv) {
 		written = management(argv[2], nullptr, argc == 8 ? argv + 3 : nullptr);
 	else if ((argc == 4 || argc == 9) && wcscmp(argv[1], L"management-query") == 0)
 		written = management(argv[2], argv[3], argc == 9 ? argv + 4 : nullptr);
+	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
+		written = userName();
+	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)
+		written = account(argv[2], argv[3], true);
+	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-w") == 0)
+		written = account(argv[2], argv[3], false);
+	else if (argc == 4 && wcscmp(argv[1], L"registry-snapshot") == 0)
+		written = registry(argv[2], nullptr, argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"registry-open") == 0)
 		written = registry(argv[2], nullptr, argv[3]);
 	else if (argc == 5 && wcscmp(argv[1], L"registry-query") == 0)
