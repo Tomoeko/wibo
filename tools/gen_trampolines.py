@@ -746,7 +746,7 @@ def emit_cc_thunk64(f: FuncInfo | TypedefInfo, lines: List[str]):
 
             source = source_layout.args[i]
             if source.stack_offset is not None:
-                ptr_type = _x64_ptr_type_by_slot_size(source.slot_size)
+                ptr_type = _x64_ptr_type_by_slot_size(min(source.slot_size, target.slot_size))
                 register = _x64_register_by_slot_size("rax", target.slot_size)
                 lines.append(
                     f"\tmov {register}, {ptr_type} [r10+{source.stack_offset}]"

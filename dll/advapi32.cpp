@@ -1,4 +1,5 @@
 #include "advapi32/evntrace.h"
+#include "advapi32/evntprov.h"
 #include "modules.h"
 
 #include "advapi32_trampolines.h"

@@ -7,7 +7,7 @@
 #include "heap.h"
 #include "interlockedapi.h"
 #include "internal.h"
-#include "kernel32_trampolines.h"
+#include "kernel32.h"
 #include "processthreadsapi.h"
 #include "strutil.h"
 #include "types.h"
