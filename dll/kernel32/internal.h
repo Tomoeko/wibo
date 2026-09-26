@@ -120,18 +120,24 @@ struct ThreadObject final : WaitableObject {
 	DWORD exitCode = STILL_ACTIVE;
 	unsigned int suspendCount = 0;
 	TEB *tib = nullptr;
+	bool ownsTib = true;
 	std::shared_ptr<ApcState> apc = std::make_shared<ApcState>();
+
+	void onLastHandleClosed() noexcept override;
 
 	explicit ThreadObject(pthread_t thread = pthread_null) : WaitableObject(kType), thread(thread) {}
 
 	~ThreadObject() override {
 		// Threads are detached at creation; we can safely drop
-		if (tib) {
+		if (tib && ownsTib) {
 			wibo::destroyTib(tib);
 			tib = nullptr;
 		}
 	}
 };
+
+void initializeMainThreadObject();
+Pin<ThreadObject> currentThreadObject();
 
 struct MutexObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Mutex;

@@ -4,6 +4,7 @@
 #include "errors.h"
 #include "handles.h"
 #include "internal.h"
+#include "processthreadsapi.h"
 
 #include <pthread.h>
 #include <unistd.h>
@@ -55,10 +56,8 @@ BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, H
 		*lpTargetHandle = handle;
 		return TRUE;
 	} else if (isPseudoCurrentThreadHandle(hSourceHandle)) {
-		auto th = make_pin<ThreadObject>(pthread_self());
-		th->apc = currentApcState();
-		th->threadId = currentThreadTeb->ClientId.UniqueThread;
-		const auto access = (dwOptions & DUPLICATE_SAME_ACCESS) ? 0x1FFFFF : dwDesiredAccess;
+		auto th = currentThreadObject();
+		const auto access = (dwOptions & DUPLICATE_SAME_ACCESS) ? THREAD_ALL_ACCESS : dwDesiredAccess;
 		auto handle = handles.alloc(std::move(th), access, bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
 		DEBUG_LOG("DuplicateHandle: created thread handle for current thread -> %p\n", handle);
 		*lpTargetHandle = handle;
@@ -79,6 +78,20 @@ BOOL WINAPI CloseHandle(HANDLE hObject) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CloseHandle(%p)\n", hObject);
 	if (isUserImage(hObject) || !wibo::handles().release(hObject)) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+BOOL WINAPI GetHandleInformation(HANDLE handle, LPDWORD flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetHandleInformation(%p, %p)\n", handle, flags);
+	if (!flags) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (isUserImage(handle) || !wibo::handles().getInformation(handle, flags)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}

@@ -31,6 +31,7 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -106,6 +107,36 @@ template <typename StartupInfo> void populateStartupInfo(StartupInfo *info) {
 }
 
 thread_local ThreadObject *g_currentThreadObject = nullptr;
+std::mutex g_threadRegistryMutex;
+std::unordered_map<DWORD, Pin<ThreadObject>> g_threadRegistry;
+
+void registerThread(ThreadObject *object) {
+	std::lock_guard lock(g_threadRegistryMutex);
+	g_threadRegistry.insert_or_assign(object->threadId, Pin<ThreadObject>::acquire(object));
+}
+
+void retireThread(ThreadObject *object) {
+	Pin<ThreadObject> retired;
+	{
+		std::lock_guard registryLock(g_threadRegistryMutex);
+		std::lock_guard objectLock(object->m);
+		if (object->signaled && object->handleCount.load(std::memory_order_relaxed) == 0) {
+			auto it = g_threadRegistry.find(object->threadId);
+			if (it != g_threadRegistry.end() && it->second.get() == object) {
+				retired = std::move(it->second);
+				g_threadRegistry.erase(it);
+			}
+		}
+	}
+}
+
+HANDLE allocateThreadHandle(Pin<ThreadObject> object, DWORD access, DWORD flags) {
+	// Opening and the final-handle retirement share a lock so an exit cannot
+	// retire the ID between finding its object and allocating the new handle.
+	std::lock_guard lock(g_threadRegistryMutex);
+	g_threadRegistry.insert_or_assign(object->threadId, object.clone());
+	return wibo::handles().alloc(std::move(object), access, flags);
+}
 
 struct ThreadStartData {
 	ThreadObject *obj;
@@ -149,14 +180,14 @@ void threadCleanup(void *param) {
 		return;
 	}
 	kernel32::closeApcState();
+	wibo::notifyDllThreadDetach();
+	wibo::uninstallTebForCurrentThread();
 	{
 		std::lock_guard lk(obj->m);
 		obj->signaled = true;
-		// Exit code set before pthread_exit
 	}
+	retireThread(obj);
 	g_currentThreadObject = nullptr;
-	wibo::notifyDllThreadDetach();
-	wibo::uninstallTebForCurrentThread();
 	// TODO: mark mutexes owned by this thread as abandoned
 	obj->cv.notify_all();
 	obj->notifyWaiters(false);
@@ -189,6 +220,10 @@ void *threadTrampoline(void *param) {
 		std::unique_lock lk(data.obj->m);
 		data.obj->tib = threadTib;
 		data.obj->threadId = wibo::getThreadId();
+	}
+	registerThread(data.obj);
+	{
+		std::unique_lock lk(data.obj->m);
 		data.obj->initialized = true;
 		data.obj->cv.notify_all();
 		if (data.obj->suspendCount) {
@@ -216,6 +251,43 @@ void *threadTrampoline(void *param) {
 } // namespace
 
 namespace kernel32 {
+
+void ThreadObject::onLastHandleClosed() noexcept { retireThread(this); }
+
+void initializeMainThreadObject() {
+	if (g_currentThreadObject)
+		return;
+	auto object = make_pin<ThreadObject>(pthread_self());
+	object->threadId = wibo::getThreadId();
+	object->initialized = true;
+	object->tib = currentThreadTeb;
+	object->ownsTib = false; // The main TEB is owned by the process-entry scope.
+	object->apc = currentApcState();
+	registerThread(object.get());
+	g_currentThreadObject = object.release();
+}
+
+Pin<ThreadObject> currentThreadObject() { return Pin<ThreadObject>::acquire(g_currentThreadObject); }
+
+HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenThread(0x%x, %d, %u)\n", access, inherit, threadId);
+	if (access & ~THREAD_ALL_ACCESS) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	}
+	std::lock_guard lock(g_threadRegistryMutex);
+	auto it = g_threadRegistry.find(threadId);
+	if (it == g_threadRegistry.end()) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	if (access & THREAD_QUERY_INFORMATION)
+		access |= THREAD_QUERY_LIMITED_INFORMATION; // Query information also grants the limited query right.
+	if (access & THREAD_SET_INFORMATION)
+		access |= THREAD_SET_LIMITED_INFORMATION;
+	return wibo::handles().alloc(it->second.clone(), access, inherit ? HANDLE_FLAG_INHERIT : 0);
+}
 
 BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
 											 DWORD dwFlags, SIZE_T *lpSize) {
@@ -336,9 +408,14 @@ DWORD WINAPI GetThreadId(HANDLE Thread) {
 	if (isPseudoCurrentThreadHandle(Thread)) {
 		return wibo::getThreadId();
 	}
-	Pin<ThreadObject> obj = wibo::handles().getAs<ThreadObject>(Thread);
+	HandleMeta metadata{};
+	Pin<ThreadObject> obj = wibo::handles().getAs<ThreadObject>(Thread, &metadata);
 	if (!obj) {
 		setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	if (!(metadata.grantedAccess & (THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION))) {
+		setLastError(ERROR_ACCESS_DENIED);
 		return 0;
 	}
 	return obj->threadId;
@@ -575,9 +652,14 @@ DWORD WINAPI ResumeThread(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("ResumeThread(%p)\n", hThread);
 	// TODO: behavior with current thread handle?
-	auto obj = wibo::handles().getAs<ThreadObject>(hThread);
+	HandleMeta metadata{};
+	auto obj = wibo::handles().getAs<ThreadObject>(hThread, &metadata);
 	if (!obj) {
 		setLastError(ERROR_INVALID_HANDLE);
+		return static_cast<DWORD>(-1);
+	}
+	if (!(metadata.grantedAccess & THREAD_SUSPEND_RESUME)) {
+		setLastError(ERROR_ACCESS_DENIED);
 		return static_cast<DWORD>(-1);
 	}
 	DWORD previous = 0;
@@ -687,7 +769,8 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 	}
 	if (lpThreadId)
 		*lpThreadId = object->threadId;
-	return wibo::handles().alloc(std::move(object), 0x1FFFFF, 0);
+	return allocateThreadHandle(std::move(object), THREAD_ALL_ACCESS,
+								lpThreadAttributes && lpThreadAttributes->bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
 }
 
 [[noreturn]] void WINAPI ExitThread(DWORD dwExitCode) {
@@ -715,13 +798,18 @@ BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode) {
 		*lpExitCode = STILL_ACTIVE;
 		return TRUE;
 	}
-	auto obj = wibo::handles().getAs<ThreadObject>(hThread);
+	HandleMeta metadata{};
+	auto obj = wibo::handles().getAs<ThreadObject>(hThread, &metadata);
 	if (!obj) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	if (!(metadata.grantedAccess & (THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION))) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
 	std::lock_guard lk(obj->m);
-	*lpExitCode = obj->exitCode;
+	*lpExitCode = obj->signaled ? obj->exitCode : STILL_ACTIVE;
 	return TRUE;
 }
 

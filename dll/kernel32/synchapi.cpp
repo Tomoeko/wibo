@@ -774,7 +774,8 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bA
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if (object->type == ObjectType::Timer && !(metadata.grantedAccess & SYNCHRONIZE)) {
+		if ((object->type == ObjectType::Timer || object->type == ObjectType::Thread) &&
+			!(metadata.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;
 		}
@@ -881,6 +882,10 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 		return ret;
 	}
 	case ObjectType::Thread: {
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
 		auto th = std::move(obj).downcast<ThreadObject>();
 		pthread_t self = pthread_self();
 		std::unique_lock lk(th->m);
@@ -935,7 +940,8 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if (pin->type == ObjectType::Timer && !(meta.grantedAccess & SYNCHRONIZE)) {
+		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread) &&
+			!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;
 		}

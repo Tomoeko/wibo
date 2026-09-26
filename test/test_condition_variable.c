@@ -8,7 +8,9 @@ static unsigned ready, permits, completed, turn;
 
 static void sleep_on(CONDITION_VARIABLE *condition) {
 	SetLastError(0x71);
-	TEST_CHECK(SleepConditionVariableCS(condition, &lock, 5000));
+	TEST_CHECK_MSG(SleepConditionVariableCS(condition, &lock, 5000),
+				   "Condition wait failed: error=%lu ready=%u permits=%u completed=%u turn=%u", GetLastError(), ready,
+				   permits, completed, turn);
 	TEST_CHECK_EQ(0x71, GetLastError());
 	TEST_CHECK_EQ(1, lock.RecursionCount);
 	TEST_CHECK_U64_EQ(GetCurrentThreadId(), (ULONG_PTR)lock.OwningThread);

@@ -4,6 +4,7 @@
 #include "files.h"
 #include "heap.h"
 #include "kernel32/heapapi.h"
+#include "kernel32/internal.h"
 #include "modules.h"
 #include "processes.h"
 #include "setup.h"
@@ -472,6 +473,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	MainTebScope mainTebScope(tib);
+	kernel32::initializeMainThreadObject();
 #if defined(__APPLE__) && defined(WIBO_GUEST_64)
 	installDarwinSignalPolicy();
 #endif
