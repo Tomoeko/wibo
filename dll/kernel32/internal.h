@@ -136,6 +136,8 @@ struct ThreadObject final : WaitableObject {
 	DWORD exitCode = STILL_ACTIVE;
 	unsigned int suspendCount = 0;
 	bool hostSuspended = false;
+	WORD entryCs = 0;
+	WORD entrySs = 0;
 	TEB *tib = nullptr;
 	bool ownsTib = true;
 	std::shared_ptr<ApcState> apc = std::make_shared<ApcState>();
@@ -155,6 +157,7 @@ struct ThreadObject final : WaitableObject {
 
 void initializeMainThreadObject();
 Pin<ThreadObject> currentThreadObject();
+void captureThreadSelectors(ThreadObject &thread);
 
 struct MutexObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Mutex;

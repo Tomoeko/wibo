@@ -1,6 +1,7 @@
 #pragma once
 
 #include "minwinbase.h"
+#include "thread_context.h"
 #include "types.h"
 
 struct PROCESS_INFORMATION {
@@ -106,6 +107,7 @@ BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature);
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask);
 BOOL WINAPI SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask);
 DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinityMask);
+BOOL WINAPI GetThreadContext(HANDLE hThread, LPCONTEXT context);
 DWORD WINAPI SuspendThread(HANDLE hThread);
 DWORD WINAPI ResumeThread(HANDLE hThread);
 HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription);

@@ -212,6 +212,7 @@ void *threadTrampoline(void *param) {
 	ThreadStartData data = std::move(*dataPtr);
 	delete dataPtr;
 
+	kernel32::captureThreadSelectors(*data.obj);
 	g_currentThreadObject = data.obj;
 	kernel32::installApcState(data.obj->apc);
 
@@ -301,6 +302,7 @@ void initializeMainThreadObject() {
 		return;
 	auto object = make_pin<ThreadObject>(pthread_self());
 	object->threadId = wibo::getThreadId();
+	captureThreadSelectors(*object);
 	object->initialized = true;
 	object->tib = currentThreadTeb;
 	object->ownsTib = false; // The main TEB is owned by the process-entry scope.
