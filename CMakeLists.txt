@@ -771,6 +771,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_runtime_exception_registration SOURCES test/test_runtime_exception_registration.c)
         set_tests_properties(wibo.test_runtime_exception_registration PROPERTIES
             ENVIRONMENT "WIBO_EXPECT_WER_UNSUPPORTED=1")
+        wibo_add_fixture_bin(NAME test_open_thread_token SOURCES test/test_open_thread_token.c COMPILE_OPTIONS -ladvapi32)
+        set_tests_properties(wibo.test_open_thread_token PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_psapi SOURCES test/test_psapi.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)

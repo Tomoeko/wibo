@@ -32,4 +32,21 @@ BOOL WINAPI OpenProcessToken(HANDLE ProcessHandle, DWORD DesiredAccess, PHANDLE 
 	return TRUE;
 }
 
+BOOL WINAPI OpenThreadToken(HANDLE thread, DWORD desiredAccess, BOOL openAsSelf, PHANDLE token) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenThreadToken(%p, 0x%x, %d, %p)\n", thread, desiredAccess, openAsSelf, token);
+	if (!token) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	*token = NO_HANDLE;
+	if (!kernel32::isPseudoCurrentThreadHandle(thread) && !wibo::handles().getAs<kernel32::ThreadObject>(thread)) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	// Guest threads have no impersonation token; token assignment is not implemented.
+	kernel32::setLastError(ERROR_NO_TOKEN);
+	return FALSE;
+}
+
 } // namespace advapi32
