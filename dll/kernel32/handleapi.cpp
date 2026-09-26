@@ -5,6 +5,7 @@
 #include "handles.h"
 #include "internal.h"
 #include "processthreadsapi.h"
+#include "ws2/internal.h"
 
 #include <pthread.h>
 #include <unistd.h>
@@ -91,7 +92,8 @@ BOOL WINAPI GetHandleInformation(HANDLE handle, LPDWORD flags) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	if (isUserImage(handle) || !wibo::handles().getInformation(handle, flags)) {
+	if (isUserImage(handle) || (!wibo::handles().getInformation(handle, flags) &&
+								!ws2::detail::getHandleInformation(static_cast<SOCKET>(handle), flags))) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
@@ -101,7 +103,8 @@ BOOL WINAPI GetHandleInformation(HANDLE handle, LPDWORD flags) {
 BOOL WINAPI SetHandleInformation(HANDLE hObject, DWORD dwMask, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetHandleInformation(%p, 0x%x, 0x%x)\n", hObject, dwMask, dwFlags);
-	if (isUserImage(hObject) || !wibo::handles().setInformation(hObject, dwMask, dwFlags)) {
+	if (isUserImage(hObject) || (!wibo::handles().setInformation(hObject, dwMask, dwFlags) &&
+								 !ws2::detail::setHandleInformation(static_cast<SOCKET>(hObject), dwMask, dwFlags))) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}

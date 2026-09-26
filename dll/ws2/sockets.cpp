@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "context.h"
+#include "handles.h"
 
 #include <algorithm>
 #include <array>
@@ -65,6 +66,7 @@ SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UI
 	if (descriptor < 0)
 		return fail(socketError(errno));
 	auto state = std::make_shared<Socket>(descriptor, family);
+	state->handleFlags = (flags & 0x80U) ? 0 : HANDLE_FLAG_INHERIT;
 	if ((flags & 0x80U) && ::fcntl(descriptor, F_SETFD, FD_CLOEXEC) < 0)
 		return fail(socketError(errno));
 #if defined(__APPLE__)
@@ -96,6 +98,35 @@ std::shared_ptr<Socket> findSocket(SOCKET handle) {
 	}
 	return found->second;
 }
+bool getHandleInformation(SOCKET handle, DWORD *flags) {
+	auto &registry = socketRegistry();
+	std::lock_guard lock(registry.mutex);
+	const auto found = registry.sockets.find(handle);
+	if (found == registry.sockets.end())
+		return false;
+	*flags = found->second->handleFlags;
+	return true;
+}
+
+bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags) {
+	auto &registry = socketRegistry();
+	std::lock_guard lock(registry.mutex);
+	const auto found = registry.sockets.find(handle);
+	if (found == registry.sockets.end())
+		return false;
+	mask &= HANDLE_FLAG_INHERIT | HANDLE_FLAG_PROTECT_FROM_CLOSE;
+	const DWORD updated = (found->second->handleFlags & ~mask) | (flags & mask);
+	if (mask & HANDLE_FLAG_INHERIT) {
+		const int descriptor = found->second->descriptor;
+		const int current = ::fcntl(descriptor, F_GETFD);
+		if (current < 0 || ::fcntl(descriptor, F_SETFD,
+								   updated & HANDLE_FLAG_INHERIT ? current & ~FD_CLOEXEC : current | FD_CLOEXEC) < 0)
+			return false;
+	}
+	found->second->handleFlags = updated;
+	return true;
+}
+
 void cleanupSockets() {
 	auto &registry = socketRegistry();
 	std::lock_guard lock(registry.mutex);

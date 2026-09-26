@@ -14,11 +14,14 @@ struct Socket {
 	int family;
 	std::atomic<bool> connecting = false;
 	std::atomic<bool> listening = false;
+	DWORD handleFlags = 1; // Protected by the socket registry mutex.
 	explicit Socket(int descriptor, int family) : descriptor(descriptor), family(family) {}
 	~Socket();
 };
 std::shared_ptr<Socket> findSocket(SOCKET handle);
 void cleanupSockets();
+bool getHandleInformation(SOCKET handle, DWORD *flags);
+bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags);
 int socketError(int error);
 int failSocket(int error);
 int addressToNative(LPCVOID address, int length, sockaddr_storage &result, socklen_t &resultLength);
