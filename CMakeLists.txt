@@ -320,6 +320,7 @@ add_executable(wibo
     dll/ntdll.cpp
     dll/status_error.cpp
     dll/device_control.cpp
+    dll/native_file_set.cpp
     dll/wmi_proxy.cpp
     dll/network_proxy.cpp
     dll/ole32.cpp
@@ -737,6 +738,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_waitable_timer SOURCES test/test_waitable_timer.c)
         wibo_add_fixture_bin(NAME test_alertable_wait SOURCES test/test_alertable_wait.c)
         wibo_add_fixture_bin(NAME test_system_metrics SOURCES test/test_system_metrics.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_native_file_set SOURCES test/test_native_file_set.c)
+        set_tests_properties(wibo.test_native_file_set PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_device_control SOURCES test/test_device_control.c)
         wibo_add_fixture_bin(NAME test_status_error SOURCES test/test_status_error.c)
         set_tests_properties(wibo.test_status_error PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")

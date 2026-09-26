@@ -66,6 +66,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseA
 										PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
 NTSTATUS WINAPI NtProtectVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseAddress, PSIZE_T NumberOfBytesToProtect,
 									   ULONG NewAccessProtection, PULONG OldAccessProtection);
+NTSTATUS WINAPI NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
+									 FILE_INFORMATION_CLASS informationClass);
 NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation,
 									   ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 NTSTATUS WINAPI NtQuerySystemTime(PLARGE_INTEGER SystemTime);
