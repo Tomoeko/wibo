@@ -7,6 +7,13 @@
 
 namespace kernel32::detail {
 
+inline NTSTATUS loadOverlappedStatus(const OVERLAPPED *ov) {
+	return static_cast<NTSTATUS>(__atomic_load_n(&ov->Internal, __ATOMIC_ACQUIRE));
+}
+inline ULONG_PTR loadOverlappedBytes(const OVERLAPPED *ov) {
+	return __atomic_load_n(&ov->InternalHigh, __ATOMIC_RELAXED);
+}
+
 inline HANDLE normalizedOverlappedEventHandle(const OVERLAPPED *ov) {
 	if (!ov) {
 		return NO_HANDLE;
@@ -20,8 +27,8 @@ inline void signalOverlappedCompletion(const std::shared_ptr<const CompletionBin
 	const auto context = toGuestPtr(ov);
 	const HANDLE eventHandle = normalizedOverlappedEventHandle(ov);
 	if (ov) {
-		ov->Internal = status;
-		ov->InternalHigh = static_cast<ULONG_PTR>(bytesTransferred);
+		__atomic_store_n(&ov->InternalHigh, static_cast<ULONG_PTR>(bytesTransferred), __ATOMIC_RELAXED);
+		__atomic_store_n(&ov->Internal, static_cast<ULONG_PTR>(status), __ATOMIC_RELEASE);
 	}
 	if (eventHandle) {
 		if (auto ev = wibo::handles().getAs<EventObject>(eventHandle)) {

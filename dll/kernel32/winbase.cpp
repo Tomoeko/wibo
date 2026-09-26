@@ -48,7 +48,6 @@ constexpr ATOM kMinIntegerAtom = 0x0001;
 constexpr ATOM kMaxIntegerAtom = 0xBFFF;
 constexpr ATOM kMinStringAtom = 0xC000;
 constexpr ATOM kMaxStringAtom = 0xFFFF;
-constexpr DWORD ERROR_MORE_DATA = 234;
 
 bool memoryProtectionAllowsRead(DWORD protect) {
 	if ((protect & PAGE_GUARD) != 0) {

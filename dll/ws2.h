@@ -67,6 +67,12 @@ struct WSAQUERYSETW {
 };
 static_assert(sizeof(WSAQUERYSETW) == (sizeof(GUEST_PTR) == 8 ? 120 : 60));
 
+struct WSABUF {
+	ULONG len;
+	GUEST_PTR buf;
+};
+static_assert(sizeof(WSABUF) == (sizeof(GUEST_PTR) == 8 ? 16 : 8));
+
 namespace ws2 {
 
 HANDLE WINAPI WSACreateEvent();
@@ -87,6 +93,12 @@ LPSTR WINAPI inet_ntoa(ULONG address);
 ULONG WINAPI inet_addr(LPCSTR text);
 int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int length);
 int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *length);
+int WINAPI WSARecv(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD received, LPDWORD flags,
+				   LPOVERLAPPED overlapped, GUEST_PTR completionRoutine);
+int WINAPI WSASend(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD sent, DWORD flags,
+				   LPOVERLAPPED overlapped, GUEST_PTR completionRoutine);
+BOOL WINAPI WSAGetOverlappedResult(SOCKET handle, LPOVERLAPPED overlapped, LPDWORD transferred, BOOL wait,
+								   LPDWORD flags);
 int WINAPI WSAIoctl(SOCKET handle, DWORD operation, LPCVOID input, DWORD inputLength, LPVOID output, DWORD outputLength,
 					LPDWORD returned, LPOVERLAPPED overlapped, GUEST_PTR completionRoutine);
 int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags);

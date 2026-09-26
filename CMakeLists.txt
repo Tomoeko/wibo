@@ -348,6 +348,8 @@ add_executable(wibo
     dll/vcruntime.cpp
     dll/version.cpp
     dll/winmm.cpp
+    dll/ws2/async_io.cpp
+    dll/ws2/overlapped.cpp
     dll/ws2/accept_ex.cpp
     dll/ws2.cpp
     dll/ws2/service_lookup.cpp
@@ -713,6 +715,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_socket_events SOURCES test/test_socket_events.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_connect SOURCES test/test_socket_connect.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_socket_connect PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_socket_overlapped SOURCES test/test_socket_overlapped.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_socket_overlapped PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_accept_ex SOURCES test/test_accept_ex.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_accept_ex PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_completion SOURCES test/test_socket_completion.c COMPILE_OPTIONS -lws2_32)

@@ -105,11 +105,11 @@ int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags) {
 	const auto state = detail::findSocket(handle);
 	if (!state)
 		return -1;
-	if (length < 0 || (flags & ~3U))
+	if (length < 0 || (flags & ~5U))
 		return detail::failSocket(10022);
 	if (!buffer && length)
 		return detail::failSocket(10014);
-	int nativeFlags = ((flags & 1) ? MSG_OOB : 0) | ((flags & 2) ? MSG_DONTROUTE : 0);
+	int nativeFlags = ((flags & 1) ? MSG_OOB : 0) | ((flags & 4) ? MSG_DONTROUTE : 0);
 #ifdef MSG_NOSIGNAL
 	nativeFlags |= MSG_NOSIGNAL;
 #endif

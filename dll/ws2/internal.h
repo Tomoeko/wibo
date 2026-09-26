@@ -3,6 +3,7 @@
 #include "ws2.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <pthread.h>
@@ -21,6 +22,7 @@ struct Socket {
 	std::atomic<bool> connecting = false;
 	std::atomic<bool> listening = false;
 	std::mutex ioMutex;
+	std::condition_variable overlappedCv;
 	std::atomic<bool> closed = false;
 	unsigned pendingAccepts = 0;
 	int acceptOriginalFlags = -1;
