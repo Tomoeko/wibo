@@ -649,6 +649,13 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         endif()
         if(WIBO_GUEST_64)
+            if(APPLE)
+                add_executable(test_darwin_teb_context test/test_darwin_teb_context.cpp src/setup_darwin.cpp)
+                target_compile_definitions(test_darwin_teb_context PRIVATE WIBO_GUEST_64=1)
+                target_compile_features(test_darwin_teb_context PRIVATE cxx_std_20)
+                target_include_directories(test_darwin_teb_context PRIVATE src)
+                add_test(NAME wibo.test_darwin_teb_context COMMAND test_darwin_teb_context)
+            endif()
             wibo_add_fixture_bin(NAME test_win64_peb_heap SOURCES test/test_win64_peb_heap.c
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
             wibo_add_fixture_bin(NAME test_win64_wgetmainargs SOURCES test/test_win64_wgetmainargs.c
@@ -833,6 +840,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_release.rc)
 
         add_custom_target(wibo_test_fixtures DEPENDS ${WIBO_TEST_FIXTURES})
+        if(TARGET test_darwin_teb_context)
+            add_dependencies(wibo_test_fixtures test_darwin_teb_context)
+            set_tests_properties(wibo.test_darwin_teb_context PROPERTIES DEPENDS wibo.build_fixtures)
+        endif()
 
         if(CMAKE_CONFIGURATION_TYPES)
             set(_wibo_fixture_build_command

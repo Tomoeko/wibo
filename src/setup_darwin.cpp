@@ -26,6 +26,10 @@
 // slot while retaining macOS's GS base. Slot 6 is reserved by macOS for the
 // Win64 TEB self pointer at GS:[0x30].
 constexpr uint32_t kWin64StaticTlsTsdSlot = 0x58 / sizeof(void *);
+// GS:[0x60] overlaps Darwin's libc localtime cache rather than a reserved slot.
+// Publish the guest PEB only while executing guest code and restore the native
+// cache before any host API, callback return, or pthread teardown.
+constexpr uint32_t kWin64PebTsdSlot = 0x60 / sizeof(void *);
 
 // Darwin publishes this stable layout SPI for tools that need to translate a
 // pthread_t into its direct TSD base. Using it avoids Mach thread_info and
@@ -252,6 +256,23 @@ bool segmentSetupLocked(TEB *teb) {
 } // namespace
 
 #ifdef WIBO_GUEST_64
+TEB *enterHostContext() {
+	auto *teb = reinterpret_cast<TEB *>(*(volatile uint64_t __seg_gs *)0x30);
+	if (teb && teb->GuestContextActive) {
+		writeTsdSlot(kWin64PebTsdSlot, teb->HostLocalTimeTsd);
+		teb->GuestContextActive = false;
+	}
+	return teb;
+}
+
+void enterGuestContext(TEB *teb) {
+	if (teb && !teb->GuestContextActive) {
+		teb->HostLocalTimeTsd = *(volatile uint64_t __seg_gs *)0x60;
+		writeTsdSlot(kWin64PebTsdSlot, teb->Peb);
+		teb->GuestContextActive = true;
+	}
+}
+
 bool tebThreadSetup(TEB *teb) {
 	if (!teb) {
 		return false;
@@ -268,6 +289,7 @@ bool tebThreadSetup(TEB *teb) {
 }
 
 bool tebThreadTeardown(TEB *teb) {
+	enterHostContext();
 	if (teb) {
 		writeTsdSlot(kWin64StaticTlsTsdSlot, 0);
 		writeTsdSlot(_PTHREAD_TSD_SLOT_RESERVED_WIN64, 0);
@@ -279,6 +301,7 @@ bool tebThreadTeardown(TEB *teb) {
 }
 
 void tebThreadEmergencyTeardown() {
+	enterHostContext();
 	// GS always remains the native pthread base, including in signal handlers.
 	writeTsdSlot(kWin64StaticTlsTsdSlot, 0);
 	writeTsdSlot(_PTHREAD_TSD_SLOT_RESERVED_WIN64, 0);

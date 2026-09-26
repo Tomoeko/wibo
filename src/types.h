@@ -540,6 +540,8 @@ typedef struct _TEB {
 	BYTE ReservedToTlsExpansionSlots[0x1780 - 0x1690];
 	GUEST_PTR TlsExpansionSlots;
 	void *CurrentStackPointer;
+	GUEST_PTR HostLocalTimeTsd;
+	bool GuestContextActive;
 } TEB;
 #else
 typedef struct _NT_TIB {
