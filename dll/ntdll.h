@@ -45,6 +45,8 @@ struct WINE_DEBUG_CHANNEL {
 using PRTL_OSVERSIONINFOW = RTL_OSVERSIONINFOW *;
 
 #ifdef WIBO_GUEST_64
+struct CONTEXT64;
+struct KNONVOLATILE_CONTEXT_POINTERS;
 struct RUNTIME_FUNCTION {
 	DWORD BeginAddress;
 	DWORD EndAddress;
@@ -60,6 +62,9 @@ NTSTATUS WINAPI RtlAddGrowableFunctionTable(GUEST_PTR *dynamicTable, RUNTIME_FUN
 VOID WINAPI RtlGrowFunctionTable(PVOID dynamicTable, DWORD newEntryCount);
 VOID WINAPI RtlDeleteGrowableFunctionTable(PVOID dynamicTable);
 RUNTIME_FUNCTION *WINAPI RtlLookupFunctionEntry(ULONGLONG controlPc, ULONGLONG *imageBase, PVOID historyTable);
+PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
+							  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame,
+							  KNONVOLATILE_CONTEXT_POINTERS *pointers);
 #endif
 
 ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);

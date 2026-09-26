@@ -45,6 +45,10 @@ struct CONTEXT32 {
 	BYTE ExtendedRegisters[512];
 };
 #ifdef WIBO_GUEST_64
+struct KNONVOLATILE_CONTEXT_POINTERS {
+	GUEST_PTR FloatingContext[16];
+	GUEST_PTR IntegerContext[16];
+};
 using CONTEXT = CONTEXT64;
 constexpr DWORD CONTEXT_ARCH = 0x100000;
 #else

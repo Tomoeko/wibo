@@ -330,6 +330,7 @@ add_executable(wibo
     dll/mscoree.cpp
     dll/ntdll.cpp
     dll/function_table.cpp
+    dll/virtual_unwind.cpp
     dll/status_error.cpp
     dll/device_control.cpp
     dll/native_file_set.cpp
@@ -667,6 +668,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endif()
         if(WIBO_GUEST_64)
             wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
+            wibo_add_fixture_bin(NAME test_virtual_unwind SOURCES test/test_virtual_unwind.c)
+            set_tests_properties(wibo.test_virtual_unwind PROPERTIES TIMEOUT 15)
             if(APPLE)
                 add_executable(test_darwin_teb_context test/test_darwin_teb_context.cpp src/setup_darwin.cpp)
                 target_compile_definitions(test_darwin_teb_context PRIVATE WIBO_GUEST_64=1)
