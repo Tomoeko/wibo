@@ -36,6 +36,13 @@ static_assert(sizeof(ADDRINFOA) == (sizeof(GUEST_PTR) == 8 ? 48 : 32));
 
 using SOCKET = GUEST_PTR;
 
+struct WSA_FD_SET {
+	static constexpr DWORD kMaxCount = 65536;
+	DWORD count;
+	SOCKET sockets[1];
+};
+static_assert(offsetof(WSA_FD_SET, sockets) == sizeof(SOCKET));
+
 namespace ws2 {
 
 HANDLE WINAPI WSACreateEvent();
@@ -71,5 +78,6 @@ void WINAPI freeaddrinfo(ADDRINFOA *result);
 int WINAPI gethostname(LPSTR name, int namelen);
 GUEST_PTR WINAPI gethostbyname(LPCSTR name);
 int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, const void *timeout);
+int WINAPI __WSAFDIsSet(SOCKET handle, const WSA_FD_SET *set);
 
 } // namespace ws2

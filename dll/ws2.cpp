@@ -231,6 +231,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "WSAStartup";
 	case 116:
 		return "WSACleanup";
+	case 151:
+		return "__WSAFDIsSet";
 	default:
 		return nullptr;
 	}

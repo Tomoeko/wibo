@@ -19,14 +19,9 @@
 #endif
 
 namespace {
-struct GuestSet {
-	DWORD count;
-	SOCKET sockets[1];
-};
 struct GuestTimeout {
 	LONG seconds, microseconds;
 };
-static_assert(offsetof(GuestSet, sockets) == sizeof(SOCKET));
 static_assert(sizeof(GuestTimeout) == 8);
 struct Target {
 	SOCKET handle;
@@ -104,6 +99,29 @@ int waitForSockets(std::vector<pollfd> &descriptors, const std::vector<Target> &
 } // namespace
 
 namespace ws2 {
+int WINAPI __WSAFDIsSet(SOCKET handle, const WSA_FD_SET *set) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("__WSAFDIsSet(0x%llx, %p)\n", static_cast<unsigned long long>(handle), set);
+	DWORD count = 0;
+	if (!set) {
+		detail::setLastError(10014);
+		return 0;
+	}
+	std::memcpy(&count, set, sizeof(count));
+	if (count > WSA_FD_SET::kMaxCount) {
+		detail::setLastError(10022);
+		return 0;
+	}
+	const auto *bytes = reinterpret_cast<const uint8_t *>(set) + offsetof(WSA_FD_SET, sockets);
+	for (DWORD index = 0; index < count; ++index) {
+		SOCKET value = 0;
+		std::memcpy(&value, bytes + index * sizeof(value), sizeof(value));
+		if (value == handle)
+			return 1;
+	}
+	return 0;
+}
+
 int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, const void *timeout) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("select(%d, %p, %p, %p, %p)\n", nfds, readfds, writefds, exceptfds, timeout);
@@ -126,9 +144,9 @@ int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, c
 			continue;
 		DWORD count = 0;
 		std::memcpy(&count, set.output, sizeof(count));
-		if (count > 65536)
+		if (count > WSA_FD_SET::kMaxCount)
 			return detail::failSocket(10022);
-		const auto *bytes = static_cast<const uint8_t *>(set.output) + offsetof(GuestSet, sockets);
+		const auto *bytes = static_cast<const uint8_t *>(set.output) + offsetof(WSA_FD_SET, sockets);
 		for (DWORD index = 0; index != count; ++index) {
 			SOCKET handle = 0;
 			std::memcpy(&handle, bytes + index * sizeof(handle), sizeof(handle));
@@ -213,7 +231,7 @@ int WINAPI select(int nfds, LPVOID readfds, LPVOID writefds, LPVOID exceptfds, c
 		if (!set.output)
 			continue;
 		DWORD count = 0;
-		auto *bytes = static_cast<uint8_t *>(set.output) + offsetof(GuestSet, sockets);
+		auto *bytes = static_cast<uint8_t *>(set.output) + offsetof(WSA_FD_SET, sockets);
 		for (const auto index : set.targets) {
 			const auto &target = targets[index];
 			const bool ready = kind == 0 ? target.read : kind == 1 ? target.write : target.exception;
