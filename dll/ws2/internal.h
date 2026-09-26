@@ -7,6 +7,10 @@
 #include <string>
 #include <sys/socket.h>
 
+namespace kernel32 {
+struct CompletionBinding;
+}
+
 namespace ws2::detail {
 
 struct Socket {
@@ -14,6 +18,8 @@ struct Socket {
 	int family;
 	std::atomic<bool> connecting = false;
 	std::atomic<bool> listening = false;
+	bool overlapped = true;
+	std::shared_ptr<const kernel32::CompletionBinding> completion;
 	DWORD handleFlags = 1; // Protected by the socket registry mutex.
 	explicit Socket(int descriptor, int family) : descriptor(descriptor), family(family) {}
 	~Socket();

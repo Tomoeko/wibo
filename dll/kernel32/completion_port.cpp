@@ -6,6 +6,7 @@
 #include "ioapiset.h"
 #include "ntdll.h"
 #include "synchapi.h"
+#include "ws2/internal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -86,13 +87,24 @@ HANDLE WINAPI CreateIoCompletionPort(HANDLE fileHandle, HANDLE existingPort, ULO
 		return NO_HANDLE;
 	}
 	Pin<FileObject> file;
+	std::shared_ptr<ws2::detail::Socket> socket;
+	std::shared_ptr<const CompletionBinding> *completion = nullptr;
 	if (fileHandle != INVALID_HANDLE_VALUE) {
 		file = wibo::handles().getAs<FileObject>(fileHandle);
-		if (!file || !file->valid()) {
-			setLastError(ERROR_INVALID_HANDLE);
-			return NO_HANDLE;
+		bool overlapped = false;
+		if (file && file->valid()) {
+			completion = &file->completion;
+			overlapped = file->overlapped;
+		} else {
+			socket = ws2::detail::findSocket(static_cast<SOCKET>(fileHandle));
+			if (!socket) {
+				setLastError(ERROR_INVALID_HANDLE);
+				return NO_HANDLE;
+			}
+			completion = &socket->completion;
+			overlapped = socket->overlapped;
 		}
-		if (!file->overlapped) {
+		if (!overlapped) {
 			setLastError(ERROR_INVALID_PARAMETER);
 			return NO_HANDLE;
 		}
@@ -109,10 +121,10 @@ HANDLE WINAPI CreateIoCompletionPort(HANDLE fileHandle, HANDLE existingPort, ULO
 			concurrency = std::max(1U, std::thread::hardware_concurrency());
 		port = make_pin<CompletionPortObject>(concurrency);
 	}
-	if (file) {
+	if (completion) {
 		std::shared_ptr<const CompletionBinding> expected;
 		auto binding = std::make_shared<const CompletionBinding>(port.clone(), key);
-		if (!std::atomic_compare_exchange_strong(&file->completion, &expected, std::move(binding))) {
+		if (!std::atomic_compare_exchange_strong(completion, &expected, std::move(binding))) {
 			setLastError(ERROR_INVALID_PARAMETER);
 			return NO_HANDLE;
 		}

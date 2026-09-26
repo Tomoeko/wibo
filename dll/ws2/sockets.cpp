@@ -66,6 +66,7 @@ SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UI
 	if (descriptor < 0)
 		return fail(socketError(errno));
 	auto state = std::make_shared<Socket>(descriptor, family);
+	state->overlapped = (flags & 1U) != 0;
 	state->handleFlags = (flags & 0x80U) ? 0 : HANDLE_FLAG_INHERIT;
 	if ((flags & 0x80U) && ::fcntl(descriptor, F_SETFD, FD_CLOEXEC) < 0)
 		return fail(socketError(errno));
@@ -410,6 +411,7 @@ SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength) {
 	if (descriptor < 0)
 		return fail(detail::socketError(errno));
 	auto accepted = std::make_shared<detail::Socket>(descriptor, state->family);
+	accepted->overlapped = state->overlapped;
 	const int parentMode = ::fcntl(state->descriptor, F_GETFL);
 	const int mode = ::fcntl(descriptor, F_GETFL);
 	if (parentMode < 0 || mode < 0 ||
