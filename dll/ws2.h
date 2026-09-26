@@ -105,6 +105,7 @@ int WINAPI WSAIoctl(SOCKET handle, DWORD operation, LPCVOID input, DWORD inputLe
 int WINAPI send(SOCKET handle, LPCSTR buffer, int length, int flags);
 int WINAPI ioctlsocket(SOCKET handle, LONG command, ULONG *value);
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length);
+int WINAPI getpeername(SOCKET handle, LPVOID address, int *length);
 ULONG WINAPI(ntohl)(ULONG netlong);
 ULONG WINAPI(htonl)(ULONG value);
 USHORT WINAPI(ntohs)(USHORT value);

@@ -202,6 +202,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "closesocket";
 	case 4:
 		return "connect";
+	case 5:
+		return "getpeername";
 	case 6:
 		return "getsockname";
 	case 23:

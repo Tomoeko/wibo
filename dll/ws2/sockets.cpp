@@ -20,6 +20,23 @@
 namespace {
 constexpr SOCKET kInvalidSocket = static_cast<SOCKET>(-1);
 constexpr int kWinInet6 = 23;
+int querySocketAddress(SOCKET handle, LPVOID address, int *length, bool peer) {
+	const auto state = ws2::detail::findSocket(handle);
+	if (!state)
+		return -1;
+	sockaddr_storage native{};
+	socklen_t nativeLength = sizeof(native);
+	const int result = peer ? ::getpeername(state->descriptor, reinterpret_cast<sockaddr *>(&native), &nativeLength)
+							: ::getsockname(state->descriptor, reinterpret_cast<sockaddr *>(&native), &nativeLength);
+	if (result < 0) {
+		const int error = errno;
+		return ws2::detail::failSocket(peer && error == EINVAL ? 10057 : ws2::detail::socketError(error));
+	}
+	if (!peer && reinterpret_cast<const sockaddr_in *>(&native)->sin_port == 0)
+		return ws2::detail::failSocket(10022);
+	const int status = ws2::detail::addressFromNative(reinterpret_cast<sockaddr *>(&native), address, length);
+	return status ? ws2::detail::failSocket(status) : 0;
+}
 struct SocketRegistry {
 	std::mutex mutex;
 	std::unordered_map<SOCKET, std::shared_ptr<ws2::detail::Socket>> sockets;
@@ -547,17 +564,11 @@ SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength) {
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("getsockname(0x%llx, %p, %p)\n", static_cast<unsigned long long>(handle), address, length);
-	const auto state = detail::findSocket(handle);
-	if (!state)
-		return -1;
-	sockaddr_storage native{};
-	socklen_t nativeLength = sizeof(native);
-	if (::getsockname(state->descriptor, reinterpret_cast<sockaddr *>(&native), &nativeLength) < 0)
-		return detail::failSocket(detail::socketError(errno));
-	const auto *ip = reinterpret_cast<const sockaddr_in *>(&native);
-	if (ip->sin_port == 0)
-		return detail::failSocket(10022);
-	const int status = detail::addressFromNative(reinterpret_cast<sockaddr *>(&native), address, length);
-	return status ? detail::failSocket(status) : 0;
+	return querySocketAddress(handle, address, length, false);
+}
+int WINAPI getpeername(SOCKET handle, LPVOID address, int *length) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("getpeername(0x%llx, %p, %p)\n", static_cast<unsigned long long>(handle), address, length);
+	return querySocketAddress(handle, address, length, true);
 }
 } // namespace ws2
