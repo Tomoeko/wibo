@@ -307,6 +307,7 @@ add_executable(wibo
     dll/kernel32/namedpipeapi.cpp
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
+    dll/kernel32/thread_control.cpp
     dll/kernel32/profileapi.cpp
     dll/kernel32/stringapiset.cpp
     dll/kernel32/synchapi.cpp
@@ -722,6 +723,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_address_text SOURCES test/test_address_text.c COMPILE_OPTIONS -lws2_32)
         if(APPLE)
             wibo_add_fixture_bin(NAME test_directory_changes SOURCES test/test_directory_changes.c)
+            wibo_add_fixture_bin(NAME test_thread_suspend SOURCES test/test_thread_suspend.c)
         endif()
         wibo_add_fixture_bin(NAME test_address_parse SOURCES test/test_address_parse.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_address_text PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")

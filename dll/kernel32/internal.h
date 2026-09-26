@@ -135,6 +135,7 @@ struct ThreadObject final : WaitableObject {
 	bool initialized = false;
 	DWORD exitCode = STILL_ACTIVE;
 	unsigned int suspendCount = 0;
+	bool hostSuspended = false;
 	TEB *tib = nullptr;
 	bool ownsTib = true;
 	std::shared_ptr<ApcState> apc = std::make_shared<ApcState>();

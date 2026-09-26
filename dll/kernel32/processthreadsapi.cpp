@@ -741,38 +741,6 @@ BOOL WINAPI TlsSetValue(DWORD dwTlsIndex, LPVOID lpTlsValue) {
 	return TRUE;
 }
 
-DWORD WINAPI ResumeThread(HANDLE hThread) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("ResumeThread(%p)\n", hThread);
-	// TODO: behavior with current thread handle?
-	HandleMeta metadata{};
-	auto obj = wibo::handles().getAs<ThreadObject>(hThread, &metadata);
-	if (!obj) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return static_cast<DWORD>(-1);
-	}
-	if (!(metadata.grantedAccess & THREAD_SUSPEND_RESUME)) {
-		setLastError(ERROR_ACCESS_DENIED);
-		return static_cast<DWORD>(-1);
-	}
-	DWORD previous = 0;
-	bool notify = false;
-	{
-		std::lock_guard lk(obj->m);
-		previous = obj->suspendCount;
-		if (obj->suspendCount > 0) {
-			obj->suspendCount--;
-			if (obj->suspendCount == 0) {
-				notify = true;
-			}
-		}
-	}
-	if (notify) {
-		obj->cv.notify_all();
-	}
-	return previous;
-}
-
 HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("STUB: SetThreadDescription(%p, %p)\n", hThread, lpThreadDescription);

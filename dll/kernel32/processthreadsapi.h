@@ -106,6 +106,7 @@ BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature);
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask);
 BOOL WINAPI SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask);
 DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinityMask);
+DWORD WINAPI SuspendThread(HANDLE hThread);
 DWORD WINAPI ResumeThread(HANDLE hThread);
 HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription);
 void WINAPI ExitProcess(UINT uExitCode);
