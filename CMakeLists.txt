@@ -321,6 +321,7 @@ add_executable(wibo
     dll/lmgr.cpp
     dll/mscoree.cpp
     dll/ntdll.cpp
+    dll/function_table.cpp
     dll/status_error.cpp
     dll/device_control.cpp
     dll/native_file_set.cpp
@@ -650,6 +651,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         endif()
         if(WIBO_GUEST_64)
+            wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
             if(APPLE)
                 add_executable(test_darwin_teb_context test/test_darwin_teb_context.cpp src/setup_darwin.cpp)
                 target_compile_definitions(test_darwin_teb_context PRIVATE WIBO_GUEST_64=1)

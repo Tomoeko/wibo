@@ -384,6 +384,8 @@ void resetExecutableState(wibo::Executable &executable) {
 	executable.delayImportDirectorySize = 0;
 	executable.tlsDirectoryRVA = 0;
 	executable.tlsDirectorySize = 0;
+	executable.exceptionDirectoryRVA = 0;
+	executable.exceptionDirectorySize = 0;
 	executable.execMapped = false;
 	executable.importsResolved = false;
 	executable.importsResolving = false;
@@ -487,6 +489,8 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	executable.delayImportDirectorySize = header32.delayImportDescriptor.size;
 	executable.tlsDirectoryRVA = header32.tlsTable.virtualAddress;
 	executable.tlsDirectorySize = header32.tlsTable.size;
+	executable.exceptionDirectoryRVA = header32.exceptionTable.virtualAddress;
+	executable.exceptionDirectorySize = header32.exceptionTable.size;
 	executable.execMapped = exec;
 	executable.importsResolved = false;
 	executable.importsResolving = false;
