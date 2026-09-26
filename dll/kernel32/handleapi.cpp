@@ -8,6 +8,15 @@
 #include <pthread.h>
 #include <unistd.h>
 
+namespace {
+
+bool isUserImage(HANDLE handle) {
+	const auto object = wibo::handles().get(handle);
+	return object && object->type == ObjectType::UserImage;
+}
+
+} // namespace
+
 namespace kernel32 {
 
 BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, HANDLE hTargetProcessHandle,
@@ -53,7 +62,8 @@ BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, H
 		return TRUE;
 	}
 
-	if (!handles.duplicateTo(hSourceHandle, handles, *lpTargetHandle, dwDesiredAccess, bInheritHandle, dwOptions)) {
+	if (isUserImage(hSourceHandle) ||
+		!handles.duplicateTo(hSourceHandle, handles, *lpTargetHandle, dwDesiredAccess, bInheritHandle, dwOptions)) {
 		DEBUG_LOG("-> ERROR_INVALID_HANDLE\n");
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
@@ -65,7 +75,7 @@ BOOL WINAPI DuplicateHandle(HANDLE hSourceProcessHandle, HANDLE hSourceHandle, H
 BOOL WINAPI CloseHandle(HANDLE hObject) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CloseHandle(%p)\n", hObject);
-	if (!wibo::handles().release(hObject)) {
+	if (isUserImage(hObject) || !wibo::handles().release(hObject)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
@@ -75,7 +85,7 @@ BOOL WINAPI CloseHandle(HANDLE hObject) {
 BOOL WINAPI SetHandleInformation(HANDLE hObject, DWORD dwMask, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetHandleInformation(%p, 0x%x, 0x%x)\n", hObject, dwMask, dwFlags);
-	if (!wibo::handles().setInformation(hObject, dwMask, dwFlags)) {
+	if (isUserImage(hObject) || !wibo::handles().setInformation(hObject, dwMask, dwFlags)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}

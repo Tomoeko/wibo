@@ -381,6 +381,96 @@ bool fileSecurity(const WCHAR *path, const WCHAR *information, bool ansi) {
 	return response.write();
 }
 
+struct BitmapData {
+	BITMAP bitmap{};
+	std::vector<BYTE> bytes;
+	bool read(HBITMAP handle) {
+		if (GetObjectW(handle, sizeof(bitmap), &bitmap) != sizeof(bitmap) || bitmap.bmWidth <= 0 ||
+			bitmap.bmWidth > 4096 || bitmap.bmHeight <= 0 || bitmap.bmHeight > 8192 || bitmap.bmPlanes != 1 ||
+			bitmap.bmBitsPixel > 32 || !bitmap.bmBitsPixel)
+			return false;
+		const size_t stride = ((size_t(bitmap.bmWidth) * bitmap.bmBitsPixel + 15) / 16) * 2;
+		const size_t size = stride * bitmap.bmHeight;
+		if (size > kMaxResponse / 2)
+			return false;
+		bitmap.bmWidthBytes = static_cast<LONG>(stride);
+		bytes.resize(size);
+		return GetBitmapBits(handle, static_cast<LONG>(size), bytes.data()) == static_cast<LONG>(size);
+	}
+	void append(Response &response) const {
+		response.number(bitmap.bmWidth);
+		response.number(bitmap.bmHeight);
+		response.number(bitmap.bmWidthBytes);
+		response.number(bitmap.bmPlanes);
+		response.number(bitmap.bmBitsPixel);
+		response.bytes(bytes.data(), bytes.size());
+	}
+};
+
+bool imageResource(const WCHAR *image, const WCHAR *kind, const WCHAR *name, bool icon) {
+	LPCWSTR resource = name;
+	if (wcscmp(kind, L"id") == 0) {
+		WCHAR *end = nullptr;
+		const unsigned long id = wcstoul(name, &end, 10);
+		if (!*name || *end || id > 65535)
+			return false;
+		resource = MAKEINTRESOURCEW(id);
+	} else if (wcscmp(kind, L"name") != 0)
+		return false;
+	HMODULE module = nullptr;
+	DWORD status = ERROR_SUCCESS;
+	if (*image) {
+		module = LoadLibraryExW(image, nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+		if (!module)
+			status = GetLastError();
+	}
+	HICON cursor = nullptr;
+	ICONINFO info{};
+	BitmapData mask, color;
+	if (status == ERROR_SUCCESS) {
+		cursor = icon ? LoadIconW(module, resource) : LoadCursorW(module, resource);
+		if (!cursor)
+			status = GetLastError();
+		if (!cursor && status == ERROR_SUCCESS)
+			status = ERROR_RESOURCE_NAME_NOT_FOUND;
+	}
+	if (status == ERROR_SUCCESS) {
+		if (!GetIconInfo(cursor, &info))
+			status = GetLastError();
+		else if (bool(info.fIcon) != icon || !mask.read(info.hbmMask) || (info.hbmColor && !color.read(info.hbmColor)))
+			status = ERROR_INVALID_DATA;
+	}
+	if (info.hbmMask)
+		DeleteObject(info.hbmMask);
+	if (info.hbmColor)
+		DeleteObject(info.hbmColor);
+	if (module)
+		FreeLibrary(module);
+	Response response;
+	response.header(status);
+	if (status == ERROR_SUCCESS) {
+		response.number(info.fIcon ? 1 : 0);
+		response.number(info.xHotspot);
+		response.number(info.yHotspot);
+		mask.append(response);
+		response.number(info.hbmColor ? 1 : 0);
+		if (info.hbmColor)
+			color.append(response);
+	}
+	return response.write();
+}
+
+bool memoryStatus() {
+	MEMORYSTATUSEX status{};
+	status.dwLength = sizeof(status);
+	const DWORD error = GlobalMemoryStatusEx(&status) ? ERROR_SUCCESS : GetLastError();
+	Response response;
+	response.header(error);
+	if (error == ERROR_SUCCESS)
+		response.bytes(&status, sizeof(status));
+	return response.write();
+}
+
 bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
@@ -488,6 +578,11 @@ int wmain(int argc, WCHAR **argv) {
 		written = fileSecurity(argv[2], argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"file-security-w") == 0)
 		written = fileSecurity(argv[2], argv[3], false);
+	else if (argc == 6 && wcscmp(argv[1], L"image-load") == 0 &&
+			 (wcscmp(argv[2], L"cursor") == 0 || wcscmp(argv[2], L"icon") == 0))
+		written = imageResource(argv[3], argv[4], argv[5], wcscmp(argv[2], L"icon") == 0);
+	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
+		written = memoryStatus();
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
 		written = userName();
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)

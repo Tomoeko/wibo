@@ -17,5 +17,10 @@ UINT WINAPI RegisterWindowMessageA(LPCSTR lpString);
 UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString);
 UINT WINAPI RegisterClipboardFormatA(LPCSTR name);
 UINT WINAPI RegisterClipboardFormatW(LPCWSTR name);
+HANDLE WINAPI LoadCursorA(HINSTANCE instance, LPCSTR name);
+HANDLE WINAPI LoadCursorW(HINSTANCE instance, LPCWSTR name);
+HANDLE WINAPI SetCursor(HANDLE cursor);
+HANDLE WINAPI LoadIconA(HINSTANCE instance, LPCSTR name);
+HANDLE WINAPI LoadIconW(HINSTANCE instance, LPCWSTR name);
 
 } // namespace user32

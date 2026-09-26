@@ -24,6 +24,19 @@ struct SYSTEM_INFO {
 
 using LPSYSTEM_INFO = SYSTEM_INFO *;
 
+struct MEMORYSTATUSEX {
+	DWORD dwLength;
+	DWORD dwMemoryLoad;
+	ULONGLONG ullTotalPhys;
+	ULONGLONG ullAvailPhys;
+	ULONGLONG ullTotalPageFile;
+	ULONGLONG ullAvailPageFile;
+	ULONGLONG ullTotalVirtual;
+	ULONGLONG ullAvailVirtual;
+	ULONGLONG ullAvailExtendedVirtual;
+};
+static_assert(sizeof(MEMORYSTATUSEX) == 64);
+
 enum LOGICAL_PROCESSOR_RELATIONSHIP {
 	RelationProcessorCore,
 	RelationNumaNode,
@@ -161,6 +174,7 @@ enum : BYTE {
 };
 
 namespace kernel32 {
+BOOL WINAPI GlobalMemoryStatusEx(MEMORYSTATUSEX *status);
 
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 void WINAPI GetNativeSystemInfo(LPSYSTEM_INFO lpSystemInfo);

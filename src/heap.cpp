@@ -1294,10 +1294,25 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 #ifdef WIBO_GUEST_64
 	if (request >= kGuestAddressLimit) {
 #else
-	if (request >= kTwoGB) {
+	if (request >= 0x80000000UL) {
 #endif
 		return VmStatus::InvalidParameter;
 	}
+#ifndef WIBO_GUEST_64
+	if (request >= kTwoGB) {
+		// The upper host image range is unavailable for guest allocation.
+		// It remains part of the guest address space as a reserved region.
+		*outInfo = {};
+		outInfo->BaseAddress = static_cast<GUEST_PTR>(kTwoGB);
+		outInfo->AllocationBase = static_cast<GUEST_PTR>(kTwoGB);
+		outInfo->AllocationProtect = PAGE_NOACCESS;
+		outInfo->RegionSize = 0x80000000UL - kTwoGB;
+		outInfo->State = MEM_RESERVE;
+		outInfo->Protect = PAGE_NOACCESS;
+		outInfo->Type = MEM_PRIVATE;
+		return VmStatus::Success;
+	}
+#endif
 	uintptr_t pageBase = alignDown(request, pageSize);
 
 	std::unique_lock allocLock(g_mappingsMutex);

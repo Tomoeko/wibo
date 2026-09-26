@@ -30,6 +30,7 @@ enum class ObjectType : uint16_t {
 	NamedPipe,
 	NamedPipeState,
 	ToolhelpSnapshot,
+	UserImage,
 };
 
 enum ObjectFlags : uint16_t {

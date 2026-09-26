@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic typed service responses for guest ABI and transport checks."""
 import struct
+import os
 import sys
 import time
 
@@ -53,6 +54,23 @@ elif operation == 'management-query':
     elif query == 'exit-failed':
         sys.stdout.buffer.write(response)
         sys.exit(1)
+elif operation == 'memory-status':
+    response = header() + blob(struct.pack('<II7Q', 64, 25, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
+    fault = os.environ.get('WIBO_FIXTURE_MEMORY_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'bad-load':
+        response = header() + blob(struct.pack('<II7Q', 64, 101, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
+elif operation == 'image-load':
+    image_type, image, kind, name = arguments
+    if kind != 'id' or image:
+        response = header(1814)
+    else:
+        width = 0xffffffff if name == '65534' else 1
+        response = header() + number(1 if image_type == 'icon' else 0) + number(0) + number(0)
+        response += b''.join(number(value) for value in (width, 2, 2, 1, 1)) + blob(b'\xff\xff\0\0') + number(0)
+        if name == '65535':
+            response = response[:-1]
 elif operation in ('set-file-security-a', 'set-file-security-w'):
     descriptor = bytes.fromhex(arguments[2])
     revision, reserved, control, owner, group, sacl, dacl = struct.unpack_from('<BBHIIII', descriptor)

@@ -61,7 +61,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luser32 -lgdi32 -o ${_provider_image}
         DEPENDS tools/system_provider.cpp src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -296,6 +296,7 @@ add_executable(wibo
     dll/kernel32/ioapiset.cpp
     dll/kernel32/libloaderapi.cpp
     dll/kernel32/memoryapi.cpp
+    dll/kernel32/memorystatus.cpp
     dll/kernel32/namedpipeapi.cpp
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
@@ -322,6 +323,7 @@ add_executable(wibo
     dll/shlwapi.cpp
     dll/shell32.cpp
     dll/user32.cpp
+    dll/user32/image.cpp
     dll/vcruntime.cpp
     dll/version.cpp
     dll/winmm.cpp
@@ -708,12 +710,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
+        wibo_add_fixture_bin(NAME test_load_cursor SOURCES test/test_load_cursor.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_memory_status SOURCES test/test_memory_status.c)
         wibo_add_fixture_bin(NAME test_provider_account SOURCES test/test_provider_account.c)
         wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
         wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
-        set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account wibo.test_file_security PROPERTIES
+        set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account wibo.test_file_security wibo.test_load_cursor wibo.test_memory_status PROPERTIES
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1"
             TIMEOUT 15)
+        set_property(TEST wibo.test_memory_status APPEND PROPERTY ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_ole_initialize SOURCES test/test_ole_initialize.c COMPILE_OPTIONS -lole32)
