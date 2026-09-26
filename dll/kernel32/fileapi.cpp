@@ -50,6 +50,9 @@ const FILETIME kDefaultFileInformationTime = {static_cast<DWORD>(UNIX_TIME_ZERO 
 
 using wibo::access::containsAny;
 
+constexpr DWORD kLockFailImmediately = 0x1;
+constexpr DWORD kLockExclusive = 0x2;
+
 constexpr uint32_t kFileReadMask = FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES;
 constexpr uint32_t kDirectoryReadMask = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_EA | FILE_READ_ATTRIBUTES;
 constexpr uint32_t kFileWriteMask = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES;
@@ -815,7 +818,10 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 
 	auto io = files::write(file.get(), lpBuffer, nNumberOfBytesToWrite, offset, updateFilePointer);
 	NTSTATUS completionStatus = STATUS_SUCCESS;
-	if (io.unixError != 0) {
+	if (io.windowsError != 0) {
+		completionStatus = wibo::statusFromWinError(io.windowsError);
+		setLastError(io.windowsError);
+	} else if (io.unixError != 0) {
 		completionStatus = wibo::statusFromErrno(io.unixError);
 		setLastError(wibo::winErrorFromErrno(io.unixError));
 	} else if (io.reachedEnd && io.bytesTransferred == 0) {
@@ -828,7 +834,68 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 
 	detail::signalOverlappedEvent(file.get(), lpOverlapped, completionStatus, io.bytesTransferred);
 
-	return io.unixError == 0;
+	return io.unixError == 0 && io.windowsError == 0;
+}
+
+BOOL WINAPI LockFileEx(HANDLE hFile, DWORD dwFlags, DWORD dwReserved, DWORD nNumberOfBytesToLockLow,
+					   DWORD nNumberOfBytesToLockHigh, LPOVERLAPPED lpOverlapped) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LockFileEx(%p, %u, %u, %u, %u, %p)\n", hFile, dwFlags, dwReserved, nNumberOfBytesToLockLow,
+			  nNumberOfBytesToLockHigh, lpOverlapped);
+	if (!lpOverlapped || dwReserved || (dwFlags & ~(kLockFailImmediately | kLockExclusive))) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	HandleMeta meta{};
+	auto file = wibo::handles().getAs<FileObject>(hFile, &meta);
+	if (!file || !file->valid() || file->isPipe) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (!(meta.grantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA))) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+	if (file->overlapped && !(dwFlags & kLockFailImmediately)) {
+		// Pending asynchronous locks need cancellation and completion queue support.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const uint64_t start = lpOverlapped->Offset | (static_cast<uint64_t>(lpOverlapped->OffsetHigh) << 32);
+	const uint64_t length = nNumberOfBytesToLockLow | (static_cast<uint64_t>(nNumberOfBytesToLockHigh) << 32);
+	const DWORD error = files::lockRange(file.get(), start, length, (dwFlags & kLockExclusive) != 0,
+										 (dwFlags & kLockFailImmediately) == 0);
+	if (error) {
+		setLastError(error);
+		return FALSE;
+	}
+	detail::signalOverlappedEvent(file.get(), lpOverlapped, STATUS_SUCCESS, 0);
+	return TRUE;
+}
+
+BOOL WINAPI UnlockFileEx(HANDLE hFile, DWORD dwReserved, DWORD nNumberOfBytesToUnlockLow,
+						 DWORD nNumberOfBytesToUnlockHigh, LPOVERLAPPED lpOverlapped) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("UnlockFileEx(%p, %u, %u, %u, %p)\n", hFile, dwReserved, nNumberOfBytesToUnlockLow,
+			  nNumberOfBytesToUnlockHigh, lpOverlapped);
+	if (!lpOverlapped || dwReserved) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	auto file = wibo::handles().getAs<FileObject>(hFile);
+	if (!file || !file->valid() || file->isPipe) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	const uint64_t start = lpOverlapped->Offset | (static_cast<uint64_t>(lpOverlapped->OffsetHigh) << 32);
+	const uint64_t length = nNumberOfBytesToUnlockLow | (static_cast<uint64_t>(nNumberOfBytesToUnlockHigh) << 32);
+	const DWORD error = files::unlockRange(file.get(), start, length);
+	if (error) {
+		setLastError(error);
+		return FALSE;
+	}
+	detail::signalOverlappedEvent(file.get(), lpOverlapped, STATUS_SUCCESS, 0);
+	return TRUE;
 }
 
 BOOL WINAPI FlushFileBuffers(HANDLE hFile) {
@@ -910,7 +977,10 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 
 	auto io = files::read(file.get(), lpBuffer, nNumberOfBytesToRead, offset, updateFilePointer);
 	NTSTATUS completionStatus = STATUS_SUCCESS;
-	if (io.unixError != 0) {
+	if (io.windowsError != 0) {
+		completionStatus = wibo::statusFromWinError(io.windowsError);
+		setLastError(io.windowsError);
+	} else if (io.unixError != 0) {
 		completionStatus = wibo::statusFromErrno(io.unixError);
 		setLastError(wibo::winErrorFromErrno(io.unixError));
 	} else if (io.reachedEnd && io.bytesTransferred == 0) {
@@ -930,8 +1000,9 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 
 	detail::signalOverlappedEvent(file.get(), lpOverlapped, completionStatus, io.bytesTransferred);
 
-	DEBUG_LOG("-> %u bytes read, error %d\n", io.bytesTransferred, io.unixError == 0 ? 0 : getLastError());
-	return io.unixError == 0;
+	DEBUG_LOG("-> %u bytes read, error %d\n", io.bytesTransferred,
+			  io.unixError == 0 && io.windowsError == 0 ? 0 : getLastError());
+	return io.unixError == 0 && io.windowsError == 0;
 }
 
 HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
@@ -1878,6 +1949,27 @@ UINT WINAPI GetTempFileNameW(LPCWSTR lpPathName, LPCWSTR lpPrefixString, UINT uU
 	auto wide = stringToWideString(tempFileName);
 	wstrncpy(lpTempFileName, wide.data(), wstrlen(wide.data()) + 1);
 	return result;
+}
+
+DWORD WINAPI GetTempPathW(DWORD nBufferLength, LPWSTR lpBuffer) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetTempPathW(%u, %p)\n", nBufferLength, lpBuffer);
+	char path[32768];
+	const DWORD length = GetTempPathA(sizeof(path), path);
+	if (!length || length >= sizeof(path)) {
+		return 0;
+	}
+	const auto wide = stringToWideString(path);
+	const DWORD required = static_cast<DWORD>(wide.size());
+	if (nBufferLength < required) {
+		return required;
+	}
+	if (!lpBuffer) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::copy(wide.begin(), wide.end(), lpBuffer);
+	return required - 1;
 }
 
 DWORD WINAPI GetTempPathA(DWORD nBufferLength, LPSTR lpBuffer) {

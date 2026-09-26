@@ -15,8 +15,13 @@ namespace files {
 struct IOResult {
 	size_t bytesTransferred = 0;
 	int unixError = 0;
+	DWORD windowsError = 0;
 	bool reachedEnd = false;
 };
+
+DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusive, bool blocking);
+DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length);
+DWORD checkRangeAccess(FileObject *file, off_t start, size_t length, bool writing);
 
 void init();
 std::filesystem::path pathFromWindows(const char *inStr);

@@ -283,7 +283,9 @@ NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcR
 	bool updateFilePointer = !useOverlapped;
 	auto io = files::read(file.get(), Buffer, Length, offset, updateFilePointer);
 	NTSTATUS status = STATUS_SUCCESS;
-	if (io.unixError != 0) {
+	if (io.windowsError != 0) {
+		status = wibo::statusFromWinError(io.windowsError);
+	} else if (io.unixError != 0) {
 		status = wibo::statusFromErrno(io.unixError);
 	} else if (io.reachedEnd && io.bytesTransferred == 0) {
 		status = file->isPipe ? STATUS_PIPE_BROKEN : STATUS_END_OF_FILE;
@@ -369,7 +371,9 @@ NTSTATUS WINAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE Apc
 
 	auto io = files::write(file.get(), Buffer, static_cast<size_t>(Length), offset, updateFilePointer);
 	NTSTATUS status = STATUS_SUCCESS;
-	if (io.unixError != 0) {
+	if (io.windowsError != 0) {
+		status = wibo::statusFromWinError(io.windowsError);
+	} else if (io.unixError != 0) {
 		status = wibo::statusFromErrno(io.unixError);
 	}
 

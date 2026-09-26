@@ -94,8 +94,8 @@ BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumber
 		if (lpNumberOfCharsWritten) {
 			*lpNumberOfCharsWritten = io.bytesTransferred;
 		}
-		if (io.unixError != 0) {
-			setLastError(wibo::winErrorFromErrno(io.unixError));
+		if (io.windowsError != 0 || io.unixError != 0) {
+			setLastError(io.windowsError ? io.windowsError : wibo::winErrorFromErrno(io.unixError));
 			return FALSE;
 		}
 		return TRUE;

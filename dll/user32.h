@@ -9,6 +9,7 @@ int WINAPI LoadStringW(HMODULE hInstance, UINT uID, LPWSTR lpBuffer, int cchBuff
 int WINAPI MessageBoxA(HWND hwnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
 HKL WINAPI GetKeyboardLayout(DWORD idThread);
 HWINSTA WINAPI GetProcessWindowStation();
+HANDLE WINAPI GetThreadDesktop(DWORD dwThreadId);
 BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWORD nLength, LPDWORD lpnLengthNeeded);
 HWND WINAPI GetActiveWindow();
 DWORD WINAPI GetSysColor(int nIndex);

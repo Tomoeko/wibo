@@ -64,6 +64,7 @@ extern const wibo::ModuleStub lib_ucrtbase;
 extern const wibo::ModuleStub lib_ntdll;
 extern const wibo::ModuleStub lib_rpcrt4;
 extern const wibo::ModuleStub lib_ole32;
+extern const wibo::ModuleStub lib_oleaut32;
 extern const wibo::ModuleStub lib_psapi;
 extern const wibo::ModuleStub lib_shlwapi;
 extern const wibo::ModuleStub lib_shell32;
@@ -324,6 +325,7 @@ LockedRegistry registry() {
 			&lib_mscoree,
 			&lib_ntdll,
 			&lib_ole32,
+			&lib_oleaut32,
 			&lib_psapi,
 			&lib_rpcrt4,
 			&lib_shlwapi,
@@ -1034,7 +1036,7 @@ ModuleInfo *registerProcessModule(std::unique_ptr<Executable> executable, std::f
 	reg->pinnedModules.insert(raw);
 	pinAlias(storageKey);
 	pinAlias(normalizeAlias(raw->originalName));
-	pinAlias(normalizedName);
+	pinAlias(raw->normalizedName);
 	publishThreadNotificationSnapshot(*reg);
 
 	return raw;

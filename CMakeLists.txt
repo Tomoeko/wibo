@@ -303,6 +303,7 @@ add_executable(wibo
     dll/mscoree.cpp
     dll/ntdll.cpp
     dll/ole32.cpp
+    dll/oleaut32.cpp
     dll/psapi.cpp
     dll/rpcrt4.cpp
     dll/shlwapi.cpp
@@ -315,6 +316,7 @@ add_executable(wibo
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
+    src/file_locks.cpp
     src/files.cpp
     src/handles.cpp
     src/heap.cpp
@@ -480,6 +482,7 @@ wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
 wibo_codegen_module(NAME vcruntime HEADERS dll/vcruntime.h)
 wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
 wibo_codegen_module(NAME ole32 HEADERS dll/ole32.h)
+wibo_codegen_module(NAME oleaut32 HEADERS dll/oleaut32.h)
 wibo_codegen_module(NAME psapi HEADERS dll/psapi.h)
 wibo_codegen_module(NAME user32 HEADERS dll/user32.h)
 wibo_codegen_module(NAME ntdll HEADERS dll/ntdll.h)
@@ -613,6 +616,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         endif()
         wibo_add_fixture_bin(NAME test_external_dll SOURCES test/test_external_dll.c)
+        wibo_add_fixture_bin(NAME test_file_lock SOURCES test/test_file_lock.c)
         wibo_add_fixture_bin(NAME test_dll_directory SOURCES test/test_dll_directory.c)
         wibo_add_fixture_bin(NAME test_dll_attach_failure SOURCES test/test_dll_attach_failure.c)
         wibo_add_fixture_bin(NAME test_thread_notifications SOURCES test/test_thread_notifications.c)
@@ -681,6 +685,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
+        wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_rtl SOURCES test/test_rtl.c)
         wibo_add_fixture_bin(NAME test_rtl_bitmap SOURCES test/test_rtl_bitmap.c)

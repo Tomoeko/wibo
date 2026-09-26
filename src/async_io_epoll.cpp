@@ -625,7 +625,9 @@ Completion EpollBackend::processBlockingRequest(AsyncRequest &req) {
 
 	result.bytesTransferred = io.bytesTransferred;
 
-	if (io.unixError != 0) {
+	if (io.windowsError != 0) {
+		result.status = wibo::statusFromWinError(io.windowsError);
+	} else if (io.unixError != 0) {
 		result.status = wibo::statusFromErrno(io.unixError);
 		if (result.status == STATUS_SUCCESS) {
 			result.status = STATUS_UNEXPECTED_IO_ERROR;

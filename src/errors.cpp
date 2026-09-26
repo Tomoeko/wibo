@@ -46,6 +46,8 @@ NTSTATUS statusFromWinError(DWORD error) {
 		return STATUS_INVALID_HANDLE;
 	case ERROR_INVALID_PARAMETER:
 		return STATUS_INVALID_PARAMETER;
+	case ERROR_LOCK_VIOLATION:
+		return STATUS_FILE_LOCK_CONFLICT;
 	case ERROR_HANDLE_EOF:
 		return STATUS_END_OF_FILE;
 	default:
@@ -61,6 +63,8 @@ DWORD winErrorFromNtStatus(NTSTATUS status) {
 	switch (status) {
 	case STATUS_SUCCESS:
 		return ERROR_SUCCESS;
+	case STATUS_FILE_LOCK_CONFLICT:
+		return ERROR_LOCK_VIOLATION;
 	case STATUS_PENDING:
 		return ERROR_IO_PENDING;
 	case STATUS_END_OF_FILE:

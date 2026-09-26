@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <strings.h>
+#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
@@ -252,7 +253,12 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 		return result;
 	}
 
+	std::lock_guard rangeGuard(file->m);
 	const auto doRead = [&](off_t pos) {
+		result.windowsError = checkRangeAccess(file, pos, bytesToRead, false);
+		if (result.windowsError) {
+			return;
+		}
 		size_t total = 0;
 		size_t remaining = bytesToRead;
 		uint8_t *in = static_cast<uint8_t *>(buffer);
@@ -278,7 +284,6 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 	};
 
 	if (updateFilePointer || !offset.has_value()) {
-		std::lock_guard lk(file->m);
 		const off_t pos = offset.value_or(file->filePos);
 		doRead(pos);
 		if (updateFilePointer) {
@@ -307,6 +312,17 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 
 	if (file->appendOnly || file->isPipe) {
 		std::lock_guard lk(file->m);
+		if (!file->isPipe) {
+			struct stat info{};
+			if (fstat(file->fd, &info) != 0) {
+				result.unixError = errno;
+				return result;
+			}
+			result.windowsError = checkRangeAccess(file, info.st_size, bytesToWrite, true);
+			if (result.windowsError) {
+				return result;
+			}
+		}
 		size_t total = 0;
 		size_t remaining = bytesToWrite;
 		const uint8_t *in = static_cast<const uint8_t *>(buffer);
@@ -338,7 +354,12 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 		return result;
 	}
 
+	std::lock_guard rangeGuard(file->m);
 	auto doWrite = [&](off_t pos) {
+		result.windowsError = checkRangeAccess(file, pos, bytesToWrite, true);
+		if (result.windowsError) {
+			return;
+		}
 		size_t total = 0;
 		size_t remaining = bytesToWrite;
 		const uint8_t *in = static_cast<const uint8_t *>(buffer);
@@ -363,7 +384,6 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 	};
 
 	if (updateFilePointer || !offset.has_value()) {
-		std::lock_guard lk(file->m);
 		const off_t pos = offset.value_or(file->filePos);
 		doWrite(pos);
 		if (updateFilePointer) {

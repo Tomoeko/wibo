@@ -24,7 +24,14 @@ struct FsObject : ObjectBase {
 	explicit FsObject(ObjectType type, int fd) : ObjectBase(type), fd(fd) { flags |= Of_FsObject; }
 };
 
+struct FileRangeLock {
+	uint64_t start;
+	uint64_t end;
+	bool exclusive;
+};
+
 struct FileObject : FsObject {
+	std::vector<FileRangeLock> rangeLocks;
 	off_t filePos = 0;
 	bool overlapped = false;
 	bool appendOnly = false;

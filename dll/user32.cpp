@@ -192,6 +192,14 @@ HWINSTA WINAPI GetProcessWindowStation() {
 	return NO_HANDLE;
 }
 
+HANDLE WINAPI GetThreadDesktop(DWORD dwThreadId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetThreadDesktop(%u)\n", dwThreadId);
+	// No desktop is assigned to guest threads in this console runtime.
+	kernel32::setLastError(ERROR_NOT_SUPPORTED);
+	return NO_HANDLE;
+}
+
 BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWORD nLength, LPDWORD lpnLengthNeeded) {
 	DEBUG_LOG("GetUserObjectInformationA(%p, %d, %p, %u, %p)\n", hObj, nIndex, pvInfo, nLength, lpnLengthNeeded);
 	(void)hObj;
