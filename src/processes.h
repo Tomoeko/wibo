@@ -13,6 +13,16 @@ using kernel32::ProcessObject;
 
 namespace wibo {
 
+struct ProcessSnapshotEntry {
+	DWORD pid;
+	DWORD parentPid;
+	DWORD threadCount;
+	LONG priority;
+	std::string name;
+};
+
+int snapshotProcesses(std::vector<ProcessSnapshotEntry> &entries);
+
 namespace detail {
 
 class ProcessManagerImpl {
@@ -29,6 +39,8 @@ struct SpawnProcessInfo {
 	int pidfd = -1;
 };
 
+std::string snapshotProcessName(const std::string &hostImage, const std::string &runtimeImage,
+								const std::vector<std::string> &arguments);
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl();
 int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info);
 

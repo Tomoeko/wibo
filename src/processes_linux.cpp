@@ -7,10 +7,13 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <csignal>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/prctl.h>
@@ -289,3 +292,58 @@ void LinuxProcessManager::checkPidfd(int pidfd) {
 	po->notifyWaiters(false);
 }
 
+int wibo::snapshotProcesses(std::vector<ProcessSnapshotEntry> &entries) {
+	std::error_code error;
+	std::filesystem::directory_iterator directory("/proc", error);
+	if (error)
+		return error.value();
+	const auto runtime = std::filesystem::read_symlink("/proc/self/exe", error).string();
+	if (error)
+		return error.value();
+	entries.clear();
+	for (auto end = std::filesystem::directory_iterator{}; directory != end; directory.increment(error)) {
+		if (error)
+			return error.value();
+		const auto path = directory->path();
+		const std::string pidText = path.filename().string();
+		DWORD pid;
+		const auto converted = std::from_chars(pidText.data(), pidText.data() + pidText.size(), pid);
+		if (converted.ec != std::errc{} || converted.ptr != pidText.data() + pidText.size())
+			continue;
+		std::ifstream stat(path / "stat");
+		std::string line;
+		if (!std::getline(stat, line))
+			continue;
+		const auto begin = line.find('('), finish = line.rfind(')');
+		if (begin == std::string::npos || finish == std::string::npos || finish < begin)
+			continue;
+		ProcessSnapshotEntry entry{};
+		entry.pid = pid;
+		entry.name = line.substr(begin + 1, finish - begin - 1);
+		std::istringstream fields(line.substr(finish + 1));
+		char state;
+		long long ignored;
+		if (!(fields >> state >> entry.parentPid))
+			continue;
+		for (int field = 5; field <= 17; ++field)
+			fields >> ignored;
+		if (!(fields >> entry.priority >> ignored >> entry.threadCount))
+			continue;
+		const auto hostImage = std::filesystem::read_symlink(path / "exe", error).string();
+		if (!error) {
+			std::vector<std::string> arguments;
+			if (hostImage == runtime) {
+				std::ifstream cmdline(path / "cmdline", std::ios::binary);
+				std::string argument;
+				while (std::getline(cmdline, argument, '\0'))
+					arguments.push_back(std::move(argument));
+			}
+			entry.name = detail::snapshotProcessName(hostImage, runtime, arguments);
+		}
+		error.clear();
+		if (pid == static_cast<DWORD>(getpid()))
+			entry.name = wibo::guestExecutablePath.filename().string();
+		entries.push_back(std::move(entry));
+	}
+	return error ? error.value() : 0;
+}

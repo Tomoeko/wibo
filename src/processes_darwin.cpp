@@ -10,10 +10,12 @@
 #include <csignal>
 #include <cstring>
 #include <filesystem>
+#include <libproc.h>
 #include <mutex>
 #include <spawn.h>
 #include <string>
 #include <sys/event.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <system_error>
@@ -282,4 +284,86 @@ void DarwinProcessManager::handleExit(pid_t pid) {
 		return;
 	}
 	completeProcess(std::move(process), status);
+}
+
+namespace {
+std::vector<std::string> processArguments(pid_t pid) {
+	int argmax = 0;
+	size_t size = sizeof(argmax);
+	int limit[] = {CTL_KERN, KERN_ARGMAX};
+	if (sysctl(limit, 2, &argmax, &size, nullptr, 0) != 0 || argmax < static_cast<int>(sizeof(int)) ||
+		argmax > 8 * 1024 * 1024)
+		return {};
+	std::vector<char> bytes(argmax);
+	size = bytes.size();
+	int query[] = {CTL_KERN, KERN_PROCARGS2, pid};
+	if (sysctl(query, 3, bytes.data(), &size, nullptr, 0) != 0 || size < sizeof(int))
+		return {};
+	int argc;
+	std::memcpy(&argc, bytes.data(), sizeof(argc));
+	if (argc < 0 || argc > 65536)
+		return {};
+	const char *cursor = bytes.data() + sizeof(argc);
+	const char *end = bytes.data() + size;
+	const auto *imageEnd = static_cast<const char *>(std::memchr(cursor, 0, end - cursor));
+	if (!imageEnd)
+		return {};
+	cursor = imageEnd + 1;
+	while (cursor < end && !*cursor)
+		++cursor;
+	std::vector<std::string> arguments;
+	for (int i = 0; i < argc && cursor < end; ++i) {
+		const auto *argEnd = static_cast<const char *>(std::memchr(cursor, 0, end - cursor));
+		if (!argEnd)
+			return {};
+		arguments.emplace_back(cursor, argEnd);
+		cursor = argEnd + 1;
+	}
+	return arguments;
+}
+} // namespace
+
+int wibo::snapshotProcesses(std::vector<ProcessSnapshotEntry> &entries) {
+	const int count = proc_listallpids(nullptr, 0);
+	if (count <= 0)
+		return errno ? errno : EIO;
+	std::vector<pid_t> pids(static_cast<size_t>(count) + 32);
+	int actual;
+	for (;;) {
+		actual = proc_listallpids(pids.data(), static_cast<int>(pids.size() * sizeof(pid_t)));
+		if (actual <= 0)
+			return errno ? errno : EIO;
+		if (static_cast<size_t>(actual) < pids.size())
+			break;
+		if (pids.size() > 1024 * 1024)
+			return EOVERFLOW;
+		pids.resize(pids.size() * 2);
+	}
+	entries.clear();
+	for (int i = 0; i < actual; ++i) {
+		if (pids[i] <= 0)
+			continue;
+		proc_taskallinfo info{};
+		if (proc_pidinfo(pids[i], PROC_PIDTASKALLINFO, 0, &info, sizeof(info)) != sizeof(info))
+			continue; // Processes may exit or deny access while the snapshot is collected.
+		ProcessSnapshotEntry entry{};
+		entry.pid = info.pbsd.pbi_pid;
+		entry.parentPid = info.pbsd.pbi_ppid;
+		entry.threadCount = static_cast<DWORD>(info.ptinfo.pti_threadnum);
+		// Scheduling priorities retain the native kernel's numeric scale.
+		entry.priority = info.ptinfo.pti_priority;
+		std::array<char, PROC_PIDPATHINFO_MAXSIZE> path{};
+		if (proc_pidpath(pids[i], path.data(), path.size()) > 0) {
+			std::string hostImage = path.data();
+			entry.name = detail::snapshotProcessName(hostImage, executablePath(),
+													 hostImage == executablePath() ? processArguments(pids[i])
+																				   : std::vector<std::string>{});
+		} else {
+			entry.name.assign(info.pbsd.pbi_name, strnlen(info.pbsd.pbi_name, sizeof(info.pbsd.pbi_name)));
+		}
+		if (pids[i] == getpid())
+			entry.name = wibo::guestExecutablePath.filename().string();
+		entries.push_back(std::move(entry));
+	}
+	return 0;
 }

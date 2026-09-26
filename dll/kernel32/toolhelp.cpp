@@ -5,6 +5,7 @@
 #include "handles.h"
 #include "internal.h"
 #include "modules.h"
+#include "processes.h"
 #include "strutil.h"
 
 #include <algorithm>
@@ -28,6 +29,9 @@ struct SnapshotModule {
 struct ToolhelpSnapshotObject final : ObjectBase {
 	static constexpr ObjectType kType = ObjectType::ToolhelpSnapshot;
 
+	std::mutex mutex;
+	std::vector<wibo::ProcessSnapshotEntry> processes;
+	size_t nextProcess = 0;
 	std::vector<SnapshotModule> modules;
 	size_t nextModule = 0;
 
@@ -61,6 +65,40 @@ bool writeModuleEntry(const SnapshotModule &module, LPMODULEENTRY32W output) {
 	return true;
 }
 
+template <class Character> BOOL readProcess(HANDLE handle, ProcessEntry32<Character> *output, bool first) {
+	auto snapshot = wibo::handles().getAs<ToolhelpSnapshotObject>(handle);
+	if (!snapshot) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (!output || output->dwSize < sizeof(*output)) {
+		kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	std::lock_guard guard(snapshot->mutex);
+	if (first)
+		snapshot->nextProcess = 0;
+	if (snapshot->nextProcess >= snapshot->processes.size()) {
+		kernel32::setLastError(ERROR_NO_MORE_FILES);
+		return FALSE;
+	}
+	const auto &entry = snapshot->processes[snapshot->nextProcess++];
+	const DWORD size = output->dwSize;
+	std::memset(output, 0, sizeof(*output));
+	output->dwSize = size;
+	output->th32ProcessID = entry.pid;
+	output->th32ParentProcessID = entry.parentPid;
+	output->cntThreads = entry.threadCount;
+	output->pcPriClassBase = entry.priority;
+	if constexpr (std::is_same_v<Character, WCHAR>) {
+		copyWideString(output->szExeFile, entry.name);
+	} else {
+		const size_t copied = std::min(entry.name.size(), sizeof(output->szExeFile) - 1);
+		std::memcpy(output->szExeFile, entry.name.data(), copied);
+	}
+	return TRUE;
+}
+
 } // namespace
 
 namespace kernel32 {
@@ -68,37 +106,70 @@ namespace kernel32 {
 HANDLE WINAPI CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CreateToolhelp32Snapshot(0x%x, %u)\n", dwFlags, th32ProcessID);
-	constexpr DWORD supportedFlags = TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32;
-	if ((dwFlags & supportedFlags) == 0 || (dwFlags & ~supportedFlags) != 0 ||
-		(th32ProcessID != 0 && th32ProcessID != static_cast<DWORD>(getpid()))) {
+	constexpr DWORD moduleFlags = TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32;
+	constexpr DWORD supportedFlags = moduleFlags | TH32CS_SNAPPROCESS | TH32CS_INHERIT;
+	if (!(dwFlags & (moduleFlags | TH32CS_SNAPPROCESS)) || (dwFlags & ~supportedFlags) ||
+		((dwFlags & moduleFlags) && th32ProcessID != 0 && th32ProcessID != static_cast<DWORD>(getpid()))) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return INVALID_HANDLE_VALUE;
 	}
 
 	auto snapshot = make_pin<ToolhelpSnapshotObject>();
-	std::unordered_set<wibo::ModuleInfo *> seen;
-	for (const auto &[key, module] : wibo::allLoadedModules()) {
-		(void)key;
-		if (!module || !module->executable || !seen.insert(module.get()).second) {
-			continue;
+	if (dwFlags & TH32CS_SNAPPROCESS) {
+		const int error = wibo::snapshotProcesses(snapshot->processes);
+		if (error) {
+			setLastError(wibo::winErrorFromErrno(error));
+			return INVALID_HANDLE_VALUE;
 		}
-		const size_t imageSize = module->executable->imageSize;
-		SnapshotModule entry{};
-		entry.handle = module->handle;
-		entry.baseAddress = toGuestPtr(module->executable->imageBase);
-		entry.imageSize = imageSize > std::numeric_limits<DWORD>::max() ? std::numeric_limits<DWORD>::max()
-																		: static_cast<DWORD>(imageSize);
-		entry.name = module->resolvedPath.empty() ? module->originalName : module->resolvedPath.filename().string();
-		entry.path = module->resolvedPath.empty() ? module->originalName : module->resolvedPath.string();
-		snapshot->modules.push_back(std::move(entry));
+		std::sort(snapshot->processes.begin(), snapshot->processes.end(),
+				  [](const auto &left, const auto &right) { return left.pid < right.pid; });
 	}
-	std::sort(
-		snapshot->modules.begin(), snapshot->modules.end(),
-		[](const SnapshotModule &left, const SnapshotModule &right) { return left.baseAddress < right.baseAddress; });
-
-	HANDLE handle = wibo::handles().alloc(std::move(snapshot), 0, 0);
+	if (dwFlags & moduleFlags) {
+		std::unordered_set<wibo::ModuleInfo *> seen;
+		for (const auto &[key, module] : wibo::allLoadedModules()) {
+			(void)key;
+			if (!module || !module->executable || !seen.insert(module.get()).second) {
+				continue;
+			}
+			const size_t imageSize = module->executable->imageSize;
+			SnapshotModule entry{};
+			entry.handle = module->handle;
+			entry.baseAddress = toGuestPtr(module->executable->imageBase);
+			entry.imageSize = imageSize > std::numeric_limits<DWORD>::max() ? std::numeric_limits<DWORD>::max()
+																			: static_cast<DWORD>(imageSize);
+			entry.name = module->resolvedPath.empty() ? module->originalName : module->resolvedPath.filename().string();
+			entry.path = module->resolvedPath.empty() ? module->originalName : module->resolvedPath.string();
+			snapshot->modules.push_back(std::move(entry));
+		}
+		std::sort(snapshot->modules.begin(), snapshot->modules.end(),
+				  [](const SnapshotModule &left, const SnapshotModule &right) {
+					  return left.baseAddress < right.baseAddress;
+				  });
+	}
+	HANDLE handle = wibo::handles().alloc(std::move(snapshot), 0, (dwFlags & TH32CS_INHERIT) ? HANDLE_FLAG_INHERIT : 0);
 	DEBUG_LOG("-> %p\n", handle);
 	return handle;
+}
+
+BOOL WINAPI Process32First(HANDLE snapshot, LPPROCESSENTRY32 entry) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("Process32First(%p, %p)\n", snapshot, entry);
+	return readProcess(snapshot, entry, true);
+}
+BOOL WINAPI Process32Next(HANDLE snapshot, LPPROCESSENTRY32 entry) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("Process32Next(%p, %p)\n", snapshot, entry);
+	return readProcess(snapshot, entry, false);
+}
+BOOL WINAPI Process32FirstW(HANDLE snapshot, LPPROCESSENTRY32W entry) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("Process32FirstW(%p, %p)\n", snapshot, entry);
+	return readProcess(snapshot, entry, true);
+}
+BOOL WINAPI Process32NextW(HANDLE snapshot, LPPROCESSENTRY32W entry) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("Process32NextW(%p, %p)\n", snapshot, entry);
+	return readProcess(snapshot, entry, false);
 }
 
 BOOL WINAPI Module32FirstW(HANDLE hSnapshot, LPMODULEENTRY32W lpme) {
@@ -109,6 +180,7 @@ BOOL WINAPI Module32FirstW(HANDLE hSnapshot, LPMODULEENTRY32W lpme) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	std::lock_guard guard(snapshot->mutex);
 	snapshot->nextModule = 0;
 	if (snapshot->modules.empty()) {
 		setLastError(ERROR_NO_MORE_FILES);
@@ -129,6 +201,7 @@ BOOL WINAPI Module32NextW(HANDLE hSnapshot, LPMODULEENTRY32W lpme) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	std::lock_guard guard(snapshot->mutex);
 	if (snapshot->nextModule >= snapshot->modules.size()) {
 		setLastError(ERROR_NO_MORE_FILES);
 		return FALSE;

@@ -26,6 +26,44 @@ using kernel32::ProcessObject;
 
 namespace wibo {
 
+std::string detail::snapshotProcessName(const std::string &hostImage, const std::string &runtimeImage,
+										const std::vector<std::string> &arguments) {
+	std::string image = hostImage;
+	if (hostImage == runtimeImage) {
+		std::string commandLine;
+		bool options = true;
+		for (size_t i = 1; i < arguments.size(); ++i) {
+			const auto &arg = arguments[i];
+			if (options && arg == "--") {
+				options = false;
+				continue;
+			}
+			if (options && (arg == "--cmdline" || arg == "--chdir" || arg == "-C")) {
+				if (++i == arguments.size())
+					break;
+				if (arg == "--cmdline")
+					commandLine = arguments[i];
+				continue;
+			}
+			if (options && arg.starts_with("--cmdline=")) {
+				commandLine = arg.substr(10);
+				continue;
+			}
+			if (options && !arg.empty() && arg[0] == '-')
+				continue;
+			image = arg;
+			break;
+		}
+		if (image == hostImage && !commandLine.empty()) {
+			const auto split = splitCommandLine(commandLine.c_str());
+			if (!split.empty())
+				image = split[0];
+		}
+	}
+	const auto slash = image.find_last_of("/\\");
+	return slash == std::string::npos ? image : image.substr(slash + 1);
+}
+
 ProcessManager::ProcessManager() : mImpl(detail::createProcessManagerImpl()) {}
 
 ProcessManager::~ProcessManager() { shutdown(); }
