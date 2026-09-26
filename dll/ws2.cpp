@@ -3,6 +3,10 @@
 #include "common.h"
 #include "context.h"
 #include "modules.h"
+#include "ws2/internal.h"
+
+#include <algorithm>
+#include <atomic>
 
 #include <cstring>
 #include <unistd.h>
@@ -19,11 +23,15 @@ constexpr int WSAHOST_NOT_FOUND = 11001;
 constexpr int WSANOTINITIALISED = 10093;
 
 thread_local int g_lastError = 0;
-int g_startupCount = 0;
-
-void setLastError(int error) { g_lastError = error; }
+std::atomic<unsigned> g_startupCount = 0;
 
 WORD makeVersion(BYTE major, BYTE minor) { return static_cast<WORD>(major | (minor << 8)); }
+
+} // namespace
+
+namespace ws2::detail {
+
+void setLastError(int error) { g_lastError = error; }
 
 bool requireStarted() {
 	if (g_startupCount > 0) {
@@ -33,9 +41,12 @@ bool requireStarted() {
 	return false;
 }
 
-} // namespace
+} // namespace ws2::detail
 
 namespace ws2 {
+
+using detail::requireStarted;
+using detail::setLastError;
 
 ULONG WINAPI ntohl(ULONG netlong) {
 	HOST_CONTEXT_GUARD();
@@ -53,9 +64,14 @@ int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData) {
 	}
 
 	std::memset(lpWSAData, 0, sizeof(*lpWSAData));
-	lpWSAData->wVersion = wVersionRequired;
+	const BYTE major = wVersionRequired & 0xFF;
+	const BYTE minor = wVersionRequired >> 8;
+	if (!major)
+		return 10092;
+	lpWSAData->wVersion = major == 1 ? makeVersion(1, std::min<BYTE>(minor, 1))
+									 : makeVersion(2, major == 2 ? std::min<BYTE>(minor, 2) : 2);
 	lpWSAData->wHighVersion = makeVersion(2, 2);
-	std::strncpy(lpWSAData->szDescription, "wibo fake Winsock", sizeof(lpWSAData->szDescription) - 1);
+	std::strncpy(lpWSAData->szDescription, "Host socket services", sizeof(lpWSAData->szDescription) - 1);
 	std::strncpy(lpWSAData->szSystemStatus, "Running", sizeof(lpWSAData->szSystemStatus) - 1);
 	lpWSAData->iMaxSockets = 0x7fff;
 	lpWSAData->iMaxUdpDg = 65467; // 65535 - max IPv4 header (60) - UDP header (8)
@@ -68,12 +84,14 @@ int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData) {
 int WINAPI WSACleanup() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("WSACleanup()\n");
-	if (g_startupCount <= 0) {
+	unsigned count = g_startupCount.load();
+	while (count && !g_startupCount.compare_exchange_weak(count, count - 1)) {
+	}
+	if (!count) {
 		setLastError(WSANOTINITIALISED);
 		return SOCKET_ERROR;
 	}
 
-	--g_startupCount;
 	setLastError(0);
 	return 0;
 }
@@ -156,8 +174,9 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "WSAStartup";
 	case 116:
 		return "WSACleanup";
+	default:
+		return nullptr;
 	}
-	return nullptr;
 }
 
 extern const wibo::ModuleStub lib_ws2 = {

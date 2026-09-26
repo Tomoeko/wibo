@@ -329,6 +329,7 @@ add_executable(wibo
     dll/version.cpp
     dll/winmm.cpp
     dll/ws2.cpp
+    dll/ws2/resolution.cpp
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
@@ -651,6 +652,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)
         wibo_add_fixture_bin(NAME test_special_folder SOURCES test/test_special_folder.c COMPILE_OPTIONS -lshell32 -lole32)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
+        wibo_add_fixture_bin(NAME test_address_resolution SOURCES test/test_address_resolution.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_address_resolution PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
