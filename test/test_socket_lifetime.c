@@ -5,15 +5,16 @@
 int main(void) {
 	WSADATA data;
 	TEST_CHECK_EQ(0, WSAStartup(MAKEWORD(2, 2), &data));
-	for (int familyIndex = 0; familyIndex != 2; ++familyIndex) {
-		int family = familyIndex ? AF_INET6 : AF_INET;
-		SOCKET first = WSASocketA(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
+	for (int caseIndex = 0; caseIndex != 4; ++caseIndex) {
+		int family = (caseIndex % 2) ? AF_INET6 : AF_INET;
+		SOCKET first = caseIndex < 2 ? WSASocketA(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED)
+									   : WSASocketW(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
 		TEST_CHECK(first != INVALID_SOCKET);
 		SOCKADDR_STORAGE address;
 		memset(&address, 0, sizeof(address));
 		address.ss_family = family;
-		int size = familyIndex ? sizeof(SOCKADDR_IN6) : sizeof(SOCKADDR_IN);
-		if (familyIndex)
+		int size = (caseIndex % 2) ? sizeof(SOCKADDR_IN6) : sizeof(SOCKADDR_IN);
+		if (caseIndex % 2)
 			((SOCKADDR_IN6 *)&address)->sin6_addr.u.Byte[15] = 1;
 		else {
 			BYTE *bytes = (BYTE *)&((SOCKADDR_IN *)&address)->sin_addr;

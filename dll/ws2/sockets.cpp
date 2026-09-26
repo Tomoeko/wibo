@@ -338,6 +338,11 @@ SOCKET WINAPI WSASocketA(int family, int type, int protocol, LPCVOID protocolInf
 	DEBUG_LOG("WSASocketA(%d, %d, %d, %p, %u, 0x%x)\n", family, type, protocol, protocolInfo, group, flags);
 	return createSocket(family, type, protocol, protocolInfo, group, flags);
 }
+SOCKET WINAPI WSASocketW(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WSASocketW(%d, %d, %d, %p, %u, 0x%x)\n", family, type, protocol, protocolInfo, group, flags);
+	return createSocket(family, type, protocol, protocolInfo, group, flags);
+}
 SOCKET WINAPI socket(int family, int type, int protocol) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("socket(%d, %d, %d)\n", family, type, protocol);

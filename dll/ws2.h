@@ -81,6 +81,7 @@ BOOL WINAPI WSASetEvent(HANDLE event);
 BOOL WINAPI WSAResetEvent(HANDLE event);
 DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, BOOL waitAll, DWORD timeout, BOOL alertable);
 SOCKET WINAPI WSASocketA(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags);
+SOCKET WINAPI WSASocketW(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags);
 SOCKET WINAPI socket(int family, int type, int protocol);
 int WINAPI closesocket(SOCKET handle);
 int WINAPI shutdown(SOCKET handle, int how);
