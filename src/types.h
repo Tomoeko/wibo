@@ -582,6 +582,8 @@ typedef struct _TEB {
 	GUEST_PTR TlsExpansionSlots;
 	void *CurrentStackPointer;
 	GUEST_PTR HostLocalTimeTsd;
+	GUEST_PTR HostLastErrorTsd;
+	ULONG MirroredLastErrorValue;
 	bool GuestContextActive;
 } TEB;
 #else

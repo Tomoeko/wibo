@@ -30,6 +30,9 @@ constexpr uint32_t kWin64StaticTlsTsdSlot = 0x58 / sizeof(void *);
 // Publish the guest PEB only while executing guest code and restore the native
 // cache before any host API, callback return, or pthread teardown.
 constexpr uint32_t kWin64PebTsdSlot = 0x60 / sizeof(void *);
+// Inline last-error access uses GS:[0x68]. Its native TSD slot must also be
+// saved across guest execution rather than replaced for the thread lifetime.
+constexpr uint32_t kWin64LastErrorTsdSlot = 0x68 / sizeof(void *);
 
 // Darwin publishes this stable layout SPI for tools that need to translate a
 // pthread_t into its direct TSD base. Using it avoids Mach thread_info and
@@ -259,6 +262,11 @@ bool segmentSetupLocked(TEB *teb) {
 TEB *enterHostContext() {
 	auto *teb = reinterpret_cast<TEB *>(*(volatile uint64_t __seg_gs *)0x30);
 	if (teb && teb->GuestContextActive) {
+		const auto error = *(volatile uint32_t __seg_gs *)0x68;
+		// Preserve a write through the TEB self pointer when the mirror was unchanged.
+		if (error != teb->MirroredLastErrorValue)
+			teb->LastErrorValue = error;
+		writeTsdSlot(kWin64LastErrorTsdSlot, teb->HostLastErrorTsd);
 		writeTsdSlot(kWin64PebTsdSlot, teb->HostLocalTimeTsd);
 		teb->GuestContextActive = false;
 	}
@@ -268,6 +276,9 @@ TEB *enterHostContext() {
 void enterGuestContext(TEB *teb) {
 	if (teb && !teb->GuestContextActive) {
 		teb->HostLocalTimeTsd = *(volatile uint64_t __seg_gs *)0x60;
+		teb->HostLastErrorTsd = *(volatile uint64_t __seg_gs *)0x68;
+		teb->MirroredLastErrorValue = teb->LastErrorValue;
+		writeTsdSlot(kWin64LastErrorTsdSlot, teb->LastErrorValue);
 		writeTsdSlot(kWin64PebTsdSlot, teb->Peb);
 		teb->GuestContextActive = true;
 	}
