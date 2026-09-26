@@ -4,6 +4,7 @@
 #include "minwinbase.h"
 
 namespace kernel32 {
+BOOL WINAPI CancelIoEx(HANDLE handle, LPOVERLAPPED overlapped);
 
 HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE existing, ULONG_PTR key, DWORD concurrency);
 BOOL WINAPI PostQueuedCompletionStatus(HANDLE handle, DWORD bytes, ULONG_PTR key, LPOVERLAPPED overlapped);

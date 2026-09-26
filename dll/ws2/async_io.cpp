@@ -139,6 +139,19 @@ class SocketIoWorker {
 				request->cancelled = true;
 		wake();
 	}
+	bool cancel(const std::shared_ptr<ws2::detail::Socket> &socket, const OVERLAPPED *overlapped) {
+		std::lock_guard lock(mutex);
+		bool found = false;
+		for (const auto &request : requests) {
+			if (request->socket == socket && (!overlapped || request->overlapped == overlapped)) {
+				request->cancelled = true;
+				found = true;
+			}
+		}
+		if (found)
+			wake();
+		return found;
+	}
 };
 SocketIoWorker &worker() {
 	static SocketIoWorker instance;
@@ -149,6 +162,11 @@ SocketIoWorker &worker() {
 
 namespace ws2::detail {
 bool queueSocketIo(std::unique_ptr<SocketIoRequest> request) { return worker().enqueue(std::move(request)); }
+bool cancelSocketIo(const std::shared_ptr<Socket> &socket, const OVERLAPPED *overlapped) {
+	if (auto *worker = g_worker.load())
+		return worker->cancel(socket, overlapped);
+	return false;
+}
 void wakeSocketIo() {
 	if (auto *worker = g_worker.load())
 		worker->wake();
