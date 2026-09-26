@@ -54,11 +54,12 @@ std::mutex g_waitAddressMutex;
 std::unordered_map<void *, std::weak_ptr<AddressWaitQueue>> g_waitAddressQueues;
 
 constexpr size_t sizeToIndex(size_t size) {
-	size_t index = __builtin_ctz(size);
-	return index >= kSupportedAddressSizes ? -1 : index;
+	if (!size || size > 8 || (size & (size - 1)))
+		return kSupportedAddressSizes;
+	return __builtin_ctz(size);
 }
 
-std::shared_ptr<AddressWaitQueue> getWaitQueue(void *address) {
+std::shared_ptr<AddressWaitQueue> registerAddressWaiter(void *address, size_t sizeIndex) {
 	std::lock_guard lk(g_waitAddressMutex);
 	auto &slot = g_waitAddressQueues[address];
 	auto queue = slot.lock();
@@ -66,6 +67,10 @@ std::shared_ptr<AddressWaitQueue> getWaitQueue(void *address) {
 		queue = std::make_shared<AddressWaitQueue>();
 		slot = queue;
 	}
+	// Registration must be visible before cleanup can remove this cache entry.
+	std::lock_guard queueLock(queue->mutex);
+	++queue->waiterCount;
+	++queue->sizeCounts[sizeIndex];
 	return queue;
 }
 
@@ -107,20 +112,10 @@ struct WaitRegistration {
 	void *address;
 	std::shared_ptr<AddressWaitQueue> queue;
 	size_t sizeIndex;
-	bool registered = false;
+	bool registered = true;
 
 	WaitRegistration(void *addr, std::shared_ptr<AddressWaitQueue> q, size_t idx)
 		: address(addr), queue(std::move(q)), sizeIndex(idx) {}
-
-	void registerWaiter() {
-		if (!queue) {
-			return;
-		}
-		std::lock_guard lk(queue->mutex);
-		queue->waiterCount++;
-		queue->sizeCounts[sizeIndex]++;
-		registered = true;
-	}
 
 	void unregister() {
 		if (!queue || !registered) {
@@ -274,21 +269,9 @@ template <typename T> bool waitOnAddressTyped(VOID volatile *addressVoid, PVOID 
 	}
 
 	void *queueKey = const_cast<void *>(addressVoid);
-	auto queue = getWaitQueue(queueKey);
-	if (!queue) {
-		kernel32::setLastError(ERROR_GEN_FAILURE);
-		return false;
-	}
-
-	int sizeIdx = sizeToIndex(sizeof(T));
-	DEBUG_LOG("size: %d, index %d\n", sizeof(T), sizeIdx);
-	if (sizeIdx < 0) {
-		kernel32::setLastError(ERROR_INVALID_PARAMETER);
-		return false;
-	}
-
-	WaitRegistration registration(queueKey, queue, static_cast<size_t>(sizeIdx));
-	registration.registerWaiter();
+	const size_t sizeIdx = sizeToIndex(sizeof(T));
+	auto queue = registerAddressWaiter(queueKey, sizeIdx);
+	WaitRegistration registration(queueKey, queue, sizeIdx);
 
 	if (dwMilliseconds == INFINITE) {
 		while (__atomic_load_n(address, __ATOMIC_ACQUIRE) == compareValue) {

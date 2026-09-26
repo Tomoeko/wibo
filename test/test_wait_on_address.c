@@ -133,7 +133,20 @@ static void test_wait_on_address_immediate(void) {
 	TEST_CHECK_EQ(10, value);
 }
 
+static void test_invalid_address_size(void) {
+	volatile LONG value = 7;
+	LONG expected = 8;
+	const SIZE_T sizes[] = {0, 3, 5, 7, 16, 255};
+	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+		SetLastError(0x71);
+		TEST_CHECK(!WaitOnAddress((volatile VOID *)&value, &expected, sizes[i], 0));
+		TEST_CHECK_EQ(ERROR_INVALID_PARAMETER, GetLastError());
+		TEST_CHECK_EQ(7, value);
+	}
+}
+
 int main(void) {
+	test_invalid_address_size();
 	test_wait_on_address_single();
 	test_wait_on_address_all();
 	test_wait_on_address_timeout();
