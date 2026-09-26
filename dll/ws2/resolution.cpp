@@ -5,6 +5,7 @@
 #include "heap.h"
 #include "ws2/internal.h"
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -111,6 +112,18 @@ bool asciiName(LPCSTR name) {
 } // namespace
 
 namespace ws2 {
+LPSTR WINAPI inet_ntoa(ULONG address) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("inet_ntoa(0x%x)\n", address);
+	thread_local auto buffer = wibo::heap::make_guest_unique<char[]>(16);
+	if (!buffer) {
+		detail::setLastError(10055);
+		return nullptr;
+	}
+	std::snprintf(buffer.get(), 16, "%u.%u.%u.%u", address & 0xFFU, (address >> 8) & 0xFFU, (address >> 16) & 0xFFU,
+				  address >> 24);
+	return buffer.get();
+}
 
 int WINAPI getaddrinfo(LPCSTR node, LPCSTR service, const ADDRINFOA *hints, GUEST_PTR *result) {
 	HOST_CONTEXT_GUARD();

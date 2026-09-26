@@ -337,6 +337,7 @@ add_executable(wibo
     dll/ws2/events.cpp
     dll/ws2/options.cpp
     dll/ws2/wait.cpp
+    dll/ws2/receive.cpp
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
@@ -669,6 +670,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_socket_options PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_select SOURCES test/test_socket_select.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_socket_select PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_socket_receive SOURCES test/test_socket_receive.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_socket_receive PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_address_text SOURCES test/test_address_text.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_address_text PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_error SOURCES test/test_socket_error.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_events SOURCES test/test_socket_events.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_connect SOURCES test/test_socket_connect.c COMPILE_OPTIONS -lws2_32)

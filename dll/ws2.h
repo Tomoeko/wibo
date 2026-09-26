@@ -48,6 +48,8 @@ SOCKET WINAPI socket(int family, int type, int protocol);
 int WINAPI closesocket(SOCKET handle);
 int WINAPI bind(SOCKET handle, LPCVOID address, int length);
 int WINAPI connect(SOCKET handle, LPCVOID address, int length);
+int WINAPI recv(SOCKET handle, LPSTR buffer, int length, int flags);
+LPSTR WINAPI inet_ntoa(ULONG address);
 int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int length);
 int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *length);
 int WINAPI ioctlsocket(SOCKET handle, LONG command, ULONG *value);
