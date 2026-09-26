@@ -34,6 +34,13 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <sys/stdio.h>
+#elif defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
+
 namespace {
 
 using random_shorts_engine =
@@ -49,6 +56,9 @@ using wibo::access::containsAny;
 
 constexpr DWORD kLockFailImmediately = 0x1;
 constexpr DWORD kLockExclusive = 0x2;
+constexpr DWORD kMoveReplaceExisting = 0x1;
+constexpr DWORD kMoveCopyAllowed = 0x2;
+constexpr DWORD kMoveWriteThrough = 0x8;
 
 constexpr uint32_t kFileReadMask = FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES;
 constexpr uint32_t kDirectoryReadMask = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_EA | FILE_READ_ATTRIBUTES;
@@ -1332,31 +1342,116 @@ BOOL WINAPI DeleteFileW(LPCWSTR lpFileName) {
 	return DeleteFileA(name.c_str());
 }
 
+namespace {
+
+int renameFile(const std::filesystem::path &from, const std::filesystem::path &to, bool replace) {
+	int result;
+	if (replace)
+		result = rename(from.c_str(), to.c_str());
+	else {
+#if defined(__APPLE__)
+		result = renamex_np(from.c_str(), to.c_str(), RENAME_EXCL);
+#elif defined(__linux__)
+		result =
+			static_cast<int>(syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE));
+#else
+		return ENOTSUP;
+#endif
+	}
+	return result == 0 ? 0 : errno;
+}
+
+int flushMovedFile(const std::filesystem::path &path) {
+	const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return errno;
+	int result;
+	do {
+		result = fsync(fd);
+	} while (result < 0 && errno == EINTR);
+	const int error = result < 0 ? errno : 0;
+	close(fd);
+	return error;
+}
+
+BOOL moveFile(const char *from, const char *to, DWORD flags) {
+	if (!from || !to) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (flags & ~(kMoveReplaceExisting | kMoveCopyAllowed | kMoveWriteThrough)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const auto fromPath = files::pathFromWindows(from), toPath = files::pathFromWindows(to);
+	struct stat source{};
+	if (lstat(fromPath.c_str(), &source) != 0) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	const bool replace = (flags & kMoveReplaceExisting) != 0;
+	struct stat destination{};
+	if (lstat(toPath.c_str(), &destination) == 0) {
+		if (!replace) {
+			setLastError(ERROR_ALREADY_EXISTS);
+			return FALSE;
+		}
+		if (S_ISDIR(destination.st_mode) || !(destination.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH))) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+	} else if (errno != ENOENT) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	int error = renameFile(fromPath, toPath, replace);
+	bool copied = false;
+	if (error == EXDEV && (flags & kMoveCopyAllowed) && S_ISREG(source.st_mode)) {
+		std::error_code copyError;
+		copied = std::filesystem::copy_file(fromPath, toPath,
+											replace ? std::filesystem::copy_options::overwrite_existing
+													: std::filesystem::copy_options::none,
+											copyError);
+		error = copyError ? copyError.value() : copied ? 0 : EEXIST;
+	}
+	if (error) {
+		setLastError(wibo::winErrorFromErrno(error));
+		return FALSE;
+	}
+	if (flags & kMoveWriteThrough) {
+		error = flushMovedFile(toPath);
+		if (!error)
+			error = flushMovedFile(toPath.has_parent_path() ? toPath.parent_path() : std::filesystem::path("."));
+		if (error) {
+			setLastError(wibo::winErrorFromErrno(error));
+			return FALSE;
+		}
+	}
+	if (copied) {
+		// A successful copy remains a successful move if the original cannot be deleted.
+		// Avoid removing a replacement created at the source path during the copy.
+		struct stat current{};
+		if (lstat(fromPath.c_str(), &current) == 0 && current.st_dev == source.st_dev &&
+			current.st_ino == source.st_ino)
+			unlink(fromPath.c_str());
+	}
+	return TRUE;
+}
+
+} // namespace
+
 BOOL WINAPI MoveFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("MoveFileA(%s, %s)\n", lpExistingFileName ? lpExistingFileName : "(null)",
 			  lpNewFileName ? lpNewFileName : "(null)");
-	if (!lpExistingFileName || !lpNewFileName) {
-		setLastError(ERROR_INVALID_PARAMETER);
-		return FALSE;
-	}
-	auto fromPath = files::pathFromWindows(lpExistingFileName);
-	auto toPath = files::pathFromWindows(lpNewFileName);
-	std::error_code ec;
-	if (std::filesystem::exists(toPath, ec)) {
-		setLastError(ERROR_ALREADY_EXISTS);
-		return FALSE;
-	}
-	if (ec) {
-		setLastError(wibo::winErrorFromErrno(ec.value()));
-		return FALSE;
-	}
-	std::filesystem::rename(fromPath, toPath, ec);
-	if (ec) {
-		setLastError(wibo::winErrorFromErrno(ec.value()));
-		return FALSE;
-	}
-	return TRUE;
+	return moveFile(lpExistingFileName, lpNewFileName, kMoveCopyAllowed);
+}
+
+BOOL WINAPI MoveFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("MoveFileExA(%s, %s, %u)\n", lpExistingFileName ? lpExistingFileName : "(null)",
+			  lpNewFileName ? lpNewFileName : "(null)", dwFlags);
+	return moveFile(lpExistingFileName, lpNewFileName, dwFlags);
 }
 
 BOOL WINAPI MoveFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName) {
@@ -1366,9 +1461,19 @@ BOOL WINAPI MoveFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	std::string from = wideStringToString(lpExistingFileName);
-	std::string to = wideStringToString(lpNewFileName);
-	return MoveFileA(from.c_str(), to.c_str());
+	const auto from = wideStringToString(lpExistingFileName), to = wideStringToString(lpNewFileName);
+	return moveFile(from.c_str(), to.c_str(), kMoveCopyAllowed);
+}
+
+BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("MoveFileExW(flags=%u) -> ", dwFlags);
+	if (!lpExistingFileName || !lpNewFileName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const auto from = wideStringToString(lpExistingFileName), to = wideStringToString(lpNewFileName);
+	return moveFile(from.c_str(), to.c_str(), dwFlags);
 }
 
 DWORD WINAPI SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod) {
