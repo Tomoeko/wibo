@@ -5,13 +5,16 @@
 #include "heap.h"
 #include "ws2/internal.h"
 
+#include <arpa/inet.h>
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -110,24 +113,18 @@ bool asciiName(LPCSTR name) {
 	return true;
 }
 
-} // namespace
-
-namespace ws2 {
-ULONG WINAPI inet_addr(LPCSTR text) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("inet_addr(%s)\n", text ? text : "(null)");
-	constexpr ULONG invalid = 0xFFFFFFFF;
-	if (!text) {
-		detail::setLastError(10014);
-		return invalid;
-	}
+bool parseIpv4(const char *text, ULONG &result) {
+	constexpr ULONG invalid = 0xffffffff;
 	if (!*text)
-		return invalid;
+		return false;
 	auto whitespace = [](char value) { return value == ' ' || (value >= '\t' && value <= '\r'); };
 	if (whitespace(*text)) {
 		while (whitespace(*text))
 			++text;
-		return *text ? invalid : 0;
+		if (*text)
+			return false;
+		result = 0;
+		return true;
 	}
 	std::array<uint32_t, 4> parts{};
 	size_t count = 0;
@@ -153,31 +150,135 @@ ULONG WINAPI inet_addr(LPCSTR text) {
 			if (digit >= base)
 				break;
 			if (value > (invalid - digit) / base)
-				return invalid;
+				return false;
 			value = value * base + digit;
 			digitSeen = true;
 			++text;
 		}
 		if (!digitSeen)
-			return invalid;
+			return false;
 		parts[count++] = value;
 		if (*text != '.')
 			break;
 		if (count == parts.size())
-			return invalid;
+			return false;
 		++text;
 	}
 	if (*text && !whitespace(*text))
-		return invalid;
+		return false;
 	uint32_t address = parts[count - 1];
 	if (static_cast<uint64_t>(address) >= (uint64_t{1} << ((5 - count) * 8)))
-		return invalid;
+		return false;
 	for (size_t index = 0; index + 1 < count; ++index) {
 		if (parts[index] > 255)
-			return invalid;
+			return false;
 		address |= parts[index] << (24 - index * 8);
 	}
-	return __builtin_bswap32(address);
+	result = __builtin_bswap32(address);
+	return true;
+}
+
+bool decimal(std::string_view text, uint32_t &value) {
+	if (text.empty())
+		return false;
+	const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+	return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
+} // namespace
+
+namespace ws2 {
+ULONG WINAPI inet_addr(LPCSTR text) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("inet_addr(%s)\n", text ? text : "(null)");
+	if (!text) {
+		detail::setLastError(10014);
+		return 0xffffffff;
+	}
+	ULONG result = 0;
+	return parseIpv4(text, result) ? result : 0xffffffff;
+}
+
+int WINAPI WSAStringToAddressW(LPWSTR input, int family, LPCVOID protocol, LPVOID output, int *length) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WSAStringToAddressW(%p, %d, %p, %p, %p)\n", input, family, protocol, output, length);
+	if (!detail::requireStarted())
+		return -1;
+	if (!input || !output || !length)
+		return detail::failSocket(10014);
+	if (family != AF_INET && family != kWinInet6)
+		return detail::failSocket(10022);
+	if (protocol)
+		return detail::failSocket(10045);
+	const int size = family == AF_INET ? 16 : 28;
+	if (*length < size) {
+		*length = size;
+		return detail::failSocket(10014);
+	}
+	std::string text;
+	for (size_t index = 0; input[index]; ++index) {
+		if (index >= 128 || input[index] > 127)
+			return detail::failSocket(10022);
+		text.push_back(static_cast<char>(input[index]));
+	}
+	// Parsing failures leave a cleared address record and retain the supplied capacity.
+	std::memset(output, 0, size);
+	if (text.empty())
+		return detail::failSocket(10022);
+	std::string_view address = text;
+	std::string_view portText;
+	bool hasPort = false;
+	if (family == AF_INET) {
+		const auto colon = address.find(':');
+		if (colon != std::string_view::npos) {
+			portText = address.substr(colon + 1);
+			address = address.substr(0, colon);
+			hasPort = true;
+		}
+	} else if (address.front() == '[') {
+		const auto close = address.find(']');
+		if (close == std::string_view::npos)
+			return detail::failSocket(10022);
+		const auto suffix = address.substr(close + 1);
+		if (!suffix.empty()) {
+			if (suffix.front() != ':')
+				return detail::failSocket(10022);
+			hasPort = true;
+			portText = suffix.substr(1);
+		}
+		address = address.substr(1, close - 1);
+	}
+	uint32_t port = 0;
+	if (hasPort && (!decimal(portText, port) || !port || port > 65535))
+		return detail::failSocket(10022);
+	sockaddr_storage native{};
+	if (family == AF_INET) {
+		auto *ip = reinterpret_cast<sockaddr_in *>(&native);
+		const std::string literal(address);
+		ULONG value = 0;
+		if (literal.find_first_not_of("0123456789abcdefABCDEFxX.") != std::string::npos ||
+			!parseIpv4(literal.c_str(), value))
+			return detail::failSocket(10022);
+		ip->sin_family = AF_INET;
+		ip->sin_port = htons(static_cast<USHORT>(port));
+		ip->sin_addr.s_addr = value;
+	} else {
+		auto *ip = reinterpret_cast<sockaddr_in6 *>(&native);
+		const auto percent = address.find('%');
+		if (percent != std::string_view::npos) {
+			uint32_t scope = 0;
+			if (!decimal(address.substr(percent + 1), scope))
+				return detail::failSocket(10022);
+			ip->sin6_scope_id = scope;
+			address = address.substr(0, percent);
+		}
+		const std::string literal(address);
+		if (::inet_pton(AF_INET6, literal.c_str(), &ip->sin6_addr) != 1)
+			return detail::failSocket(10022);
+		ip->sin6_family = AF_INET6;
+		ip->sin6_port = htons(static_cast<USHORT>(port));
+	}
+	const int error = detail::addressFromNative(reinterpret_cast<const sockaddr *>(&native), output, length);
+	return error ? detail::failSocket(error) : 0;
 }
 
 LPSTR WINAPI inet_ntoa(ULONG address) {

@@ -92,6 +92,7 @@ int WINAPI recv(SOCKET handle, LPSTR buffer, int length, int flags);
 int WINAPI recvfrom(SOCKET handle, LPSTR buffer, int length, int flags, LPVOID address, int *addressLength);
 LPSTR WINAPI inet_ntoa(ULONG address);
 ULONG WINAPI inet_addr(LPCSTR text);
+int WINAPI WSAStringToAddressW(LPWSTR input, int family, LPCVOID protocol, LPVOID output, int *length);
 int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int length);
 int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *length);
 int WINAPI WSARecv(SOCKET handle, const WSABUF *buffers, DWORD count, LPDWORD received, LPDWORD flags,
