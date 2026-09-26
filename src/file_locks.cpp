@@ -1,5 +1,6 @@
 #include "files.h"
 
+#include "common.h"
 #include "errors.h"
 
 #include <algorithm>
@@ -44,6 +45,65 @@ DWORD hostRangeLock(FileObject *file, uint64_t start, uint64_t end, short type, 
 #endif
 }
 
+short rangeMode(const std::vector<kernel32::FileRangeLock> &locks, uint64_t start, uint64_t end,
+				const kernel32::FileRangeLock *excluded = nullptr) {
+	short mode = F_UNLCK;
+	for (const auto &range : locks) {
+		if (&range != excluded && overlaps(start, end, range)) {
+			if (range.exclusive)
+				return F_WRLCK;
+			mode = F_RDLCK;
+		}
+	}
+	return mode;
+}
+
+DWORD changeRangeLocks(FileObject *file, uint64_t start, uint64_t end, const kernel32::FileRangeLock *added,
+					   const kernel32::FileRangeLock *removed, bool blocking) {
+	std::vector<uint64_t> boundaries{start, end};
+	for (const auto &range : file->rangeLocks) {
+		if (overlaps(start, end, range)) {
+			boundaries.push_back(std::max(start, range.start));
+			boundaries.push_back(std::min(end, range.end));
+		}
+	}
+	std::sort(boundaries.begin(), boundaries.end());
+	boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+	struct Change {
+		uint64_t start, end;
+		short before, after;
+	};
+	std::vector<Change> changes;
+	for (size_t i = 1; i < boundaries.size(); ++i) {
+		const auto begin = boundaries[i - 1], finish = boundaries[i];
+		const short before = rangeMode(file->rangeLocks, begin, finish);
+		short after = rangeMode(file->rangeLocks, begin, finish, removed);
+		if (added && overlaps(begin, finish, *added)) {
+			if (added->exclusive)
+				after = F_WRLCK;
+			else if (after == F_UNLCK)
+				after = F_RDLCK;
+		}
+		if (before != after)
+			changes.push_back({begin, finish, before, after});
+	}
+	for (size_t i = 0; i < changes.size(); ++i) {
+		const auto &change = changes[i];
+		const DWORD error = hostRangeLock(file, change.start, change.end, change.after, blocking);
+		if (error) {
+			// Restore native ownership before leaving the registrations unchanged.
+			while (i > 0) {
+				const auto &previous = changes[--i];
+				const DWORD restoreError = hostRangeLock(file, previous.start, previous.end, previous.before, false);
+				if (restoreError)
+					DEBUG_LOG("Range lock restoration failed: error=%u\n", restoreError);
+			}
+			return error;
+		}
+	}
+	return ERROR_SUCCESS;
+}
+
 } // namespace
 
 DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusive, bool blocking) {
@@ -54,20 +114,13 @@ DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusiv
 	const uint64_t end = start + length;
 	std::lock_guard guard(file->m);
 	for (const auto &range : file->rangeLocks) {
-		if (overlaps(start, end, range)) {
-			if (exclusive) {
-				return ERROR_LOCK_VIOLATION;
-			}
-			if (range.exclusive) {
-				// Mixed overlapping locks need separate shared and exclusive ownership accounting.
-				return ERROR_NOT_SUPPORTED;
-			}
-		}
+		if (exclusive && overlaps(start, end, range))
+			return ERROR_LOCK_VIOLATION;
 	}
-	const DWORD error = hostRangeLock(file, start, end, exclusive ? F_WRLCK : F_RDLCK, blocking);
-	if (!error) {
-		file->rangeLocks.push_back({start, end, exclusive});
-	}
+	const kernel32::FileRangeLock added{start, end, exclusive};
+	const DWORD error = changeRangeLocks(file, start, end, &added, nullptr, blocking);
+	if (!error)
+		file->rangeLocks.push_back(added);
 	return error;
 }
 
@@ -82,31 +135,9 @@ DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length) {
 	if (found == file->rangeLocks.end()) {
 		return ERROR_NOT_LOCKED;
 	}
-	// Release only portions that no remaining registration covers. Repeated shared locks retain ownership.
-	std::vector<uint64_t> boundaries{start, end};
-	for (auto it = file->rangeLocks.begin(); it != file->rangeLocks.end(); ++it) {
-		if (it != found && overlaps(start, end, *it)) {
-			boundaries.push_back(std::max(start, it->start));
-			boundaries.push_back(std::min(end, it->end));
-		}
-	}
-	std::sort(boundaries.begin(), boundaries.end());
-	boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
-	for (size_t i = 1; i < boundaries.size(); ++i) {
-		bool covered = false;
-		for (auto it = file->rangeLocks.begin(); it != file->rangeLocks.end(); ++it) {
-			if (it != found && overlaps(boundaries[i - 1], boundaries[i], *it)) {
-				covered = true;
-				break;
-			}
-		}
-		if (!covered) {
-			const DWORD error = hostRangeLock(file, boundaries[i - 1], boundaries[i], F_UNLCK, false);
-			if (error) {
-				return error;
-			}
-		}
-	}
+	const DWORD error = changeRangeLocks(file, start, end, nullptr, &*found, false);
+	if (error)
+		return error;
 	file->rangeLocks.erase(found);
 	return ERROR_SUCCESS;
 }

@@ -10,6 +10,66 @@ static HANDLE open_file(const char *path, DWORD flags) {
 	return file;
 }
 
+static void test_mixed_locks(HANDLE first, HANDLE second) {
+	OVERLAPPED exact = {0}, partial = {0}, tail = {0};
+	BYTE data = 0;
+	DWORD transferred = 0;
+	char runtime[2];
+	BOOL verify_io = GetEnvironmentVariableA("WIBO_FIXTURE_RUNTIME", runtime, sizeof(runtime)) != 0;
+	TEST_CHECK(LockFile(first, 0, 0, 1, 0));
+	TEST_CHECK(LockFileEx(first, 0, 0, 1, 0, &exact));
+	if (verify_io) {
+		TEST_CHECK(!ReadFile(second, &data, 1, &transferred, &exact));
+		TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+		TEST_CHECK(!WriteFile(first, &data, 1, &transferred, &exact));
+		TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	}
+	TEST_CHECK(UnlockFileEx(first, 0, 1, 0, &exact));
+	if (verify_io) {
+		TEST_CHECK(ReadFile(second, &data, 1, &transferred, &exact));
+		TEST_CHECK(!WriteFile(second, &data, 1, &transferred, &exact));
+		TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	}
+	TEST_CHECK(!LockFile(second, 0, 0, 1, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(LockFileEx(second, LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &exact));
+	TEST_CHECK(UnlockFileEx(first, 0, 1, 0, &exact));
+	TEST_CHECK(UnlockFileEx(second, 0, 1, 0, &exact));
+	TEST_CHECK(LockFile(second, 0, 0, 1, 0));
+	TEST_CHECK(UnlockFile(second, 0, 0, 1, 0));
+
+	exact.Offset = 8;
+	partial.Offset = 16;
+	tail.Offset = 24;
+	TEST_CHECK(LockFile(first, 8, 0, 16, 0));
+	TEST_CHECK(LockFileEx(first, LOCKFILE_FAIL_IMMEDIATELY, 0, 16, 0, &partial));
+	TEST_CHECK(!LockFile(second, 16, 0, 1, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(!LockFile(second, 24, 0, 8, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(UnlockFileEx(first, 0, 16, 0, &partial));
+	TEST_CHECK(LockFile(second, 24, 0, 8, 0));
+	TEST_CHECK(UnlockFileEx(second, 0, 8, 0, &tail));
+	TEST_CHECK(!LockFile(second, 16, 0, 1, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(UnlockFileEx(first, 0, 16, 0, &exact));
+
+	exact.Offset = 16;
+	partial.Offset = 8;
+	TEST_CHECK(LockFile(first, 16, 0, 8, 0));
+	TEST_CHECK(LockFile(second, 32, 0, 8, 0));
+	TEST_CHECK(!LockFileEx(first, LOCKFILE_FAIL_IMMEDIATELY, 0, 32, 0, &partial));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(LockFile(second, 8, 0, 8, 0));
+	TEST_CHECK(LockFile(second, 24, 0, 8, 0));
+	TEST_CHECK(!LockFile(second, 16, 0, 8, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(UnlockFile(second, 8, 0, 8, 0));
+	TEST_CHECK(UnlockFile(second, 24, 0, 8, 0));
+	TEST_CHECK(UnlockFile(second, 32, 0, 8, 0));
+	TEST_CHECK(UnlockFileEx(first, 0, 8, 0, &exact));
+}
+
 int main(int argc, char **argv) {
 	if (argc == 3 && strcmp(argv[1], "child") == 0) {
 		HANDLE file = open_file(argv[2], FILE_ATTRIBUTE_NORMAL);
@@ -69,6 +129,7 @@ int main(int argc, char **argv) {
 	TEST_CHECK_EQ(ERROR_INVALID_HANDLE, GetLastError());
 	TEST_CHECK(!UnlockFile(INVALID_HANDLE_VALUE, 0, 0, 1, 0));
 	TEST_CHECK_EQ(ERROR_INVALID_HANDLE, GetLastError());
+	test_mixed_locks(first, second);
 	HANDLE asynchronous = open_file(path, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED);
 	TEST_CHECK(LockFile(asynchronous, 8, 0, 16, 0));
 	TEST_CHECK(!LockFile(second, 8, 0, 16, 0));
