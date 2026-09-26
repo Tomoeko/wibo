@@ -49,6 +49,7 @@ int WINAPI closesocket(SOCKET handle);
 int WINAPI bind(SOCKET handle, LPCVOID address, int length);
 int WINAPI connect(SOCKET handle, LPCVOID address, int length);
 int WINAPI listen(SOCKET handle, int backlog);
+SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength);
 int WINAPI recv(SOCKET handle, LPSTR buffer, int length, int flags);
 int WINAPI recvfrom(SOCKET handle, LPSTR buffer, int length, int flags, LPVOID address, int *addressLength);
 LPSTR WINAPI inet_ntoa(ULONG address);

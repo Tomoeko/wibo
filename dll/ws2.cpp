@@ -181,6 +181,8 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 	// GHS 5.3.22 imports WS2_32.dll with the legacy winsock ordinal table.
 	// Keep these mappings tied to observed call sites rather than modern WS2_32 export ordinals.
 	switch (ordinal) {
+	case 1:
+		return "accept";
 	case 2:
 		return "bind";
 	case 3:

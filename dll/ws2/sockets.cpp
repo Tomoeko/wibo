@@ -26,6 +26,21 @@ SocketRegistry &socketRegistry() {
 	return registry;
 }
 
+SOCKET registerSocket(std::shared_ptr<ws2::detail::Socket> state) {
+	using namespace ws2::detail;
+	auto &registry = socketRegistry();
+	std::lock_guard lock(registry.mutex);
+	if (!requireStarted())
+		return kInvalidSocket;
+	if (registry.next == kInvalidSocket) {
+		setLastError(10024);
+		return kInvalidSocket;
+	}
+	const SOCKET handle = registry.next++;
+	registry.sockets.emplace(handle, std::move(state));
+	return handle;
+}
+
 SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags) {
 	using namespace ws2::detail;
 	if (!requireStarted())
@@ -63,15 +78,7 @@ SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UI
 		if (::setsockopt(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, &v6Only, sizeof(v6Only)) < 0)
 			return fail(socketError(errno));
 	}
-	auto &registry = socketRegistry();
-	std::lock_guard lock(registry.mutex);
-	if (!requireStarted())
-		return kInvalidSocket;
-	if (registry.next == kInvalidSocket)
-		return fail(10024);
-	const SOCKET handle = registry.next++;
-	registry.sockets.emplace(handle, std::move(state));
-	return handle;
+	return registerSocket(std::move(state));
 }
 } // namespace
 
@@ -341,6 +348,53 @@ int WINAPI listen(SOCKET handle, int backlog) {
 		return detail::failSocket(detail::socketError(errno));
 	state->listening.store(true);
 	return 0;
+}
+
+SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("accept(0x%llx, %p, %p)\n", static_cast<unsigned long long>(handle), address, addressLength);
+	const auto state = detail::findSocket(handle);
+	if (!state)
+		return kInvalidSocket;
+	auto fail = [](int error) {
+		detail::setLastError(error);
+		return kInvalidSocket;
+	};
+	int type = 0;
+	socklen_t size = sizeof(type);
+	if (::getsockopt(state->descriptor, SOL_SOCKET, SO_TYPE, &type, &size) < 0)
+		return fail(detail::socketError(errno));
+	if (type != SOCK_STREAM)
+		return fail(10045);
+	if (!state->listening.load())
+		return fail(10022);
+	if (address && (!addressLength || *addressLength < (state->family == AF_INET ? 16 : 28)))
+		return fail(10014);
+	sockaddr_storage peer{};
+	int descriptor;
+	do {
+		size = sizeof(peer);
+		descriptor = ::accept(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &size);
+	} while (descriptor < 0 && errno == EINTR);
+	if (descriptor < 0)
+		return fail(detail::socketError(errno));
+	auto accepted = std::make_shared<detail::Socket>(descriptor, state->family);
+	const int parentMode = ::fcntl(state->descriptor, F_GETFL);
+	const int mode = ::fcntl(descriptor, F_GETFL);
+	if (parentMode < 0 || mode < 0 ||
+		::fcntl(descriptor, F_SETFL, (mode & ~O_NONBLOCK) | (parentMode & O_NONBLOCK)) < 0)
+		return fail(detail::socketError(errno));
+#if defined(__APPLE__)
+	const int noSignal = 1;
+	if (::setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal)) < 0)
+		return fail(detail::socketError(errno));
+#endif
+	if (address) {
+		const auto error = detail::addressFromNative(reinterpret_cast<sockaddr *>(&peer), address, addressLength);
+		if (error)
+			return fail(error);
+	}
+	return registerSocket(std::move(accepted));
 }
 
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length) {
