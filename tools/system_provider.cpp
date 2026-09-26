@@ -28,6 +28,8 @@
 namespace {
 constexpr size_t kMaxResponse = 8 * 1024 * 1024;
 
+bool streamResponse = false;
+
 class Response {
 	std::vector<BYTE> data;
 	bool valid = true;
@@ -56,7 +58,17 @@ class Response {
 		number(1);
 		number(status);
 	}
-	bool write() const { return valid && fwrite(data.data(), 1, data.size(), stdout) == data.size(); }
+	bool write() const {
+		if (!valid)
+			return false;
+		if (streamResponse) {
+			const uint32_t size = static_cast<uint32_t>(data.size());
+			const BYTE length[4] = {BYTE(size), BYTE(size >> 8), BYTE(size >> 16), BYTE(size >> 24)};
+			if (fwrite(length, 1, sizeof(length), stdout) != sizeof(length))
+				return false;
+		}
+		return fwrite(data.data(), 1, data.size(), stdout) == data.size() && fflush(stdout) == 0;
+	}
 	bool good() const { return valid; }
 };
 
@@ -849,8 +861,7 @@ bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool 
 }
 } // namespace
 
-int wmain(int argc, WCHAR **argv) {
-	_setmode(_fileno(stdout), _O_BINARY);
+bool dispatch(int argc, WCHAR **argv) {
 	bool written = false;
 	if ((argc == 3 || argc == 8) && wcscmp(argv[1], L"management-connect") == 0)
 		written = management(argv[2], nullptr, argc == 8 ? argv + 3 : nullptr);
@@ -913,5 +924,74 @@ int wmain(int argc, WCHAR **argv) {
 		written = registry(argv[2], nullptr, argv[3]);
 	else if (argc == 5 && wcscmp(argv[1], L"registry-query") == 0)
 		written = registry(argv[2], argv[3], argv[4]);
-	return written ? 0 : 1;
+	return written;
+}
+
+namespace {
+constexpr size_t kMaxRequest = 64 * 1024;
+
+bool readExact(void *buffer, size_t bytes) { return fread(buffer, 1, bytes, stdin) == bytes; }
+
+uint32_t readNumber(const BYTE *bytes) {
+	return bytes[0] | (uint32_t(bytes[1]) << 8) | (uint32_t(bytes[2]) << 16) | (uint32_t(bytes[3]) << 24);
+}
+
+int serve() {
+	streamResponse = true;
+	_setmode(_fileno(stdin), _O_BINARY);
+	for (;;) {
+		BYTE length[4];
+		const size_t count = fread(length, 1, sizeof(length), stdin);
+		if (!count && feof(stdin))
+			return 0;
+		if (count != sizeof(length))
+			return 1;
+		const uint32_t size = readNumber(length);
+		if (size < 4 || size > kMaxRequest)
+			return 1;
+		std::vector<BYTE> request(size);
+		if (!readExact(request.data(), request.size()))
+			return 1;
+		const uint32_t argc = readNumber(request.data());
+		if (!argc || argc > 32)
+			return 1;
+		size_t offset = 4;
+		std::vector<std::wstring> arguments(argc + 1);
+		for (unsigned index = 1; index <= argc; ++index) {
+			if (size - offset < 4)
+				return 1;
+			const uint32_t bytes = readNumber(request.data() + offset);
+			offset += 4;
+			if (bytes > size - offset)
+				return 1;
+			if (bytes) {
+				const char *text = reinterpret_cast<const char *>(request.data() + offset);
+				if (memchr(text, 0, bytes))
+					return 1;
+				const int characters = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, bytes, nullptr, 0);
+				if (characters <= 0)
+					return 1;
+				arguments[index].resize(characters);
+				if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, bytes, arguments[index].data(),
+										characters) != characters)
+					return 1;
+			}
+			offset += bytes;
+		}
+		if (offset != size)
+			return 1;
+		std::vector<WCHAR *> argv;
+		for (auto &argument : arguments)
+			argv.push_back(argument.data());
+		if (!dispatch(static_cast<int>(argv.size()), argv.data()))
+			return 1;
+	}
+}
+} // namespace
+
+int wmain(int argc, WCHAR **argv) {
+	_setmode(_fileno(stdout), _O_BINARY);
+	if (argc == 2 && wcscmp(argv[1], L"--serve") == 0)
+		return serve();
+	return dispatch(argc, argv) ? 0 : 1;
 }

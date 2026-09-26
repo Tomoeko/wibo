@@ -612,7 +612,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endfunction(wibo_add_fixture_dll)
 
         function(wibo_add_fixture_bin)
-            set(options WILL_FAIL)
+            set(options WILL_FAIL NO_TEST)
             set(oneValueArgs NAME)
             set(multiValueArgs SOURCES COMPILE_OPTIONS DEPENDS)
             cmake_parse_arguments(PARSE_ARGV 0 fixture "${options}" "${oneValueArgs}" "${multiValueArgs}")
@@ -630,13 +630,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             list(APPEND WIBO_TEST_FIXTURES ${fixture_OUTPUT})
             set(WIBO_TEST_FIXTURES ${WIBO_TEST_FIXTURES} PARENT_SCOPE)
 
-            add_test(NAME wibo.${fixture_NAME}
-                COMMAND $<TARGET_FILE:wibo> ${fixture_OUTPUT})
-            set_tests_properties(wibo.${fixture_NAME} PROPERTIES
-                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test
-                DEPENDS wibo.build_fixtures)
-            if(fixture_WILL_FAIL)
-                set_tests_properties(wibo.${fixture_NAME} PROPERTIES WILL_FAIL TRUE)
+            if(NOT fixture_NO_TEST)
+                add_test(NAME wibo.${fixture_NAME}
+                    COMMAND $<TARGET_FILE:wibo> ${fixture_OUTPUT})
+                set_tests_properties(wibo.${fixture_NAME} PROPERTIES
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test
+                    DEPENDS wibo.build_fixtures)
+                if(fixture_WILL_FAIL)
+                    set_tests_properties(wibo.${fixture_NAME} PROPERTIES WILL_FAIL TRUE)
+                endif()
             endif()
         endfunction(wibo_add_fixture_bin)
 
@@ -818,6 +820,14 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_actctx SOURCES test/test_actctx.c)
         wibo_add_fixture_bin(NAME test_overlapped_io SOURCES test/test_overlapped_io.c)
         wibo_add_fixture_bin(NAME test_time SOURCES test/test_time.c)
+        wibo_add_fixture_bin(NAME test_provider_stream SOURCES test/test_provider_stream.c NO_TEST)
+        foreach(mode fresh concurrent exit truncated oversized timeout)
+            add_test(NAME wibo.test_provider_stream_${mode}
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_provider_stream.py
+                    $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_provider_stream.exe
+                    ${CMAKE_CURRENT_SOURCE_DIR}/test/provider_stream_fixture.py ${mode})
+            set_tests_properties(wibo.test_provider_stream_${mode} PROPERTIES TIMEOUT 30)
+        endforeach()
         wibo_add_fixture_bin(NAME test_timezone_conversion SOURCES test/test_timezone_conversion.c)
         set_tests_properties(wibo.test_timezone_conversion PROPERTIES ENVIRONMENT "WIBO_FIXTURE_NATIVE_ZONE=1")
         add_test(NAME wibo.test_timezone_provider

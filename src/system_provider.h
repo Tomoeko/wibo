@@ -10,6 +10,8 @@ namespace wibo::provider {
 
 // Optional executable protocol: argv contains an operation and UTF-8 arguments;
 // stdout is a bounded little-endian response. Stderr remains a diagnostic stream.
+// With WIBO_SYSTEM_PROVIDER_PERSISTENT=1, --serve exchanges length-prefixed
+// frames over stdin/stdout. Request payloads contain a count and UTF-8 arguments.
 constexpr uint32_t kMagic = 0x50535957;
 constexpr uint32_t kVersion = 1;
 constexpr size_t kMaxResponse = 8 * 1024 * 1024;
