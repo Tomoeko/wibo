@@ -5,6 +5,7 @@
 #include "errors.h"
 #include "heap.h"
 #include "modules.h"
+#include "network_proxy.h"
 #include "rpcrt4.h"
 #include "wmi_proxy.h"
 
@@ -196,6 +197,8 @@ HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwCl
 								GUEST_PTR *ppv) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoCreateInstance(%p, %p, 0x%x, %p, %p)\n", rclsid, pUnkOuter, dwClsContext, riid, ppv);
+	if (wibo::network::isManagerClass(rclsid))
+		return wibo::network::createManager(pUnkOuter, dwClsContext, riid, ppv);
 	return wibo::management::createLocator(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 }
 

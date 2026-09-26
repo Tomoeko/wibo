@@ -7,6 +7,7 @@
 
 #include <fcntl.h>
 #include <io.h>
+#include <netlistmgr.h>
 #include <oleauto.h>
 #include <wbemcli.h>
 
@@ -104,6 +105,37 @@ Property copyProperty(BSTR name, CIMTYPE type, LONG flavor, const VARIANT &value
 		break;
 	}
 	return result;
+}
+
+bool networkConnectivity(const WCHAR *contextText) {
+	WCHAR *end = nullptr;
+	const unsigned long context = wcstoul(contextText, &end, 10);
+	HRESULT status = *contextText && !*end ? CoInitializeEx(nullptr, COINIT_MULTITHREADED) : E_INVALIDARG;
+	const bool initialized = SUCCEEDED(status);
+	INetworkListManager *manager = nullptr;
+	NLM_CONNECTIVITY flags = NLM_CONNECTIVITY_DISCONNECTED;
+	VARIANT_BOOL connected = VARIANT_FALSE, internet = VARIANT_FALSE;
+	if (SUCCEEDED(status))
+		status = CoCreateInstance(CLSID_NetworkListManager, nullptr, context, IID_INetworkListManager,
+								  reinterpret_cast<void **>(&manager));
+	if (SUCCEEDED(status))
+		status = INetworkListManager_GetConnectivity(manager, &flags);
+	if (SUCCEEDED(status))
+		status = INetworkListManager_IsConnected(manager, &connected);
+	if (SUCCEEDED(status))
+		status = INetworkListManager_IsConnectedToInternet(manager, &internet);
+	if (manager)
+		INetworkListManager_Release(manager);
+	if (initialized)
+		CoUninitialize();
+	Response response;
+	response.header(status);
+	if (SUCCEEDED(status)) {
+		response.number(flags);
+		response.number(connected != VARIANT_FALSE);
+		response.number(internet != VARIANT_FALSE);
+	}
+	return response.write();
 }
 
 bool management(const WCHAR *spaceName, const WCHAR *queryText, WCHAR **security) {
@@ -581,6 +613,8 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 6 && wcscmp(argv[1], L"image-load") == 0 &&
 			 (wcscmp(argv[2], L"cursor") == 0 || wcscmp(argv[2], L"icon") == 0))
 		written = imageResource(argv[3], argv[4], argv[5], wcscmp(argv[2], L"icon") == 0);
+	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)
+		written = networkConnectivity(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
 		written = memoryStatus();
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)

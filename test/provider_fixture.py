@@ -54,6 +54,15 @@ elif operation == 'management-query':
     elif query == 'exit-failed':
         sys.stdout.buffer.write(response)
         sys.exit(1)
+elif operation == 'network-connectivity':
+    response = header() + number(0x420) + number(1) + number(1)
+    fault = os.environ.get('WIBO_FIXTURE_NETWORK_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'bad-flags':
+        response = header() + number(0x8000) + number(1) + number(1)
+    elif fault == 'failed':
+        response = header(0x80070005)
 elif operation == 'memory-status':
     response = header() + blob(struct.pack('<II7Q', 64, 25, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
     fault = os.environ.get('WIBO_FIXTURE_MEMORY_RESPONSE')

@@ -61,7 +61,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luser32 -lgdi32 -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -o ${_provider_image}
         DEPENDS tools/system_provider.cpp src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -316,6 +316,7 @@ add_executable(wibo
     dll/mscoree.cpp
     dll/ntdll.cpp
     dll/wmi_proxy.cpp
+    dll/network_proxy.cpp
     dll/ole32.cpp
     dll/oleaut32.cpp
     dll/psapi.cpp
@@ -503,6 +504,7 @@ wibo_codegen_module(NAME shell32 HEADERS dll/shell32.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
 wibo_codegen_module(NAME vcruntime HEADERS dll/vcruntime.h)
 wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
+wibo_codegen_module(NAME network_proxy HEADERS dll/network_proxy.h)
 wibo_codegen_module(NAME wmi_proxy HEADERS dll/wmi_proxy.h)
 wibo_codegen_module(NAME ole32 HEADERS dll/ole32.h)
 wibo_codegen_module(NAME oleaut32 HEADERS dll/oleaut32.h)
@@ -718,6 +720,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_memory_status SOURCES test/test_memory_status.c)
         wibo_add_fixture_bin(NAME test_window_class SOURCES test/test_window_class.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_provider_account SOURCES test/test_provider_account.c)
+        wibo_add_fixture_bin(NAME test_network_connectivity SOURCES test/test_network_connectivity.c COMPILE_OPTIONS -lole32 -luuid)
+        set_tests_properties(wibo.test_network_connectivity PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
         wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
         set_tests_properties(wibo.test_management wibo.test_provider_registry wibo.test_provider_account wibo.test_file_security wibo.test_load_cursor wibo.test_memory_status PROPERTIES
