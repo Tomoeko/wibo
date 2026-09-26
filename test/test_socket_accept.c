@@ -28,6 +28,11 @@ int main(void) {
 		int keepAlive = 1;
 		TEST_CHECK_EQ(0, setsockopt(listener, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepAlive, sizeof(keepAlive)));
 		TEST_CHECK_EQ(0, connect(client, (SOCKADDR *)&address, length));
+		fd_set pending;
+		FD_ZERO(&pending);
+		FD_SET(listener, &pending);
+		struct timeval connectionTimeout = {5, 0};
+		TEST_CHECK_EQ(1, select(0, &pending, NULL, NULL, &connectionTimeout));
 		int peerLength = sizeof(peer);
 		SOCKET accepted = accept(listener, (SOCKADDR *)&peer, &peerLength);
 		TEST_CHECK(accepted != INVALID_SOCKET && accepted != listener && accepted != client);

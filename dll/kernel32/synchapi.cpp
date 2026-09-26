@@ -791,6 +791,19 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 	DEBUG_LOG("Waiting on object with type %d\n", static_cast<int>(obj->type));
 
 	switch (obj->type) {
+	case ObjectType::Timer: {
+		auto timer = std::move(obj).downcast<TimerObject>();
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
+		std::unique_lock lock(timer->m);
+		if (!doWait(lock, timer->cv, [&] { return timer->signaled; }))
+			return WAIT_TIMEOUT;
+		if (!timer->manualReset)
+			timer->signaled = false;
+		return WAIT_OBJECT_0;
+	}
 	case ObjectType::Event: {
 		auto ev = std::move(obj).downcast<EventObject>();
 		std::unique_lock lk(ev->m);
@@ -895,6 +908,10 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
+		if (pin->type == ObjectType::Timer && !(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
 		if (auto *waitable = detail::castTo<WaitableObject>(pin.get())) {
 			targets[i].waitable = waitable;
 		} else if (auto *file = detail::castTo<FileObject>(pin.get()); file && file->valid() && file->isPipe) {
@@ -909,46 +926,111 @@ DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL 
 		targets[i].pin = std::move(pin);
 	}
 
-	WaitBlock block(bWaitAll, nCount);
 	DWORD waitResult = WAIT_TIMEOUT;
 	if (!hasPipe) {
-		for (DWORD i = 0; i < targets.size(); ++i) {
-			targets[i].waitable->registerWaiter(&block, i, &WaitBlock::notify);
-		}
-		for (DWORD i = 0; i < targets.size(); ++i) {
-			auto *obj = targets[i].waitable;
-			std::lock_guard objectLock(obj->m);
-			if (obj->signaled) {
-				auto *mu = detail::castTo<MutexObject>(obj);
-				block.noteInitial(i, mu && mu->abandoned);
+		struct WakeState {
+			std::mutex mutex;
+			std::condition_variable cv;
+			uint64_t generation = 0;
+			static void notify(void *context, WaitableObject *, DWORD, bool) {
+				auto &state = *static_cast<WakeState *>(context);
+				std::lock_guard lock(state.mutex);
+				++state.generation;
+				state.cv.notify_one();
 			}
+		} wake;
+		std::vector<WaitableObject *> ordered;
+		for (auto &target : targets) {
+			ordered.push_back(target.waitable);
+			target.waitable->registerWaiter(&wake, 0, &WakeState::notify);
 		}
-		if (!block.isCompleted(waitResult)) {
-			if (dwMilliseconds == 0) {
-				waitResult = WAIT_TIMEOUT;
-			} else {
-				std::optional<std::chrono::steady_clock::time_point> deadline;
-				if (dwMilliseconds != INFINITE) {
-					deadline = std::chrono::steady_clock::now() +
-							   std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
+		std::sort(ordered.begin(), ordered.end(), std::less<WaitableObject *>{});
+		ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+		const auto deadline = dwMilliseconds == INFINITE
+								  ? std::chrono::steady_clock::time_point::max()
+								  : std::chrono::steady_clock::now() + std::chrono::milliseconds(dwMilliseconds);
+		const auto self = pthread_self();
+		for (;;) {
+			uint64_t generation;
+			{
+				std::lock_guard lock(wake.mutex);
+				generation = wake.generation;
+			}
+			{
+				// Inspect and consume the selected objects under the same locks.
+				// Notifications only trigger another scan; they do not reserve a signal.
+				std::vector<std::unique_lock<std::mutex>> locks;
+				locks.reserve(ordered.size());
+				for (auto *object : ordered)
+					locks.emplace_back(object->m);
+				auto ready = [&](WaitableObject *object) {
+					if (auto *mutex = detail::castTo<MutexObject>(object))
+						return !mutex->ownerValid || mutex->abandoned || pthread_equal(mutex->owner, self);
+					if (auto *semaphore = detail::castTo<SemaphoreObject>(object))
+						return semaphore->count > 0;
+					return object->signaled;
+				};
+				DWORD selected = nCount;
+				bool allReady = true;
+				for (DWORD index = 0; index < nCount; ++index) {
+					if (ready(targets[index].waitable)) {
+						if (selected == nCount)
+							selected = index;
+					} else
+						allReady = false;
 				}
-				DWORD signaledResult = WAIT_TIMEOUT;
-				waitResult = block.waitUntil(deadline, signaledResult) ? signaledResult : WAIT_TIMEOUT;
+				if ((bWaitAll && allReady) || (!bWaitAll && selected != nCount)) {
+					waitResult = bWaitAll ? WAIT_OBJECT_0 : WAIT_OBJECT_0 + selected;
+					for (DWORD index = 0; index < nCount; ++index) {
+						if (!bWaitAll && index != selected)
+							continue;
+						auto *object = targets[index].waitable;
+						if (auto *mutex = detail::castTo<MutexObject>(object)) {
+							if (std::exchange(mutex->abandoned, false) && waitResult < WAIT_ABANDONED)
+								waitResult = WAIT_ABANDONED + index;
+							if (mutex->ownerValid && pthread_equal(mutex->owner, self))
+								++mutex->recursionCount;
+							else {
+								mutex->owner = self;
+								mutex->ownerValid = true;
+								mutex->recursionCount = 1;
+							}
+							mutex->signaled = false;
+						} else if (auto *semaphore = detail::castTo<SemaphoreObject>(object)) {
+							object->signaled = --semaphore->count > 0;
+						} else {
+							auto *event = detail::castTo<EventObject>(object);
+							auto *timer = detail::castTo<TimerObject>(object);
+							if ((event && !event->manualReset) || (timer && !timer->manualReset))
+								object->signaled = false;
+						}
+					}
+				}
 			}
+			if (waitResult != WAIT_TIMEOUT || dwMilliseconds == 0 ||
+				(dwMilliseconds != INFINITE && std::chrono::steady_clock::now() >= deadline))
+				break;
+			std::unique_lock lock(wake.mutex);
+			auto changed = [&] { return wake.generation != generation; };
+			if (dwMilliseconds == INFINITE)
+				wake.cv.wait(lock, changed);
+			else if (!wake.cv.wait_until(lock, deadline, changed))
+				break;
 		}
-		for (const auto &target : targets) {
-			target.waitable->unregisterWaiter(&block);
-		}
+		for (auto &target : targets)
+			target.waitable->unregisterWaiter(&wake);
+		return waitResult;
 	} else {
+		WaitBlock block(bWaitAll, nCount);
 		// A Windows pipe handle is waitable when data can be read/written or the
 		// peer closes. Host condition variables cannot observe descriptor state,
 		// so mixed waits poll the descriptors in short bounded slices and inspect
 		// ordinary waitables under their own locks. This preserves handle ordering
 		// and avoids a helper thread per pipe.
 		std::vector<pollfd> pollFds;
-		for (DWORD i = 0; i < targets.size(); ++i) {
-			if (targets[i].pipe) {
-				pollFds.push_back({targets[i].pipe->fd, targets[i].pipeEvents, 0});
+		for (auto &target : targets) {
+			if (target.pipe) {
+				pollFds.push_back({target.pipe->fd, target.pipeEvents, 0});
 			}
 		}
 		const auto start = std::chrono::steady_clock::now();

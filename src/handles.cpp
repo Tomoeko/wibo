@@ -32,15 +32,25 @@ inline bool isPseudo(HANDLE h) noexcept { return static_cast<LONG_PTR>(h) < 0; }
 Handles::~Handles() { clear(); }
 
 void Handles::clear() {
-	for (auto &entry : mSlots) {
-		if (entry.obj) {
-			detail::deref(entry.obj);
-		}
+	std::vector<Entry> entries;
+	{
+		std::unique_lock lock(m);
+		entries.swap(mSlots);
+		mFreeBelow.clear();
+		mFreeAbove.clear();
+		mQuarantine.clear();
+		nextIndex = 0;
 	}
-	mSlots.clear();
-	mFreeBelow.clear();
-	mFreeAbove.clear();
-	nextIndex = 0;
+	for (auto &entry : entries) {
+		if (!entry.obj)
+			continue;
+		if (entry.obj->handleCount.fetch_sub(1, std::memory_order_relaxed) == 1) {
+			entry.obj->onLastHandleClosed();
+			if (mOnHandleZero)
+				mOnHandleZero(entry.obj);
+		}
+		detail::deref(entry.obj);
+	}
 }
 
 HANDLE Handles::alloc(Pin<> obj, uint32_t grantedAccess, uint32_t flags) {
@@ -136,8 +146,10 @@ bool Handles::release(HANDLE h) {
 	}
 	lk.unlock();
 
-	if (handleCount == 0 && mOnHandleZero) {
-		mOnHandleZero(obj);
+	if (handleCount == 0) {
+		obj->onLastHandleClosed();
+		if (mOnHandleZero)
+			mOnHandleZero(obj);
 	}
 	detail::deref(obj);
 	return true;

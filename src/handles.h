@@ -31,6 +31,7 @@ enum class ObjectType : uint16_t {
 	NamedPipeState,
 	ToolhelpSnapshot,
 	UserImage,
+	Timer,
 };
 
 enum ObjectFlags : uint16_t {
@@ -48,6 +49,7 @@ struct ObjectBase {
 
 	explicit ObjectBase(ObjectType t) noexcept : type(t) {}
 	virtual ~ObjectBase() noexcept = default;
+	virtual void onLastHandleClosed() noexcept {}
 };
 
 template <typename T>

@@ -157,6 +157,13 @@ struct SemaphoreObject final : WaitableObject {
 	SemaphoreObject(LONG initial, LONG maximum) : WaitableObject(kType), count(initial), maxCount(maximum) {}
 };
 
+struct TimerObject final : WaitableObject {
+	static constexpr ObjectType kType = ObjectType::Timer;
+	const bool manualReset;
+	explicit TimerObject(bool manual) : WaitableObject(kType), manualReset(manual) {}
+	void onLastHandleClosed() noexcept override;
+};
+
 struct HeapObject : public ObjectBase {
 	static constexpr ObjectType kType = ObjectType::Heap;
 
