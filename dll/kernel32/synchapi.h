@@ -134,6 +134,7 @@ void WINAPI AcquireSRWLockShared(PSRWLOCK SRWLock);
 void WINAPI InitializeSRWLock(PSRWLOCK SRWLock);
 void WINAPI InitializeConditionVariable(PCONDITION_VARIABLE ConditionVariable);
 BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE condition, PCRITICAL_SECTION section, DWORD milliseconds);
+BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE condition, PSRWLOCK lock, DWORD milliseconds, ULONG flags);
 void WINAPI WakeConditionVariable(PCONDITION_VARIABLE condition);
 void WINAPI WakeAllConditionVariable(PCONDITION_VARIABLE condition);
 void WINAPI ReleaseSRWLockShared(PSRWLOCK SRWLock);

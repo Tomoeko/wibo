@@ -37,26 +37,17 @@ void wake(PCONDITION_VARIABLE condition, bool all) {
 	if (waiters.empty())
 		g_conditionWaiters.erase(it);
 }
-} // namespace
-
-namespace kernel32 {
-BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE condition, PCRITICAL_SECTION section, DWORD milliseconds) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("SleepConditionVariableCS(%p, %p, %u)\n", condition, section, milliseconds);
-	if (!condition || !section || section->RecursionCount != 1 ||
-		static_cast<ULONG_PTR>(section->OwningThread) != GetCurrentThreadId()) {
-		setLastError(ERROR_INVALID_PARAMETER);
-		return FALSE;
-	}
+template <class Release, class Acquire>
+BOOL sleepOnCondition(PCONDITION_VARIABLE condition, DWORD milliseconds, Release release, Acquire acquire) {
 	ConditionWaiter waiter;
 	bool notified;
-	CompletionWait completionWait(milliseconds != 0);
+	kernel32::CompletionWait completionWait(milliseconds != 0);
 	{
 		std::unique_lock lock(g_conditionMutex);
 		g_conditionWaiters[condition].push_back(&waiter);
 		// Registration and lock release share the wake registry lock, so a wake
 		// cannot pass between releasing the caller's lock and going to sleep.
-		LeaveCriticalSection(section);
+		release();
 		const auto done = [&] { return waiter.notified; };
 		if (milliseconds == INFINITE) {
 			waiter.cv.wait(lock, done);
@@ -73,10 +64,48 @@ BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE condition, PCRITICAL_SE
 	}
 	// Reacquisition may block behind the waking thread; do it without holding
 	// the registry lock, which that thread may need for another wake.
-	EnterCriticalSection(section);
+	acquire();
 	if (!notified)
-		setLastError(ERROR_TIMEOUT);
+		kernel32::setLastError(ERROR_TIMEOUT);
 	return notified ? TRUE : FALSE;
+}
+} // namespace
+
+namespace kernel32 {
+BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE condition, PCRITICAL_SECTION section, DWORD milliseconds) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SleepConditionVariableCS(%p, %p, %u)\n", condition, section, milliseconds);
+	if (!condition || !section || section->RecursionCount != 1 ||
+		static_cast<ULONG_PTR>(section->OwningThread) != GetCurrentThreadId()) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	return sleepOnCondition(
+		condition, milliseconds, [&] { LeaveCriticalSection(section); }, [&] { EnterCriticalSection(section); });
+}
+
+BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE condition, PSRWLOCK lock, DWORD milliseconds, ULONG flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SleepConditionVariableSRW(%p, %p, %u, 0x%x)\n", condition, lock, milliseconds, flags);
+	constexpr ULONG shared = 0x1; // CONDITION_VARIABLE_LOCKMODE_SHARED
+	if (!condition || !lock || (flags & ~shared)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	return sleepOnCondition(
+		condition, milliseconds,
+		[&] {
+			if (flags & shared)
+				ReleaseSRWLockShared(lock);
+			else
+				ReleaseSRWLockExclusive(lock);
+		},
+		[&] {
+			if (flags & shared)
+				AcquireSRWLockShared(lock);
+			else
+				AcquireSRWLockExclusive(lock);
+		});
 }
 
 void WINAPI WakeConditionVariable(PCONDITION_VARIABLE condition) {
