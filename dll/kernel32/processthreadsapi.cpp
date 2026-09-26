@@ -34,6 +34,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace {
 
 using kernel32::ThreadObject;
@@ -251,6 +255,39 @@ void *threadTrampoline(void *param) {
 } // namespace
 
 namespace kernel32 {
+
+BOOL WINAPI FlushInstructionCache(HANDLE process, LPCVOID address, SIZE_T size) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FlushInstructionCache(%p, %p, %zu)\n", process, address, size);
+	if (!isPseudoCurrentProcessHandle(process)) {
+		auto object = wibo::handles().getAs<ProcessObject>(process);
+		if (!object) {
+			setLastError(ERROR_INVALID_HANDLE);
+			return FALSE;
+		}
+		if (object->pid != getpid()) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+	}
+	if (address && size) {
+		const uintptr_t start = reinterpret_cast<uintptr_t>(address);
+		if (size > std::numeric_limits<uintptr_t>::max() - start) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
+#ifdef __APPLE__
+		sys_icache_invalidate(const_cast<void *>(address), size);
+#else
+		__builtin___clear_cache(reinterpret_cast<char *>(start), reinterpret_cast<char *>(start + size));
+#endif
+	}
+	// Both supported x86 architectures have coherent caches. Serialize the
+	// instruction stream after writes, including requests covering all addresses.
+	unsigned eax, ebx, ecx, edx;
+	asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0) : "memory");
+	return TRUE;
+}
 
 void ThreadObject::onLastHandleClosed() noexcept { retireThread(this); }
 

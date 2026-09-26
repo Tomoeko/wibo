@@ -1112,12 +1112,14 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 	const std::size_t pageCount = length / pageSize;
 	std::vector<std::pair<uintptr_t, std::size_t>> runs;
 	runs.reserve(pageCount);
+	bool changesExistingProtection = false;
 	for (std::size_t i = 0; i < pageCount; ++i) {
 		std::size_t pageIndex = ((start - region->base) / pageSize) + i;
 		if (pageIndex >= region->pageProtect.size()) {
 			return VmStatus::InvalidAddress;
 		}
 		if (region->pageProtect[pageIndex] != 0) {
+			changesExistingProtection |= region->pageProtect[pageIndex] != protect;
 			continue;
 		}
 		uintptr_t runBase = start + i * pageSize;
@@ -1143,6 +1145,16 @@ VmStatus virtualAlloc(void **baseAddress, std::size_t *regionSize, DWORD allocat
 		markCommitted(*region, run.first, run.second, protect);
 	}
 
+	// Recommitting also applies the requested protection to existing pages,
+	// while retaining their contents. Only previously reserved runs are remapped.
+	if (changesExistingProtection) {
+		if (mprotect(reinterpret_cast<void *>(start), length, posixProtectFromWin32(protect)) != 0) {
+			const VmStatus status = vmStatusFromErrno(errno);
+			refreshGuestMappingLocked(*region);
+			return status;
+		}
+		markCommitted(*region, start, length, protect);
+	}
 	refreshGuestMappingLocked(*region);
 
 	if (baseAddress) {

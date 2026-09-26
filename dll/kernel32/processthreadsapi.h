@@ -91,6 +91,7 @@ BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeLi
 void WINAPI DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList);
 
 HANDLE WINAPI GetCurrentProcess();
+BOOL WINAPI FlushInstructionCache(HANDLE process, LPCVOID address, SIZE_T size);
 DWORD WINAPI GetCurrentProcessId();
 DWORD WINAPI GetCurrentThreadId();
 HANDLE WINAPI GetCurrentThread();
