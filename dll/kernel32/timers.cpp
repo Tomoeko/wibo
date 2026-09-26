@@ -169,6 +169,13 @@ void TimerObject::onLastHandleClosed() noexcept {
 		scheduler->cancel(this);
 }
 
+HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES attributes, BOOL manualReset, LPCSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateWaitableTimerA(%p, %d, %s)\n", attributes, manualReset, name ? name : "(null)");
+	const auto wide = name ? stringToWideString(name) : std::vector<uint16_t>{};
+	return CreateWaitableTimerExW(attributes, name ? wide.data() : nullptr, manualReset ? 1 : 0, kTimerAll);
+}
+
 HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CreateWaitableTimerExW(%p, %p, %u, 0x%x)\n", attributes, name, flags, access);

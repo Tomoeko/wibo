@@ -95,6 +95,7 @@ namespace kernel32 {
 
 void WINAPI Sleep(DWORD dwMilliseconds);
 DWORD WINAPI SleepEx(DWORD dwMilliseconds, BOOL bAlertable);
+HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES attributes, BOOL manualReset, LPCSTR name);
 HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access);
 BOOL WINAPI SetWaitableTimer(HANDLE handle, const LARGE_INTEGER *dueTime, LONG period, GUEST_PTR callback,
 							 LPVOID callbackArgument, BOOL resume);

@@ -10,7 +10,9 @@
 #include "kernel32/processenv.h"
 #include "kernel32/winbase.h"
 #include "modules.h"
+#include "ole32.h"
 #include "strutil.h"
+#include "system_provider.h"
 
 #include <cstring>
 #include <limits>
@@ -158,6 +160,44 @@ HRESULT WINAPI SHGetFolderPathW(HWND hwnd, int csidl, HANDLE hToken, DWORD dwFla
 		return static_cast<HRESULT>(0x8007007A);
 	}
 	std::copy(wide.begin(), wide.end(), pszPath);
+	return S_OK;
+}
+
+HRESULT WINAPI SHGetKnownFolderPath(const GUID *id, DWORD flags, HANDLE token, GUEST_PTR *output) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SHGetKnownFolderPath(%p, 0x%x, %p, %p)\n", id, flags, token, output);
+	constexpr HRESULT invalidArgument = static_cast<HRESULT>(0x80070057);
+	constexpr HRESULT notImplemented = static_cast<HRESULT>(0x80004001);
+	constexpr HRESULT invalidData = static_cast<HRESULT>(0x8007000d);
+	if (!output)
+		return invalidArgument;
+	*output = GUEST_NULL;
+	if (!id)
+		return invalidArgument;
+	// Access-token handles cannot be transferred to the adapter process.
+	if (token && token != -1)
+		return notImplemented;
+	const auto identity =
+		wibo::provider::encodeBytes(std::string_view(reinterpret_cast<const char *>(id), sizeof(*id)));
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request(
+			{"known-folder-path", identity, std::to_string(flags), token == -1 ? "default" : "current"}, response))
+		return notImplemented;
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status))
+		return invalidData;
+	if (status)
+		return reader.done() ? static_cast<HRESULT>(status) : invalidData;
+	std::u16string path;
+	if (!reader.text(path) || path.empty() || path.find(u'\0') != std::u16string::npos || !reader.done())
+		return invalidData;
+	const size_t bytes = (path.size() + 1) * sizeof(WCHAR);
+	auto *result = static_cast<WCHAR *>(ole32::CoTaskMemAlloc(bytes));
+	if (!result)
+		return static_cast<HRESULT>(0x8007000e);
+	std::memcpy(result, path.c_str(), bytes);
+	*output = toGuestPtr(result);
 	return S_OK;
 }
 

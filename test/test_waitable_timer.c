@@ -63,7 +63,35 @@ static void check_wait_state(void) {
 	TEST_CHECK(CloseHandle(race.timer));
 }
 
+static void check_legacy_creation(void) {
+	HANDLE timer = CreateWaitableTimerA(NULL, 7, "wibo.fixture.timer.ansi");
+	TEST_CHECK(timer != NULL);
+	HANDLE duplicate = CreateWaitableTimerExW(NULL, L"wibo.fixture.timer.ansi", 0, TIMER_ALL_ACCESS);
+	TEST_CHECK(duplicate != NULL);
+	TEST_CHECK_EQ(ERROR_ALREADY_EXISTS, GetLastError());
+	DWORD flags = 0;
+	TEST_CHECK(GetHandleInformation(timer, &flags));
+	TEST_CHECK_EQ(0, flags);
+	LARGE_INTEGER due;
+	due.QuadPart = 0;
+	TEST_CHECK(SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(timer, 5000));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(duplicate, 0));
+	TEST_CHECK(CloseHandle(duplicate));
+	TEST_CHECK(CloseHandle(timer));
+	SECURITY_ATTRIBUTES attributes = {sizeof(attributes), NULL, TRUE};
+	timer = CreateWaitableTimerA(&attributes, FALSE, NULL);
+	TEST_CHECK(timer != NULL);
+	TEST_CHECK(GetHandleInformation(timer, &flags));
+	TEST_CHECK_EQ(HANDLE_FLAG_INHERIT, flags);
+	TEST_CHECK(SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(timer, 5000));
+	TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForSingleObject(timer, 0));
+	TEST_CHECK(CloseHandle(timer));
+}
+
 int main(void) {
+	check_legacy_creation();
 	LARGE_INTEGER due;
 	due.QuadPart = -200000;
 	HANDLE manual =

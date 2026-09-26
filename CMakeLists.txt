@@ -67,7 +67,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -o ${_provider_image}
         DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -699,6 +699,14 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_window_message SOURCES test/test_window_message.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)
         wibo_add_fixture_bin(NAME test_special_folder SOURCES test/test_special_folder.c COMPILE_OPTIONS -lshell32 -lole32)
+        set_tests_properties(wibo.test_special_folder PROPERTIES
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        foreach(fault truncated embedded-zero)
+            add_test(NAME wibo.test_known_folder_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_special_folder.exe)
+            set_tests_properties(wibo.test_known_folder_${fault} PROPERTIES
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_FOLDER_RESPONSE=${fault}")
+        endforeach()
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_path_canonicalize SOURCES test/test_path_canonicalize.c COMPILE_OPTIONS -lshlwapi)
         set_tests_properties(wibo.test_path_canonicalize PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")

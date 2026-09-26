@@ -29,7 +29,19 @@ def property_value(name, cim_type, variant_type, data, status=0):
 
 operation, *arguments = sys.argv[1:]
 response = header(0x80041008)
-if operation == 'time-zone-information':
+if operation == 'known-folder-path':
+    identity, flags, user = arguments
+    paths = {'825dab62c1fdc34da9dd070d1d495d97': 'C:\\ProgramData',
+             '8f856c5e220e60479afeea3317b67173': 'C:\\Fixture\\profile-\u4e2d-\U0001f600'}
+    path = paths.get(identity)
+    response = header() + text(path) if path else header(0x80070057)
+    fault = os.environ.get('WIBO_FIXTURE_FOLDER_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'embedded-zero':
+        response = header() + text('C:\\Fixture\0suffix')
+
+elif operation == 'time-zone-information':
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)
     zone += bytes(64) + transition(3, 2, 2) + number(-60)

@@ -14,6 +14,7 @@
 #include <netioapi.h>
 #include <netlistmgr.h>
 #include <oleauto.h>
+#include <shlobj.h>
 #include <wbemcli.h>
 #include <winternl.h>
 
@@ -432,6 +433,31 @@ bool decodeHex(const WCHAR *source, std::string &result, bool allowZero = false)
 		result.push_back(static_cast<char>(value));
 	}
 	return true;
+}
+
+bool knownFolderPath(const WCHAR *identity, const WCHAR *flagsText, const WCHAR *user) {
+	std::string bytes;
+	if (!decodeHex(identity, bytes, true) || bytes.size() != sizeof(GUID))
+		return false;
+	WCHAR *end = nullptr;
+	const auto flags = wcstoull(flagsText, &end, 10);
+	if (!*flagsText || *end || flags > 0xffffffffULL)
+		return false;
+	HANDLE token = nullptr;
+	if (wcscmp(user, L"default") == 0)
+		token = reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-1));
+	else if (wcscmp(user, L"current") != 0)
+		return false;
+	GUID id{};
+	std::memcpy(&id, bytes.data(), sizeof(id));
+	WCHAR *path = nullptr;
+	const HRESULT status = SHGetKnownFolderPath(id, static_cast<DWORD>(flags), token, &path);
+	Response response;
+	response.header(status);
+	if (SUCCEEDED(status))
+		response.bytes(path, wcslen(path) * sizeof(WCHAR));
+	CoTaskMemFree(path);
+	return response.write();
 }
 
 bool bestRoute(WCHAR **parameters) {
@@ -881,6 +907,8 @@ bool dispatch(int argc, WCHAR **argv) {
 	else if (argc == 6 && wcscmp(argv[1], L"format-message") == 0 &&
 			 (wcscmp(argv[2], L"a") == 0 || wcscmp(argv[2], L"w") == 0))
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
+	else if (argc == 5 && wcscmp(argv[1], L"known-folder-path") == 0)
+		written = knownFolderPath(argv[2], argv[3], argv[4]);
 	else if (argc == 2 && wcscmp(argv[1], L"time-zone-information") == 0)
 		written = timeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"environment-defaults") == 0)
