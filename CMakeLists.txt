@@ -288,6 +288,7 @@ add_executable(wibo
     dll/kernel32.cpp
     dll/kernel32/debugapi.cpp
     dll/kernel32/errhandlingapi.cpp
+    dll/kernel32/formatmessage.cpp
     dll/kernel32/fibersapi.cpp
     dll/kernel32/fileapi.cpp
     dll/kernel32/handleapi.cpp
@@ -331,6 +332,8 @@ add_executable(wibo
     dll/winmm.cpp
     dll/ws2.cpp
     dll/ws2/resolution.cpp
+    dll/ws2/sockets.cpp
+    dll/ws2/events.cpp
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
@@ -656,6 +659,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_address_resolution SOURCES test/test_address_resolution.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_address_resolution PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_socket_events SOURCES test/test_socket_events.c COMPILE_OPTIONS -lws2_32)
+        wibo_add_fixture_bin(NAME test_socket_lifetime SOURCES test/test_socket_lifetime.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
@@ -715,6 +720,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
         wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_format_message SOURCES test/test_format_message.c)
+        set_tests_properties(wibo.test_format_message PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
         wibo_add_fixture_bin(NAME test_load_cursor SOURCES test/test_load_cursor.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_memory_status SOURCES test/test_memory_status.c)

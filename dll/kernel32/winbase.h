@@ -98,8 +98,10 @@ ATOM WINAPI GlobalDeleteAtom(ATOM nAtom);
 UINT WINAPI GlobalGetAtomNameA(ATOM nAtom, LPSTR lpBuffer, int nSize);
 UINT WINAPI GlobalGetAtomNameW(ATOM nAtom, LPWSTR lpBuffer, int nSize);
 UINT WINAPI SetHandleCount(UINT uNumber);
-// DWORD WINAPI FormatMessageA(DWORD dwFlags, LPCVOID lpSource, DWORD dwMessageId, DWORD dwLanguageId, LPSTR lpBuffer,
-// 							DWORD nSize, va_list *Arguments);
+DWORD WINAPI FormatMessageA(DWORD flags, LPCVOID source, DWORD messageId, DWORD language, LPSTR buffer, DWORD size,
+							LPCVOID arguments);
+DWORD WINAPI FormatMessageW(DWORD flags, LPCVOID source, DWORD messageId, DWORD language, LPWSTR buffer, DWORD size,
+							LPCVOID arguments);
 PVOID WINAPI EncodePointer(PVOID Ptr);
 PVOID WINAPI DecodePointer(PVOID Ptr);
 BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName);

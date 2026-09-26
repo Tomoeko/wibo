@@ -34,9 +34,24 @@ struct ADDRINFOA {
 static_assert(sizeof(WSADATA) == (sizeof(GUEST_PTR) == 8 ? 408 : 400));
 static_assert(sizeof(ADDRINFOA) == (sizeof(GUEST_PTR) == 8 ? 48 : 32));
 
+using SOCKET = GUEST_PTR;
+
 namespace ws2 {
 
+HANDLE WINAPI WSACreateEvent();
+BOOL WINAPI WSACloseEvent(HANDLE event);
+BOOL WINAPI WSASetEvent(HANDLE event);
+BOOL WINAPI WSAResetEvent(HANDLE event);
+DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, BOOL waitAll, DWORD timeout, BOOL alertable);
+SOCKET WINAPI WSASocketA(int family, int type, int protocol, LPCVOID protocolInfo, UINT group, DWORD flags);
+SOCKET WINAPI socket(int family, int type, int protocol);
+int WINAPI closesocket(SOCKET handle);
+int WINAPI bind(SOCKET handle, LPCVOID address, int length);
+int WINAPI getsockname(SOCKET handle, LPVOID address, int *length);
 ULONG WINAPI(ntohl)(ULONG netlong);
+ULONG WINAPI(htonl)(ULONG value);
+USHORT WINAPI(ntohs)(USHORT value);
+USHORT WINAPI(htons)(USHORT value);
 int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData);
 int WINAPI WSACleanup();
 int WINAPI WSAGetLastError();

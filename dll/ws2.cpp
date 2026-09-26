@@ -14,6 +14,15 @@
 #ifdef ntohl
 #undef ntohl
 #endif
+#ifdef htonl
+#undef htonl
+#endif
+#ifdef ntohs
+#undef ntohs
+#endif
+#ifdef htons
+#undef htons
+#endif
 
 namespace {
 
@@ -55,6 +64,22 @@ ULONG WINAPI ntohl(ULONG netlong) {
 		   ((netlong & 0xFF000000) >> 24);
 }
 
+ULONG WINAPI htonl(ULONG value) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("htonl(0x%x)\n", value);
+	return __builtin_bswap32(value);
+}
+USHORT WINAPI ntohs(USHORT value) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("ntohs(0x%x)\n", value);
+	return __builtin_bswap16(value);
+}
+USHORT WINAPI htons(USHORT value) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("htons(0x%x)\n", value);
+	return __builtin_bswap16(value);
+}
+
 int WINAPI WSAStartup(WORD wVersionRequired, WSADATA *lpWSAData) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("WSAStartup(0x%x, %p)\n", wVersionRequired, lpWSAData);
@@ -92,6 +117,8 @@ int WINAPI WSACleanup() {
 		return SOCKET_ERROR;
 	}
 
+	if (count == 1)
+		detail::cleanupSockets();
 	setLastError(0);
 	return 0;
 }
@@ -162,6 +189,20 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 	// GHS 5.3.22 imports WS2_32.dll with the legacy winsock ordinal table.
 	// Keep these mappings tied to observed call sites rather than modern WS2_32 export ordinals.
 	switch (ordinal) {
+	case 2:
+		return "bind";
+	case 3:
+		return "closesocket";
+	case 6:
+		return "getsockname";
+	case 23:
+		return "socket";
+	case 8:
+		return "htonl";
+	case 9:
+		return "htons";
+	case 15:
+		return "ntohs";
 	case 14:
 		return "ntohl";
 	case 18:

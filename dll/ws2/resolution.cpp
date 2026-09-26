@@ -166,18 +166,13 @@ int WINAPI getaddrinfo(LPCSTR node, LPCSTR service, const ADDRINFOA *hints, GUES
 		entry->ai_addrlen = addressSize;
 		auto *address = reinterpret_cast<unsigned char *>(entry + 1);
 		entry->ai_addr = toGuestPtr(address);
-		const auto family = static_cast<uint16_t>(entry->ai_family);
-		std::memcpy(address, &family, sizeof(family));
-		if (host->ai_family == AF_INET) {
-			const auto *ip = reinterpret_cast<const sockaddr_in *>(host->ai_addr);
-			std::memcpy(address + 2, &ip->sin_port, 2);
-			std::memcpy(address + 4, &ip->sin_addr, 4);
-		} else {
-			const auto *ip = reinterpret_cast<const sockaddr_in6 *>(host->ai_addr);
-			std::memcpy(address + 2, &ip->sin6_port, 2);
-			std::memcpy(address + 4, &ip->sin6_flowinfo, 4);
-			std::memcpy(address + 8, &ip->sin6_addr, 16);
-			std::memcpy(address + 24, &ip->sin6_scope_id, 4);
+		int convertedSize = static_cast<int>(addressSize);
+		const int converted = detail::addressFromNative(host->ai_addr, address, &convertedSize);
+		if (converted) {
+			wibo::heap::guestFree(entry);
+			for (auto *allocated : nodes)
+				wibo::heap::guestFree(allocated);
+			return fail(converted);
 		}
 		if (nameSize) {
 			entry->ai_canonname = toGuestPtr(address + addressSize);

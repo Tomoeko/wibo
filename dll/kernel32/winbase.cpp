@@ -1022,51 +1022,6 @@ UINT WINAPI SetHandleCount(UINT uNumber) {
 	return 0x3FFE;
 }
 
-DWORD WINAPI FormatMessageA(DWORD dwFlags, LPCVOID lpSource, DWORD dwMessageId, DWORD dwLanguageId, LPSTR lpBuffer,
-							DWORD nSize, va_list *Arguments) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("FormatMessageA(%u, %p, %u, %u, %p, %u, %p)\n", dwFlags, lpSource, dwMessageId, dwLanguageId, lpBuffer,
-			  nSize, Arguments);
-
-	if (dwFlags & 0x00000100) {
-		// FORMAT_MESSAGE_ALLOCATE_BUFFER
-	} else if (dwFlags & 0x00002000) {
-		// FORMAT_MESSAGE_ARGUMENT_ARRAY
-	} else if (dwFlags & 0x00000800) {
-		// FORMAT_MESSAGE_FROM_HMODULE
-	} else if (dwFlags & 0x00000400) {
-		// FORMAT_MESSAGE_FROM_STRING
-	} else if (dwFlags & 0x00001000) {
-		// FORMAT_MESSAGE_FROM_SYSTEM
-		std::string message = std::system_category().message(static_cast<int>(dwMessageId));
-		size_t length = message.length();
-		if (!lpBuffer || nSize == 0) {
-			setLastError(ERROR_INSUFFICIENT_BUFFER);
-			return 0;
-		}
-		std::strncpy(lpBuffer, message.c_str(), static_cast<size_t>(nSize));
-		if (static_cast<size_t>(nSize) <= length) {
-			if (static_cast<size_t>(nSize) > 0) {
-				lpBuffer[nSize - 1] = '\0';
-			}
-			setLastError(ERROR_INSUFFICIENT_BUFFER);
-			return 0;
-		}
-		lpBuffer[length] = '\0';
-		return static_cast<DWORD>(length);
-	} else if (dwFlags & 0x00000200) {
-		// FORMAT_MESSAGE_IGNORE_INSERTS
-	} else {
-		// unhandled?
-	}
-
-	if (lpBuffer && nSize > 0) {
-		lpBuffer[0] = '\0';
-	}
-	setLastError(ERROR_CALL_NOT_IMPLEMENTED);
-	return 0;
-}
-
 PVOID WINAPI EncodePointer(PVOID Ptr) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("EncodePointer(%p)\n", Ptr);

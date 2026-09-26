@@ -54,6 +54,12 @@ elif operation == 'management-query':
     elif query == 'exit-failed':
         sys.stdout.buffer.write(response)
         sys.exit(1)
+elif operation == 'format-message':
+    width, flags, message_id, language = arguments
+    response = header(317)
+    if message_id == '5':
+        value = 'Access is denied.\r\n'
+        response = header() + blob(value.encode('utf-16-le' if width == 'w' else 'ascii'))
 elif operation == 'network-connectivity':
     response = header() + number(0x420) + number(1) + number(1)
     fault = os.environ.get('WIBO_FIXTURE_NETWORK_RESPONSE')

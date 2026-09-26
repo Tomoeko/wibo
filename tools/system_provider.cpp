@@ -107,6 +107,37 @@ Property copyProperty(BSTR name, CIMTYPE type, LONG flavor, const VARIANT &value
 	return result;
 }
 
+bool formatMessage(WCHAR **parameters, bool wide) {
+	DWORD values[3]{};
+	for (unsigned index = 0; index < 3; ++index) {
+		WCHAR *end = nullptr;
+		const unsigned long long value = wcstoull(parameters[index], &end, 10);
+		if (!*parameters[index] || *end || value > 0xFFFFFFFFULL)
+			return false;
+		values[index] = static_cast<DWORD>(value);
+	}
+	const DWORD flags = values[0];
+	Response response;
+	if (!(flags & FORMAT_MESSAGE_FROM_SYSTEM) ||
+		(flags & ~(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_ARGUMENT_ARRAY |
+				   FORMAT_MESSAGE_MAX_WIDTH_MASK))) {
+		response.header(ERROR_INVALID_PARAMETER);
+		return response.write();
+	}
+	void *buffer = nullptr;
+	const DWORD allocationFlags = flags | FORMAT_MESSAGE_ALLOCATE_BUFFER;
+	const DWORD count = wide ? FormatMessageW(allocationFlags, nullptr, values[1], values[2],
+											  reinterpret_cast<WCHAR *>(&buffer), 0, nullptr)
+							 : FormatMessageA(allocationFlags, nullptr, values[1], values[2],
+											  reinterpret_cast<char *>(&buffer), 0, nullptr);
+	response.header(count ? ERROR_SUCCESS : GetLastError());
+	if (count)
+		response.bytes(buffer, count * (wide ? sizeof(WCHAR) : 1));
+	if (buffer)
+		LocalFree(buffer);
+	return response.write();
+}
+
 bool networkConnectivity(const WCHAR *contextText) {
 	WCHAR *end = nullptr;
 	const unsigned long context = wcstoul(contextText, &end, 10);
@@ -613,6 +644,9 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 6 && wcscmp(argv[1], L"image-load") == 0 &&
 			 (wcscmp(argv[2], L"cursor") == 0 || wcscmp(argv[2], L"icon") == 0))
 		written = imageResource(argv[3], argv[4], argv[5], wcscmp(argv[2], L"icon") == 0);
+	else if (argc == 6 && wcscmp(argv[1], L"format-message") == 0 &&
+			 (wcscmp(argv[2], L"a") == 0 || wcscmp(argv[2], L"w") == 0))
+		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)
 		written = networkConnectivity(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
