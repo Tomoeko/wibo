@@ -588,6 +588,22 @@ bool systemMetrics(const WCHAR *indexText, const WCHAR *errorText) {
 	return response.write();
 }
 
+bool statusError(const WCHAR *statusText) {
+	WCHAR *end = nullptr;
+	const auto status = wcstoull(statusText, &end, 10);
+	if (!*statusText || *end || status > UINT32_MAX)
+		return false;
+	using ConvertStatus = ULONG(WINAPI *)(LONG);
+	const auto module = GetModuleHandleW(L"ntdll.dll");
+	const auto convert =
+		reinterpret_cast<ConvertStatus>(reinterpret_cast<void *>(GetProcAddress(module, "RtlNtStatusToDosError")));
+	Response response;
+	response.header(convert ? ERROR_SUCCESS : GetLastError());
+	if (convert)
+		response.number(convert(static_cast<LONG>(status)));
+	return response.write();
+}
+
 bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
@@ -710,6 +726,8 @@ int wmain(int argc, WCHAR **argv) {
 		written = memoryStatus();
 	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
 		written = systemMetrics(argv[2], argv[3]);
+	else if (argc == 3 && wcscmp(argv[1], L"status-error") == 0)
+		written = statusError(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
 		written = userName();
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)

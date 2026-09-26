@@ -102,6 +102,13 @@ elif operation == 'system-metrics':
         response += b'\0'
     elif fault == 'failed':
         response = header(5)
+elif operation == 'status-error':
+    status = int(arguments[0])
+    values = {0: 0, 0xc0000022: 5, 0xc0000008: 6, 0xc000000d: 87, 0x80000005: 234,
+              0x20000001: 0x20000001, 0xd0000022: 5, 0xc0070005: 5}
+    response = header() + number(values.get(status, 317))
+    if os.environ.get('WIBO_FIXTURE_STATUS_RESPONSE') == 'truncated':
+        response = response[:-1]
 elif operation == 'image-load':
     image_type, image, kind, name = arguments
     if kind != 'id' or image:

@@ -318,6 +318,7 @@ add_executable(wibo
     dll/lmgr.cpp
     dll/mscoree.cpp
     dll/ntdll.cpp
+    dll/status_error.cpp
     dll/wmi_proxy.cpp
     dll/network_proxy.cpp
     dll/ole32.cpp
@@ -735,6 +736,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_waitable_timer SOURCES test/test_waitable_timer.c)
         wibo_add_fixture_bin(NAME test_alertable_wait SOURCES test/test_alertable_wait.c)
         wibo_add_fixture_bin(NAME test_system_metrics SOURCES test/test_system_metrics.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_status_error SOURCES test/test_status_error.c)
+        set_tests_properties(wibo.test_status_error PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         set_tests_properties(wibo.test_system_metrics PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         set_tests_properties(wibo.test_waitable_timer PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)

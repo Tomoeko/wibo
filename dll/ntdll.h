@@ -46,6 +46,8 @@ using PRTL_OSVERSIONINFOW = RTL_OSVERSIONINFOW *;
 
 namespace ntdll {
 
+ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);
+
 PVOID CDECL memset(PVOID dest, int ch, SIZE_T count);
 BYTE CDECL __wine_dbg_get_channel_flags(WINE_DEBUG_CHANNEL *channel);
 int CDECL __wine_dbg_header(WINE_DEBUG_CLASS debugClass, WINE_DEBUG_CHANNEL *channel, const char *function);
