@@ -46,6 +46,7 @@ class LinuxProcessManager final : public wibo::detail::ProcessManagerImpl {
 	void shutdown() override;
 	bool addProcess(Pin<ProcessObject> po) override;
 	Pin<ProcessObject> findProcess(pid_t pid) override;
+	int openProcess(pid_t pid, Pin<ProcessObject> &process) override;
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
@@ -189,6 +190,37 @@ Pin<ProcessObject> LinuxProcessManager::findProcess(pid_t pid) {
 	return {};
 }
 
+int LinuxProcessManager::openProcess(pid_t pid, Pin<ProcessObject> &process) {
+	std::lock_guard lock(m);
+	Registration *available = nullptr;
+	for (auto &entry : mReg) {
+		if (entry.process && entry.process->pid == pid) {
+			process = entry.process.clone();
+			return 0;
+		}
+		if (!entry.process && !available)
+			available = &entry;
+	}
+	if (!mRunning.load(std::memory_order_acquire))
+		return ENOTSUP;
+	if (!available)
+		return EMFILE;
+	if (kill(pid, 0) != 0)
+		return errno;
+	const int pidfd = static_cast<int>(syscall(SYS_pidfd_open, pid, 0));
+	if (pidfd < 0)
+		return errno;
+	auto object = make_pin<ProcessObject>(pid, pidfd);
+	object->childProcess = false;
+	if (!epollAdd(mEpollFd, pidfd))
+		return errno;
+	available->pidfd = pidfd;
+	available->process = object.clone();
+	process = std::move(object);
+	DEBUG_LOG("ProcessManager: monitoring external pid %d with pidfd %d\n", pid, pidfd);
+	return 0;
+}
+
 Pin<ProcessObject> LinuxProcessManager::takeProcess(int pidfd) {
 	std::lock_guard lk(m);
 	for (auto &entry : mReg) {
@@ -268,36 +300,49 @@ void LinuxProcessManager::wake() const {
 
 void LinuxProcessManager::checkPidfd(int pidfd) {
 	DEBUG_LOG("ProcessManager: checking pidfd %d\n", pidfd);
-
-	siginfo_t si{};
-	si.si_code = CLD_DUMPED;
-	if (pidfd >= 0) {
-		int rc = waitid(P_PIDFD, pidfd, &si, WEXITED | WNOHANG);
-		if (rc < 0) {
-			perror("waitid");
-		} else if (rc == 0 && si.si_pid == 0) {
-			return;
-		}
-		epoll_ctl(mEpollFd, EPOLL_CTL_DEL, pidfd, nullptr);
-	}
-
-	DEBUG_LOG("ProcessManager: pidfd %d exited: code=%d status=%d\n", pidfd, si.si_code, si.si_status);
-
-	Pin<ProcessObject> po = takeProcess(pidfd);
-	close(pidfd);
-	if (!po) {
-		return;
-	}
+	Pin<ProcessObject> process;
 	{
-		std::lock_guard lk(po->m);
-		po->signaled = true;
-		po->pidfd = -1;
-		if (!po->forcedExitCode) {
-			po->exitCode = decodeExitCode(si);
+		std::lock_guard lock(m);
+		for (const auto &entry : mReg)
+			if (entry.process && entry.pidfd == pidfd) {
+				process = entry.process.clone();
+				break;
+			}
+	}
+	if (!process)
+		return;
+
+	siginfo_t status{};
+	bool statusKnown = false;
+	if (process->childProcess) {
+		int result;
+		do {
+			result = waitid(P_PIDFD, pidfd, &status, WEXITED | WNOHANG);
+		} while (result < 0 && errno == EINTR);
+		if (result == 0 && !status.si_pid)
+			return;
+		statusKnown = result == 0 &&
+					  (status.si_code == CLD_EXITED || status.si_code == CLD_KILLED || status.si_code == CLD_DUMPED);
+		if (result < 0)
+			DEBUG_LOG("ProcessManager: waitid for pidfd %d failed: %s\n", pidfd, strerror(errno));
+	}
+	// A readable pidfd proves termination for non-children, but Linux does not
+	// expose their exit status through waitid. Preserve that distinction.
+	epoll_ctl(mEpollFd, EPOLL_CTL_DEL, pidfd, nullptr);
+	takeProcess(pidfd);
+	{
+		std::lock_guard lock(process->m);
+		close(pidfd);
+		process->signaled = true;
+		process->pidfd = -1;
+		if (!process->forcedExitCode) {
+			process->exitCodeKnown = statusKnown;
+			if (statusKnown)
+				process->exitCode = decodeExitCode(status);
 		}
 	}
-	po->cv.notify_all();
-	po->notifyWaiters(false);
+	process->cv.notify_all();
+	process->notifyWaiters(false);
 }
 
 int wibo::snapshotProcesses(std::vector<ProcessSnapshotEntry> &entries) {

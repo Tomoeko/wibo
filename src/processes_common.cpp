@@ -91,6 +91,10 @@ Pin<ProcessObject> ProcessManager::findProcess(pid_t pid) {
 	return mImpl ? mImpl->findProcess(pid) : Pin<ProcessObject>{};
 }
 
+int ProcessManager::openProcess(pid_t pid, Pin<ProcessObject> &process) {
+	return mImpl ? mImpl->openProcess(pid, process) : ENOTSUP;
+}
+
 ProcessManager &processes() {
 	static ProcessManager mgr;
 	if (!mgr.init()) {

@@ -70,12 +70,13 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 	void shutdown() override;
 	bool addProcess(Pin<ProcessObject> po) override;
 	Pin<ProcessObject> findProcess(pid_t pid) override;
+	int openProcess(pid_t pid, Pin<ProcessObject> &process) override;
 	[[nodiscard]] bool running() const override { return mRunning.load(std::memory_order_acquire); }
 
   private:
 	void runLoop();
 	void wake() const;
-	void handleExit(pid_t pid);
+	void handleExit(const struct kevent &event);
 	bool registerProcess(pid_t pid, const Pin<ProcessObject> &process);
 	Pin<ProcessObject> takeProcess(pid_t pid);
 
@@ -87,13 +88,15 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 	std::unordered_map<pid_t, Pin<ProcessObject>> mProcesses;
 };
 
-void completeProcess(Pin<ProcessObject> process, int status) {
+void completeProcess(Pin<ProcessObject> process, int status, bool statusKnown = true) {
 	{
 		std::lock_guard lk(process->m);
 		process->signaled = true;
 		process->pidfd = -1;
 		if (!process->forcedExitCode) {
-			process->exitCode = decodeExitStatus(status);
+			process->exitCodeKnown = statusKnown;
+			if (statusKnown)
+				process->exitCode = decodeExitStatus(status);
 		}
 	}
 	process->cv.notify_all();
@@ -188,6 +191,33 @@ Pin<ProcessObject> DarwinProcessManager::findProcess(pid_t pid) {
 	return found == mProcesses.end() ? Pin<ProcessObject>{} : found->second.clone();
 }
 
+int DarwinProcessManager::openProcess(pid_t pid, Pin<ProcessObject> &process) {
+	std::lock_guard lock(m);
+	const auto found = mProcesses.find(pid);
+	if (found != mProcesses.end()) {
+		process = found->second.clone();
+		return 0;
+	}
+	if (!mRunning.load(std::memory_order_acquire))
+		return ENOTSUP;
+	if (kill(pid, 0) != 0)
+		return errno;
+	auto object = make_pin<ProcessObject>(pid, -1);
+	object->childProcess = false;
+	struct kevent event{};
+	// NOTE_EXITSTATUS checks native signal permissions and returns the wait status
+	// without reaping a process belonging to another parent.
+	EV_SET(&event, static_cast<uintptr_t>(pid), EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT | NOTE_EXITSTATUS, 0,
+		   nullptr);
+	if (kevent(mKqueueFd, &event, 1, nullptr, 0, nullptr) < 0)
+		return errno;
+	// The monitor takes this lock before consuming an exit notification.
+	mProcesses.emplace(pid, object.clone());
+	process = std::move(object);
+	DEBUG_LOG("ProcessManager: monitoring external pid %d\n", pid);
+	return 0;
+}
+
 Pin<ProcessObject> DarwinProcessManager::takeProcess(pid_t pid) {
 	std::lock_guard lk(m);
 	auto it = mProcesses.find(pid);
@@ -258,7 +288,7 @@ void DarwinProcessManager::runLoop() {
 				continue;
 			}
 			if (event.filter == EVFILT_PROC && (event.fflags & NOTE_EXIT)) {
-				handleExit(static_cast<pid_t>(event.ident));
+				handleExit(event);
 			}
 		}
 	}
@@ -273,13 +303,19 @@ void DarwinProcessManager::wake() const {
 	kevent(mKqueueFd, &event, 1, nullptr, 0, nullptr);
 }
 
-void DarwinProcessManager::handleExit(pid_t pid) {
+void DarwinProcessManager::handleExit(const struct kevent &event) {
+	const auto pid = static_cast<pid_t>(event.ident);
 	auto process = takeProcess(pid);
 	if (!process) {
 		DEBUG_LOG("ProcessManager: exit event for unknown pid %d\n", pid);
 		return;
 	}
 
+	if (!process->childProcess) {
+		completeProcess(std::move(process), static_cast<int>(event.data & NOTE_PDATAMASK),
+						(event.fflags & NOTE_EXITSTATUS) != 0);
+		return;
+	}
 	int status = 0;
 	pid_t result;
 	do {

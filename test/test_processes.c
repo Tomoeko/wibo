@@ -26,6 +26,47 @@ static int child_main(int argc, char **argv) {
 		desiredExit = parse_exit_code(exitBuffer);
 	}
 
+	if (argc >= 5 && strcmp(argv[3], "parent") == 0) {
+		HANDLE parent =
+			OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, parse_exit_code(argv[4]));
+		TEST_CHECK(parent != NULL);
+		DWORD exitCode = 0;
+		TEST_CHECK(GetExitCodeProcess(parent, &exitCode));
+		TEST_CHECK_EQ(STILL_ACTIVE, exitCode);
+		TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForSingleObject(parent, 0));
+		TEST_CHECK(CloseHandle(parent));
+	}
+	if (argc >= 5 && strcmp(argv[3], "await-file") == 0) {
+		DWORD start = GetTickCount();
+		while (GetFileAttributesA(argv[4]) == INVALID_FILE_ATTRIBUTES) {
+			TEST_CHECK(GetTickCount() - start < 10000);
+			Sleep(10);
+		}
+		return (int)desiredExit;
+	}
+	if (argc >= 6 && strcmp(argv[3], "observe") == 0) {
+		HANDLE sibling = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, parse_exit_code(argv[4]));
+		TEST_CHECK(sibling != NULL);
+		DWORD exitCode = 0;
+		TEST_CHECK(GetExitCodeProcess(sibling, &exitCode));
+		TEST_CHECK_EQ(STILL_ACTIVE, exitCode);
+		TEST_CHECK_EQ(WAIT_TIMEOUT, WaitForSingleObject(sibling, 0));
+		HANDLE ready = CreateFileA(argv[5], GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+		TEST_CHECK(ready != INVALID_HANDLE_VALUE);
+		TEST_CHECK(CloseHandle(ready));
+		TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(sibling, 10000));
+		char unavailable[2];
+		if (GetEnvironmentVariableA("WIBO_FIXTURE_EXTERNAL_STATUS_UNAVAILABLE", unavailable, sizeof(unavailable))) {
+			TEST_CHECK(!GetExitCodeProcess(sibling, &exitCode));
+			TEST_CHECK_EQ(ERROR_NOT_SUPPORTED, GetLastError());
+		} else {
+			TEST_CHECK(GetExitCodeProcess(sibling, &exitCode));
+			TEST_CHECK_EQ(desiredExit, exitCode);
+		}
+		TEST_CHECK(CloseHandle(sibling));
+		return 0;
+	}
+
 	if (argc < 4 || strcmp(argv[3], "instant") != 0) {
 		Sleep(200);
 	}
@@ -145,7 +186,8 @@ static int parent_main(void) {
 
 	const DWORD childExitCode = 0x24u;
 	char commandLine[MAX_PATH + 64];
-	snprintf(commandLine, sizeof(commandLine), "\"%s\" child %lu", modulePath, (unsigned long)childExitCode);
+	snprintf(commandLine, sizeof(commandLine), "\"%s\" child %lu parent %lu", modulePath, (unsigned long)childExitCode,
+			 (unsigned long)GetCurrentProcessId());
 
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
@@ -190,6 +232,30 @@ static int parent_main(void) {
 	if (pi.hThread) {
 		TEST_CHECK(CloseHandle(pi.hThread));
 	}
+
+	char temporaryDirectory[MAX_PATH], readyPath[MAX_PATH];
+	TEST_CHECK(GetTempPathA(sizeof(temporaryDirectory), temporaryDirectory));
+	TEST_CHECK(GetTempFileNameA(temporaryDirectory, "prc", 0, readyPath));
+	TEST_CHECK(DeleteFileA(readyPath));
+	char siblingCommand[2 * MAX_PATH + 96];
+	snprintf(siblingCommand, sizeof(siblingCommand), "\"%s\" child 37 await-file \"%s\"", modulePath, readyPath);
+	PROCESS_INFORMATION sibling;
+	ZeroMemory(&sibling, sizeof(sibling));
+	TEST_CHECK(CreateProcessA(modulePath, siblingCommand, NULL, NULL, FALSE, 0, NULL, NULL, &si, &sibling));
+	snprintf(siblingCommand, sizeof(siblingCommand), "\"%s\" child 37 observe %lu \"%s\"", modulePath,
+			 (unsigned long)sibling.dwProcessId, readyPath);
+	TEST_CHECK(CreateProcessA(modulePath, siblingCommand, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(pi.hProcess, 15000));
+	TEST_CHECK(GetExitCodeProcess(pi.hProcess, &exitCode));
+	TEST_CHECK_EQ(0, exitCode);
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(sibling.hProcess, 5000));
+	TEST_CHECK(GetExitCodeProcess(sibling.hProcess, &exitCode));
+	TEST_CHECK_EQ(37, exitCode);
+	TEST_CHECK(CloseHandle(pi.hThread));
+	TEST_CHECK(CloseHandle(pi.hProcess));
+	TEST_CHECK(CloseHandle(sibling.hThread));
+	TEST_CHECK(CloseHandle(sibling.hProcess));
+	TEST_CHECK(DeleteFileA(readyPath));
 
 	return EXIT_SUCCESS;
 }

@@ -76,6 +76,8 @@ struct ProcessObject final : WaitableObject {
 	int pidfd;
 	DWORD exitCode = STILL_ACTIVE;
 	bool forcedExitCode = false;
+	bool exitCodeKnown = true;
+	bool childProcess = true;
 	bool waitable = true;
 
 	explicit ProcessObject(pid_t pid, int pidfd, bool waitable = true)

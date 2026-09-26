@@ -447,11 +447,15 @@ HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId) {
 			process = wibo::processes().findProcess(pid);
 	}
 	if (!process) {
-		const int result = ::kill(pid, 0);
-		setLastError(result == 0	  ? ERROR_NOT_SUPPORTED
-					 : errno == EPERM ? ERROR_ACCESS_DENIED
-									  : ERROR_INVALID_PARAMETER);
-		return NO_HANDLE;
+		const int error = wibo::processes().openProcess(pid, process);
+		if (error) {
+			DEBUG_LOG("OpenProcess: native monitoring for pid %d failed: %s\n", pid, strerror(error));
+			setLastError(error == EACCES || error == EPERM	  ? ERROR_ACCESS_DENIED
+						 : error == ESRCH || error == EINVAL  ? ERROR_INVALID_PARAMETER
+						 : error == ENOMEM || error == EMFILE ? ERROR_NOT_ENOUGH_MEMORY
+															  : ERROR_NOT_SUPPORTED);
+			return NO_HANDLE;
+		}
 	}
 	if (access & PROCESS_QUERY_INFORMATION)
 		access |= PROCESS_QUERY_LIMITED_INFORMATION;
@@ -647,6 +651,7 @@ BOOL WINAPI TerminateProcess(HANDLE hProcess, UINT uExitCode) {
 	}
 	process->exitCode = uExitCode;
 	process->forcedExitCode = true;
+	process->exitCodeKnown = true;
 	return TRUE;
 }
 
@@ -674,6 +679,10 @@ BOOL WINAPI GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode) {
 	}
 	std::lock_guard lk(process->m);
 	if (process->signaled) {
+		if (!process->exitCodeKnown) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
 		exitCode = process->exitCode;
 	}
 	*lpExitCode = exitCode;
