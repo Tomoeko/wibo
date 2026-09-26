@@ -491,6 +491,8 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	kernel32::initializeEnvironment();
+
 	// Resolve the guest program path
 	std::filesystem::path resolvedGuestPath =
 		wibo::resolveExecutable(programName, true).value_or(std::filesystem::path{});

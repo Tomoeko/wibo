@@ -6,6 +6,7 @@
 #include "heap.h"
 #include "internal.h"
 #include "strutil.h"
+#include "system_provider.h"
 #include "types.h"
 
 #include <algorithm>
@@ -71,8 +72,39 @@ const char *getenvCaseInsensitive(const std::string &name) {
 	return nullptr;
 }
 
+void importEnvironmentDefaults() {
+	if (!wibo::provider::configured())
+		return;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"environment-defaults"}, response))
+		return;
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	uint32_t count = 0;
+	if (!reader.header(status) || status || !reader.number(count) || count > 64)
+		return;
+	std::vector<std::pair<std::string, std::string>> values;
+	for (uint32_t i = 0; i < count; ++i) {
+		std::vector<uint8_t> name, value;
+		if (!reader.bytes(name) || name.empty() || name.size() > 256 || !reader.bytes(value) || value.size() > 32768 ||
+			std::find(name.begin(), name.end(), 0) != name.end() ||
+			std::find(name.begin(), name.end(), '=') != name.end() ||
+			std::find(value.begin(), value.end(), 0) != value.end())
+			return;
+		values.emplace_back(std::string(name.begin(), name.end()), std::string(value.begin(), value.end()));
+	}
+	if (!reader.done())
+		return;
+	for (const auto &[name, value] : values)
+		if (!getenvCaseInsensitive(name))
+			setenv(name.c_str(), value.c_str(), 0);
+}
+
 void ensureTempEnvVariables() {
 	static const bool initialized = [] {
+		if (getenv("WIBO_ENVIRONMENT_INITIALIZED"))
+			return true;
+		importEnvironmentDefaults();
 		const char *hostTemp = getenv("TMPDIR");
 		if (!hostTemp || !*hostTemp) {
 			hostTemp = "/tmp";
@@ -83,6 +115,7 @@ void ensureTempEnvVariables() {
 		if (!getenvCaseInsensitive("TEMP")) {
 			setenv("TEMP", hostTemp, 0);
 		}
+		setenv("WIBO_ENVIRONMENT_INITIALIZED", "1", 1);
 		return true;
 	}();
 	(void)initialized;
@@ -166,7 +199,9 @@ std::vector<std::string> prepareEnvStrings(size_t &totalSize) {
 			std::string name = s.substr(0, eq);
 			std::string value = s.substr(eq + 1);
 			std::string converted = convertEnvValueForWindows(name, value.c_str());
-			s = name + "=" + converted;
+			s = name;
+			s += '=';
+			s += converted;
 		}
 		strings.push_back(s);
 		totalSize += s.size() + 1;
@@ -190,6 +225,7 @@ std::string convertEnvValueToHost(const std::string &name, const char *rawValue)
 } // namespace
 
 namespace kernel32 {
+void initializeEnvironment() { ensureTempEnvVariables(); }
 
 GUEST_PTR WINAPI GetCommandLineA() {
 	HOST_CONTEXT_GUARD();
@@ -447,9 +483,21 @@ BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {
 		return FALSE;
 	}
 	ensureTempEnvVariables();
+	std::string environmentName(lpName);
+	for (char **work = environ; *work; ++work) {
+		std::string_view entry(*work);
+		const auto separator = entry.find('=');
+		if (separator == std::string_view::npos)
+			continue;
+		std::string candidate(entry.substr(0, separator));
+		if (strcasecmp(candidate.c_str(), lpName) == 0) {
+			environmentName = std::move(candidate);
+			break;
+		}
+	}
 	int rc = 0;
 	if (!lpValue) {
-		rc = unsetenv(lpName);
+		rc = unsetenv(environmentName.c_str());
 		if (rc != 0) {
 			setLastErrorFromErrno();
 			return FALSE;
@@ -458,7 +506,7 @@ BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {
 	}
 	std::string hostValue = convertEnvValueToHost(lpName, lpValue);
 	const char *valuePtr = hostValue.empty() ? lpValue : hostValue.c_str();
-	rc = setenv(lpName, valuePtr, 1);
+	rc = setenv(environmentName.c_str(), valuePtr, 1);
 	if (rc != 0) {
 		setLastErrorFromErrno();
 		return FALSE;

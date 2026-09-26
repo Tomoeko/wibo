@@ -811,6 +811,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_memory_status SOURCES test/test_memory_status.c)
         wibo_add_fixture_bin(NAME test_window_class SOURCES test/test_window_class.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_provider_account SOURCES test/test_provider_account.c)
+        wibo_add_fixture_bin(NAME test_environment_defaults SOURCES test/test_environment_defaults.c)
+        set_tests_properties(wibo.test_environment_defaults PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1;LOCALAPPDATA=C:\\Fixture\\Override")
+        foreach(fault truncated trailing)
+            add_test(NAME wibo.test_environment_defaults_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_environment_defaults.exe unavailable)
+            set_tests_properties(wibo.test_environment_defaults_${fault} PROPERTIES
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_ENV_RESPONSE=${fault}")
+        endforeach()
         wibo_add_fixture_bin(NAME test_best_route SOURCES test/test_best_route.c COMPILE_OPTIONS -liphlpapi)
         set_tests_properties(wibo.test_best_route PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_RUNTIME=1;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_adapter_addresses SOURCES test/test_adapter_addresses.c COMPILE_OPTIONS -liphlpapi)

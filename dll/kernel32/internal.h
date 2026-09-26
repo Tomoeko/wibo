@@ -8,6 +8,7 @@
 #include <pthread.h>
 
 namespace kernel32 {
+void initializeEnvironment();
 
 struct FsObject : ObjectBase {
 	std::mutex m;

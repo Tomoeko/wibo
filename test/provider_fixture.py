@@ -29,7 +29,16 @@ def property_value(name, cim_type, variant_type, data, status=0):
 
 operation, *arguments = sys.argv[1:]
 response = header(0x80041008)
-if operation == 'management-connect':
+if operation == 'environment-defaults':
+    values = [('APPDATA', 'C:\\Fixture\\Roaming'), ('LOCALAPPDATA', 'C:\\Fixture\\Local')]
+    response = header() + number(len(values)) + b''.join(blob(name.encode()) + blob(value.encode())
+                                                       for name, value in values)
+    fault = os.environ.get('WIBO_FIXTURE_ENV_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+elif operation == 'management-connect':
     response = header(0x8004100e if arguments[0] == 'root\\missing' else 0) + number(0)
 elif operation == 'management-query':
     query = arguments[1]

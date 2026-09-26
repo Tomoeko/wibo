@@ -60,6 +60,34 @@ class Response {
 	bool good() const { return valid; }
 };
 
+bool environmentDefaults() {
+	constexpr const char *names[] = {"APPDATA",		 "LOCALAPPDATA", "ALLUSERSPROFILE", "PROGRAMDATA",
+									 "SYSTEMROOT",	 "WINDIR",		 "USERPROFILE",		"HOMEDRIVE",
+									 "HOMEPATH",	 "PUBLIC",		 "PROGRAMFILES",	"PROGRAMFILES(X86)",
+									 "PROGRAMW6432", "COMSPEC",		 "SYSTEMDRIVE"};
+	std::vector<std::pair<const char *, std::string>> values;
+	for (const char *name : names) {
+		DWORD size = GetEnvironmentVariableA(name, nullptr, 0);
+		if (!size)
+			continue;
+		if (size > 32768)
+			return false;
+		std::vector<char> value(size);
+		const DWORD length = GetEnvironmentVariableA(name, value.data(), size);
+		if (length >= size)
+			return false;
+		values.emplace_back(name, std::string(value.data(), length));
+	}
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(values.size()));
+	for (const auto &[name, value] : values) {
+		response.bytes(name, strlen(name));
+		response.bytes(value.data(), value.size());
+	}
+	return response.write();
+}
+
 struct Property {
 	std::vector<BYTE> name;
 	CIMTYPE type;
@@ -830,6 +858,8 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 6 && wcscmp(argv[1], L"format-message") == 0 &&
 			 (wcscmp(argv[2], L"a") == 0 || wcscmp(argv[2], L"w") == 0))
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
+	else if (argc == 2 && wcscmp(argv[1], L"environment-defaults") == 0)
+		written = environmentDefaults();
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)
 		written = networkConnectivity(argv[2]);
 	else if (argc == 3 && wcscmp(argv[1], L"ip-address-table") == 0 &&
