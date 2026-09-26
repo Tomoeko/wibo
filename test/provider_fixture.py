@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic typed service responses for guest ABI and transport checks."""
 import struct
+import ctypes
 import os
 import sys
 import time
@@ -69,6 +70,81 @@ elif operation == 'network-connectivity':
         response = header() + number(0x8000) + number(1) + number(1)
     elif fault == 'failed':
         response = header(0x80070005)
+elif operation == 'ip-adapter-addresses':
+    family, flags, width = map(int, arguments)
+    pointer = ctypes.c_uint64 if width == 8 else ctypes.c_uint32
+
+    class SocketAddress(ctypes.Structure):
+        _fields_ = [('pointer', pointer), ('length', ctypes.c_int32)]
+
+    class Address(ctypes.Structure):
+        _fields_ = [('header', ctypes.c_uint64), ('next', pointer), ('socket', SocketAddress)]
+
+    class Prefix(ctypes.Structure):
+        _fields_ = Address._fields_ + [('prefix_length', ctypes.c_uint32)]
+
+    class Adapter(ctypes.Structure):
+        _fields_ = [('header', ctypes.c_uint64)] + [
+            (name, pointer) for name in ['next', 'name', 'unicast', 'anycast', 'multicast',
+                                        'dns_servers', 'suffix', 'description', 'friendly']
+        ] + [('physical', ctypes.c_uint8 * 8)] + [
+            (name, ctypes.c_uint32) for name in ['physical_length', 'flags', 'mtu', 'type', 'status', 'ipv6_index']
+        ] + [('zones', ctypes.c_uint32 * 16), ('prefix', pointer)]
+
+    storage = bytearray()
+    fixups = []
+
+    def append(data, alignment=8):
+        storage.extend(b'\0' * (-len(storage) % alignment))
+        offset = len(storage)
+        storage.extend(data)
+        return offset
+
+    def link(position, target):
+        struct.pack_into('<Q' if width == 8 else '<I', storage, position, target)
+        fixups.append(position)
+
+    previous = None
+    for index, af in enumerate([2, 23] if family == 0 else [family]):
+        adapter = append(bytes(Adapter()))
+        struct.pack_into('<II', storage, adapter, ctypes.sizeof(Adapter), index + 1)
+        if previous is not None:
+            link(previous + Adapter.next.offset, adapter)
+        previous = adapter
+        name = append(('interface-%d' % index).encode() + b'\0', 1)
+        friendly = append('Interface \u4e2d\U0001f600'.encode('utf-16-le') + b'\0\0', 2)
+        link(adapter + Adapter.name.offset, name)
+        link(adapter + Adapter.friendly.offset, friendly)
+        struct.pack_into('<I', storage, adapter + Adapter.mtu.offset, 1500)
+        struct.pack_into('<I', storage, adapter + Adapter.type.offset, 24)
+        struct.pack_into('<I', storage, adapter + Adapter.status.offset, 1)
+        node = append(bytes(Address()))
+        prefix = append(bytes(Prefix()))
+        sockaddr = struct.pack('<HH', af, 0) + (b'\x7f\0\0\x01' + b'\0' * 8 if af == 2
+                                              else b'\0' * 19 + b'\x01' + b'\0' * 4)
+        address = append(sockaddr)
+        link(adapter + Adapter.unicast.offset, node)
+        link(adapter + Adapter.prefix.offset, prefix)
+        struct.pack_into('<I', storage, node, ctypes.sizeof(Address))
+        struct.pack_into('<I', storage, prefix, ctypes.sizeof(Prefix))
+        for position in [node + Address.socket.offset, prefix + Prefix.socket.offset]:
+            link(position + SocketAddress.pointer.offset, address)
+            struct.pack_into('<i', storage, position + SocketAddress.length.offset, len(sockaddr))
+        struct.pack_into('<I', storage, prefix + Prefix.prefix_length.offset, 8 if af == 2 else 128)
+    fixups.sort()
+    fault = os.environ.get('WIBO_FIXTURE_ADAPTER_RESPONSE')
+    if fault == 'outside':
+        struct.pack_into('<Q' if width == 8 else '<I', storage, fixups[0], len(storage))
+    elif fault == 'overlap':
+        fixups.insert(1, fixups[0])
+    response = header() + number(width + 1 if fault == 'width' else width) + blob(storage)
+    response += number(len(fixups)) + b''.join(number(offset) for offset in fixups)
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'failed':
+        response = header(5)
 elif operation == 'ip-address-table':
     rows = [struct.pack('<IIIIIHH', address, index, 0x00ffffff, 1, 65535, 0, 1)
             for address, index in [(0x0100007f, 1), (0x0100000a, 2), (0x0200000a, 3)]]

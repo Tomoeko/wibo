@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "adapter_addresses.h"
+
 namespace {
 constexpr size_t kMaxResponse = 8 * 1024 * 1024;
 
@@ -792,7 +794,17 @@ int wmain(int argc, WCHAR **argv) {
 	else if (argc == 3 && wcscmp(argv[1], L"ip-address-table") == 0 &&
 			 (wcscmp(argv[2], L"0") == 0 || wcscmp(argv[2], L"1") == 0))
 		written = ipAddressTable(wcscmp(argv[2], L"1") == 0);
-	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
+	else if (argc == 5 && wcscmp(argv[1], L"ip-adapter-addresses") == 0) {
+		ULONG values[3]{};
+		for (unsigned i = 0; i < 3; ++i) {
+			WCHAR *end = nullptr;
+			const auto value = wcstoull(argv[i + 2], &end, 10);
+			if (!*argv[i + 2] || *end || value > 0xffffffffULL)
+				return 1;
+			values[i] = static_cast<ULONG>(value);
+		}
+		written = adapterAddresses<Response>(values[0], values[1], values[2]);
+	} else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
 		written = memoryStatus();
 	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
 		written = systemMetrics(argv[2], argv[3]);
