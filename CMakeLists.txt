@@ -307,6 +307,7 @@ add_executable(wibo
     dll/kernel32/apc.cpp
     dll/kernel32/work_queue.cpp
     dll/kernel32/completion_port.cpp
+    dll/kernel32/condition_variable.cpp
     dll/kernel32/timers.cpp
     dll/kernel32/sysinfoapi.cpp
     dll/kernel32/timezoneapi.cpp
@@ -745,6 +746,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_native_system_info SOURCES test/test_native_system_info.c)
         wibo_add_fixture_bin(NAME test_resource_release SOURCES test/test_resource_release.c ${WIBO_TEST_BIN_DIR}/test_resource_release_res.o)
         wibo_add_fixture_bin(NAME test_critical_section SOURCES test/test_critical_section.c)
+        wibo_add_fixture_bin(NAME test_condition_variable SOURCES test/test_condition_variable.c)
         wibo_add_fixture_bin(NAME test_synchapi SOURCES test/test_synchapi.c)
         wibo_add_fixture_bin(NAME test_waitable_timer SOURCES test/test_waitable_timer.c)
         wibo_add_fixture_bin(NAME test_completion_port SOURCES test/test_completion_port.c)

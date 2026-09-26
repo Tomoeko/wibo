@@ -133,6 +133,9 @@ BOOL WINAPI InitOnceExecuteOnce(PINIT_ONCE InitOnce, PINIT_ONCE_FN InitFn, PVOID
 void WINAPI AcquireSRWLockShared(PSRWLOCK SRWLock);
 void WINAPI InitializeSRWLock(PSRWLOCK SRWLock);
 void WINAPI InitializeConditionVariable(PCONDITION_VARIABLE ConditionVariable);
+BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE condition, PCRITICAL_SECTION section, DWORD milliseconds);
+void WINAPI WakeConditionVariable(PCONDITION_VARIABLE condition);
+void WINAPI WakeAllConditionVariable(PCONDITION_VARIABLE condition);
 void WINAPI ReleaseSRWLockShared(PSRWLOCK SRWLock);
 void WINAPI AcquireSRWLockExclusive(PSRWLOCK SRWLock);
 void WINAPI ReleaseSRWLockExclusive(PSRWLOCK SRWLock);
