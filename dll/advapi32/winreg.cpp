@@ -6,6 +6,7 @@
 #include "handles.h"
 #include "kernel32/internal.h"
 #include "strutil.h"
+#include "system_provider.h"
 
 #include <algorithm>
 #include <iterator>
@@ -25,6 +26,11 @@ struct RegistryKeyObject : ObjectBase {
 	std::u16string canonicalPath;
 	bool closed = false;
 	bool predefined = false;
+#ifdef WIBO_GUEST_64
+	std::string providerView = "64";
+#else
+	std::string providerView = "32";
+#endif
 
 	RegistryKeyObject() : ObjectBase(kType) {}
 	explicit RegistryKeyObject(std::u16string path) : ObjectBase(kType), canonicalPath(std::move(path)) {}
@@ -51,18 +57,68 @@ std::mutex g_registryMutex;
 std::unordered_set<std::u16string> g_existingKeys;
 
 struct RegistryValue {
-	DWORD type;
-	std::vector<BYTE> data;
+	DWORD type = 0;
+	std::vector<BYTE> data{};
 };
 
 // Values belong to a key path, not an open handle. The registry is process-local;
 // this does not add persistence, ACL checks, or separate WOW64 registry views.
 using RegistryValues = std::unordered_map<std::u16string, RegistryValue>;
 std::unordered_map<std::u16string, RegistryValues> g_registryValues;
+constexpr LSTATUS kErrorInvalidData = 13;
 constexpr DWORD kRegSz = 1;
 constexpr DWORD kRegExpandSz = 2;
 constexpr DWORD kRegMultiSz = 7;
 constexpr LSTATUS kErrorMoreData = 234;
+
+// Provider data is a read-only process snapshot. Guest writes remain in the
+// existing local store and never modify the provider's environment.
+std::unordered_map<std::u16string, LSTATUS> g_providerKeys;
+struct ProviderValue {
+	LSTATUS status = ERROR_FILE_NOT_FOUND;
+	RegistryValue value;
+};
+std::unordered_map<std::u16string, ProviderValue> g_providerValues;
+
+LSTATUS providerOpen(const std::u16string &path, const std::string &view) {
+	if (!wibo::provider::configured()) return ERROR_FILE_NOT_FOUND;
+	const std::u16string cacheKey = path + (view == "64" ? u"|64" : u"|32");
+	if (auto found = g_providerKeys.find(cacheKey); found != g_providerKeys.end()) return found->second;
+	std::string encoded;
+	if (!wibo::provider::encodeUtf8(path, encoded)) return ERROR_INVALID_PARAMETER;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"registry-open", encoded, view}, response)) return ERROR_NOT_SUPPORTED;
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status) || !reader.done()) return kErrorInvalidData;
+	g_providerKeys.emplace(cacheKey, status);
+	return status;
+}
+
+LSTATUS providerQuery(const RegistryKeyObject &key, const std::u16string &name, RegistryValue &value) {
+	if (!wibo::provider::configured()) return ERROR_FILE_NOT_FOUND;
+	std::u16string cacheKey = key.canonicalPath + (key.providerView == "64" ? u"|64" : u"|32");
+	cacheKey.push_back(0);
+	cacheKey += name;
+	if (auto found = g_providerValues.find(cacheKey); found != g_providerValues.end()) {
+		value = found->second.value;
+		return found->second.status;
+	}
+	std::string pathText, nameText;
+	if (!wibo::provider::encodeUtf8(key.canonicalPath, pathText) ||
+		!wibo::provider::encodeUtf8(name, nameText)) return ERROR_INVALID_PARAMETER;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"registry-query", pathText, nameText, key.providerView}, response)) return ERROR_NOT_SUPPORTED;
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status)) return kErrorInvalidData;
+	if (status == ERROR_SUCCESS) {
+		if (!reader.number(value.type) || !reader.bytes(value.data)) return kErrorInvalidData;
+	}
+	if (!reader.done()) return kErrorInvalidData;
+	g_providerValues.emplace(std::move(cacheKey), ProviderValue{status, value});
+	return status;
+}
 
 bool isRegistryString(DWORD type) { return type == kRegSz || type == kRegExpandSz || type == kRegMultiSz; }
 
@@ -188,15 +244,19 @@ LSTATUS queryRegistryValue(HKEY key, LPCWSTR name, const DWORD *reserved, LPDWOR
 	if (!handle) {
 		return ERROR_INVALID_HANDLE;
 	}
+	RegistryValue providerValue{};
+	const RegistryValue *selected = nullptr;
 	auto keyValues = g_registryValues.find(handle->canonicalPath);
-	if (keyValues == g_registryValues.end()) {
-		return ERROR_FILE_NOT_FOUND;
+	if (keyValues != g_registryValues.end()) {
+		auto entry = keyValues->second.find(canonicalizeValueName(name));
+		if (entry != keyValues->second.end()) selected = &entry->second;
 	}
-	auto entry = keyValues->second.find(canonicalizeValueName(name));
-	if (entry == keyValues->second.end()) {
-		return ERROR_FILE_NOT_FOUND;
+	if (!selected) {
+		const LSTATUS status = providerQuery(*handle, canonicalizeValueName(name), providerValue);
+		if (status != ERROR_SUCCESS) return status;
+		selected = &providerValue;
 	}
-	const RegistryValue &value = entry->second;
+	const RegistryValue &value = *selected;
 	const bool narrowString = ansi && isRegistryString(value.type);
 	const DWORD required = static_cast<DWORD>(narrowString ? value.data.size() / sizeof(WCHAR) : value.data.size());
 	const DWORD capacity = data ? *size : 0;
@@ -400,9 +460,14 @@ LSTATUS WINAPI RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSA
 		kernel32::setLastError(ERROR_INVALID_HANDLE);
 		return ERROR_INVALID_HANDLE;
 	}
+	std::string providerView = baseHandle->providerView;
+	if (samDesired & KEY_WOW64_64KEY) providerView = "64";
+	if (samDesired & KEY_WOW64_32KEY) providerView = "32";
+	if ((samDesired & (KEY_WOW64_64KEY | KEY_WOW64_32KEY)) == (KEY_WOW64_64KEY | KEY_WOW64_32KEY))
+		return ERROR_INVALID_PARAMETER;
 	if (g_existingKeys.find(targetPath) == g_existingKeys.end()) {
-		kernel32::setLastError(ERROR_FILE_NOT_FOUND);
-		return ERROR_FILE_NOT_FOUND;
+		const LSTATUS status = providerOpen(targetPath, providerView);
+		if (status != ERROR_SUCCESS) return status;
 	}
 	if (!lpSubKey || lpSubKey[0] == 0) {
 		if (baseHandle->predefined) {
@@ -411,6 +476,7 @@ LSTATUS WINAPI RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSA
 		}
 	}
 	auto obj = make_pin<RegistryKeyObject>(std::move(targetPath));
+	obj->providerView = std::move(providerView);
 	auto handle = wibo::handles().alloc(std::move(obj), 0, 0);
 	*phkResult = reinterpret_cast<HKEY>(handle);
 	return ERROR_SUCCESS;

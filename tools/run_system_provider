@@ -1,0 +1,5 @@
+#!/bin/sh
+# The caller configures both the Windows image and its execution environment.
+: "${WIBO_PROVIDER_RUNNER:?Set the executable used to run the service adapter}"
+: "${WIBO_PROVIDER_IMAGE:?Set the path to the service adapter image}"
+exec "$WIBO_PROVIDER_RUNNER" "$WIBO_PROVIDER_IMAGE" "$@"

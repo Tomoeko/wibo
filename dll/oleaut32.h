@@ -1,8 +1,13 @@
 #pragma once
 
 #include "types.h"
+#include "automation.h"
 
 namespace oleaut32 {
+
+HRESULT WINAPI VariantChangeType(AutomationVariant *destination, const AutomationVariant *source, WORD flags, WORD type);
+void WINAPI VariantInit(AutomationVariant *value);
+HRESULT WINAPI VariantClear(AutomationVariant *value);
 
 LPWSTR WINAPI SysAllocString(LPCWSTR psz);
 LPWSTR WINAPI SysAllocStringLen(LPCWSTR strIn, UINT ui);

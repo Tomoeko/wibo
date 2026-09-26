@@ -6,6 +6,7 @@
 #include "heap.h"
 #include "modules.h"
 #include "rpcrt4.h"
+#include "wmi_proxy.h"
 
 #include <cstring>
 
@@ -127,6 +128,14 @@ void WINAPI CoTaskMemFree(PVOID pv) {
 	}
 }
 
+HRESULT WINAPI CoSetProxyBlanket(GUEST_PTR proxy, DWORD authentication, DWORD authorization, LPCWSTR principal,
+	DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoSetProxyBlanket(%p, %u, %u, %p, %u, %u, %p, 0x%x)\n", fromGuestPtr(proxy), authentication,
+		authorization, principal, level, impersonation, fromGuestPtr(identity), capabilities);
+	return wibo::management::setProxyBlanket(proxy, authentication, authorization, principal, level, impersonation, identity, capabilities);
+}
+
 HRESULT WINAPI CoCreateGuid(GUID *pguid) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoCreateGuid(%p)\n", pguid);
@@ -134,22 +143,37 @@ HRESULT WINAPI CoCreateGuid(GUID *pguid) {
 	return status == 0 ? S_OK : static_cast<HRESULT>(0x80070000 | (status & 0xFFFF));
 }
 
+namespace {
+thread_local unsigned int apartmentReferences = 0;
+thread_local DWORD apartmentMode = 0;
+}
+
+HRESULT WINAPI CoInitializeEx(LPVOID pvReserved, DWORD flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoInitializeEx(%p, 0x%x)\n", pvReserved, flags);
+	if (pvReserved || (flags & ~DWORD(0xE))) return E_INVALIDARG;
+	const DWORD mode = flags & 2;
+	if (apartmentReferences && apartmentMode != mode) return static_cast<HRESULT>(0x80010106);
+	apartmentMode = mode;
+	return apartmentReferences++ ? 1 : S_OK;
+}
+
 HRESULT WINAPI CoInitialize(LPVOID pvReserved) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: CoInitialize(%p)\n", pvReserved);
-	(void)pvReserved;
-	return 0; // S_OK
+	return CoInitializeEx(pvReserved, 2);
+}
+
+void WINAPI CoUninitialize() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoUninitialize()\n");
+	if (apartmentReferences) --apartmentReferences;
 }
 
 HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwClsContext, const GUID *riid,
 								GUEST_PTR *ppv) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: CoCreateInstance(0x%x, %p, %d, 0x%x, %p)\n", rclsid->Data1, pUnkOuter, dwClsContext, riid->Data1,
-			  *ppv);
-	*ppv = 0;
-	// E_POINTER is returned when ppv is NULL, which isn't true here, but returning 1 results
-	// in a segfault with mwcceppc.exe when it's told to include directories that don't exist
-	return 0x80004003; // E_POINTER
+	DEBUG_LOG("CoCreateInstance(%p, %p, 0x%x, %p, %p)\n", rclsid, pUnkOuter, dwClsContext, riid, ppv);
+	return wibo::management::createLocator(rclsid, pUnkOuter, dwClsContext, riid, ppv);
 }
 
 HRESULT WINAPI CLSIDFromString(LPCWSTR lpsz, GUID *pclsid) {

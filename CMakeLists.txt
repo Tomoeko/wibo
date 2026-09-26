@@ -53,6 +53,18 @@ endif()
 option(WIBO_ENABLE_FIXTURE_TESTS "Enable Win32 fixture tests (requires i686-w64-mingw32)" ON)
 option(WIBO_ENABLE_LIBURING "Enable liburing for asynchronous I/O" OFF)
 option(WIBO_ENABLE_WINE_DLLS "Download Wine CRT DLLs from encounter/winedll by default" ON)
+option(WIBO_BUILD_SYSTEM_PROVIDER "Build the optional Windows service adapter" OFF)
+if(WIBO_BUILD_SYSTEM_PROVIDER)
+    find_program(WIBO_PROVIDER_CXX NAMES x86_64-w64-mingw32-g++ REQUIRED)
+    set(_provider_image ${CMAKE_CURRENT_BINARY_DIR}/tools/system_provider.exe)
+    add_custom_command(OUTPUT ${_provider_image}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
+        COMMAND ${WIBO_PROVIDER_CXX} -Wall -Wextra -O2 -municode -static
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
+            -lole32 -loleaut32 -lwbemuuid -o ${_provider_image}
+        DEPENDS tools/system_provider.cpp VERBATIM)
+    add_custom_target(system_provider ALL DEPENDS ${_provider_image})
+endif()
 set(WIBO_GUEST_ARCH "x86" CACHE STRING "Windows guest architecture (x86 or x86_64)")
 set_property(CACHE WIBO_GUEST_ARCH PROPERTY STRINGS x86 x86_64)
 if(WIBO_GUEST_ARCH STREQUAL "x86_64")
@@ -302,6 +314,7 @@ add_executable(wibo
     dll/lmgr.cpp
     dll/mscoree.cpp
     dll/ntdll.cpp
+    dll/wmi_proxy.cpp
     dll/ole32.cpp
     dll/oleaut32.cpp
     dll/psapi.cpp
@@ -316,6 +329,7 @@ add_executable(wibo
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
+    src/system_provider.cpp
     src/file_locks.cpp
     src/files.cpp
     src/handles.cpp
@@ -481,6 +495,7 @@ wibo_codegen_module(NAME shell32 HEADERS dll/shell32.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
 wibo_codegen_module(NAME vcruntime HEADERS dll/vcruntime.h)
 wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
+wibo_codegen_module(NAME wmi_proxy HEADERS dll/wmi_proxy.h)
 wibo_codegen_module(NAME ole32 HEADERS dll/ole32.h)
 wibo_codegen_module(NAME oleaut32 HEADERS dll/oleaut32.h)
 wibo_codegen_module(NAME psapi HEADERS dll/psapi.h)
@@ -685,6 +700,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
+        wibo_add_fixture_bin(NAME test_management SOURCES test/test_management.c COMPILE_OPTIONS -lole32 -loleaut32 -lwbemuuid)
+        wibo_add_fixture_bin(NAME test_provider_registry SOURCES test/test_provider_registry.c)
+        set_tests_properties(wibo.test_management wibo.test_provider_registry PROPERTIES
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1"
+            TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_rtl SOURCES test/test_rtl.c)
