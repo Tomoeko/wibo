@@ -5,6 +5,7 @@
 #include "heap.h"
 #include "ws2/internal.h"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -112,6 +113,73 @@ bool asciiName(LPCSTR name) {
 } // namespace
 
 namespace ws2 {
+ULONG WINAPI inet_addr(LPCSTR text) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("inet_addr(%s)\n", text ? text : "(null)");
+	constexpr ULONG invalid = 0xFFFFFFFF;
+	if (!text) {
+		detail::setLastError(10014);
+		return invalid;
+	}
+	if (!*text)
+		return invalid;
+	auto whitespace = [](char value) { return value == ' ' || (value >= '\t' && value <= '\r'); };
+	if (whitespace(*text)) {
+		while (whitespace(*text))
+			++text;
+		return *text ? invalid : 0;
+	}
+	std::array<uint32_t, 4> parts{};
+	size_t count = 0;
+	while (true) {
+		unsigned base = 10;
+		bool digitSeen = false;
+		if (*text == '0') {
+			++text;
+			base = 8;
+			digitSeen = true;
+			if (*text == 'x' || *text == 'X') {
+				++text;
+				base = 16;
+				digitSeen = false;
+			}
+		}
+		uint32_t value = 0;
+		while (*text) {
+			const unsigned digit = *text >= '0' && *text <= '9'	  ? *text - '0'
+								   : *text >= 'a' && *text <= 'f' ? *text - 'a' + 10
+								   : *text >= 'A' && *text <= 'F' ? *text - 'A' + 10
+																  : 16;
+			if (digit >= base)
+				break;
+			if (value > (invalid - digit) / base)
+				return invalid;
+			value = value * base + digit;
+			digitSeen = true;
+			++text;
+		}
+		if (!digitSeen)
+			return invalid;
+		parts[count++] = value;
+		if (*text != '.')
+			break;
+		if (count == parts.size())
+			return invalid;
+		++text;
+	}
+	if (*text && !whitespace(*text))
+		return invalid;
+	uint32_t address = parts[count - 1];
+	if (static_cast<uint64_t>(address) >= (uint64_t{1} << ((5 - count) * 8)))
+		return invalid;
+	for (size_t index = 0; index + 1 < count; ++index) {
+		if (parts[index] > 255)
+			return invalid;
+		address |= parts[index] << (24 - index * 8);
+	}
+	return __builtin_bswap32(address);
+}
+
 LPSTR WINAPI inet_ntoa(ULONG address) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("inet_ntoa(0x%x)\n", address);

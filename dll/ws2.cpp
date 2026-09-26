@@ -197,8 +197,14 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "ioctlsocket";
 	case 12:
 		return "inet_ntoa";
+	case 11:
+		return "inet_addr";
 	case 16:
 		return "recv";
+	case 17:
+		return "recvfrom";
+	case 13:
+		return "listen";
 	case 21:
 		return "setsockopt";
 	case 8:

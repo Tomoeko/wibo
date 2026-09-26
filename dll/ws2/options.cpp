@@ -13,7 +13,7 @@
 #include <sys/time.h>
 
 namespace {
-enum class ValueKind { Integer, Boolean, Linger, Timeout, Error };
+enum class ValueKind { Integer, Boolean, Linger, Timeout, Error, Listening };
 struct Option {
 	int level = 0, name = 0;
 	ValueKind kind = ValueKind::Integer;
@@ -24,7 +24,7 @@ bool mapOption(int level, int name, Option &result) {
 		result.level = SOL_SOCKET;
 		switch (name) {
 		case 2:
-			result = {SOL_SOCKET, SO_ACCEPTCONN, ValueKind::Boolean, false};
+			result = {SOL_SOCKET, SO_ACCEPTCONN, ValueKind::Listening, false};
 			break;
 		case 4:
 			result = {SOL_SOCKET, SO_REUSEADDR, ValueKind::Boolean};
@@ -130,7 +130,10 @@ int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *leng
 		return detail::failSocket(10042);
 	if (!value || !length || *length < 4)
 		return detail::failSocket(10014);
-	if (option.kind == ValueKind::Linger) {
+	if (option.kind == ValueKind::Listening) {
+		const int result = state->listening.load() ? 1 : 0;
+		std::memcpy(value, &result, sizeof(result));
+	} else if (option.kind == ValueKind::Linger) {
 		linger native{};
 		socklen_t nativeLength = sizeof(native);
 		if (::getsockopt(state->descriptor, option.level, option.name, &native, &nativeLength) < 0)

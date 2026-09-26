@@ -3,6 +3,7 @@
 #include "common.h"
 #include "context.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -311,6 +312,37 @@ int WINAPI connect(SOCKET handle, LPCVOID address, int length) {
 	}
 	return 0;
 }
+int WINAPI listen(SOCKET handle, int backlog) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("listen(0x%llx, %d)\n", static_cast<unsigned long long>(handle), backlog);
+	const auto state = detail::findSocket(handle);
+	if (!state)
+		return -1;
+	int type = 0;
+	socklen_t size = sizeof(type);
+	if (::getsockopt(state->descriptor, SOL_SOCKET, SO_TYPE, &type, &size) < 0)
+		return detail::failSocket(detail::socketError(errno));
+	if (type != SOCK_STREAM)
+		return detail::failSocket(10045);
+	sockaddr_storage address{};
+	size = sizeof(address);
+	if (::getpeername(state->descriptor, reinterpret_cast<sockaddr *>(&address), &size) == 0)
+		return detail::failSocket(10056);
+	size = sizeof(address);
+	if (::getsockname(state->descriptor, reinterpret_cast<sockaddr *>(&address), &size) < 0)
+		return detail::failSocket(detail::socketError(errno));
+	const auto port = address.ss_family == AF_INET ? reinterpret_cast<const sockaddr_in *>(&address)->sin_port
+												   : reinterpret_cast<const sockaddr_in6 *>(&address)->sin6_port;
+	if (!port)
+		return detail::failSocket(10022);
+	if (backlog < 0)
+		backlog = static_cast<int>(std::clamp<int64_t>(-static_cast<int64_t>(backlog), 200, 65535));
+	if (::listen(state->descriptor, backlog) < 0)
+		return detail::failSocket(detail::socketError(errno));
+	state->listening.store(true);
+	return 0;
+}
+
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("getsockname(0x%llx, %p, %p)\n", static_cast<unsigned long long>(handle), address, length);

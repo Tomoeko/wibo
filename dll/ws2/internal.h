@@ -12,6 +12,7 @@ struct Socket {
 	int descriptor;
 	int family;
 	std::atomic<bool> connecting = false;
+	std::atomic<bool> listening = false;
 	explicit Socket(int descriptor, int family) : descriptor(descriptor), family(family) {}
 	~Socket();
 };

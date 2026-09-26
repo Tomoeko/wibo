@@ -21,6 +21,8 @@ int main(void) {
 	TEST_CHECK_EQ(0, bind(handle, (SOCKADDR *)&address, sizeof(address)));
 	TEST_CHECK_EQ(SOCKET_ERROR, recv(handle, buffer, sizeof(buffer), 0));
 	TEST_CHECK_EQ(WSAEWOULDBLOCK, WSAGetLastError());
+	TEST_CHECK_EQ(SOCKET_ERROR, recvfrom(handle, buffer, sizeof(buffer), 0, NULL, NULL));
+	TEST_CHECK_EQ(WSAEWOULDBLOCK, WSAGetLastError());
 	if (getenv("WIBO_FIXTURE_RUNTIME")) {
 		TEST_CHECK_EQ(SOCKET_ERROR, recv(handle, buffer, sizeof(buffer), MSG_WAITALL));
 		TEST_CHECK_EQ(WSAEOPNOTSUPP, WSAGetLastError());
@@ -34,14 +36,26 @@ int main(void) {
 		TEST_CHECK_EQ(0, ioctlsocket(handle, FIONBIO, &nonblocking));
 		DWORD limit = 5000;
 		TEST_CHECK_EQ(0, setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, (char *)&limit, sizeof(limit)));
-		TEST_CHECK_EQ(SOCKET_ERROR, recv(handle, buffer, 2, MSG_PEEK));
+		SOCKADDR_STORAGE sender = {0};
+		int senderLength = sizeof(sender);
+		TEST_CHECK_EQ(SOCKET_ERROR, recvfrom(handle, buffer, 2, MSG_PEEK, (SOCKADDR *)&sender, &senderLength));
 		TEST_CHECK_EQ(WSAEMSGSIZE, WSAGetLastError());
+		TEST_CHECK_EQ(sizeof(SOCKADDR_IN), senderLength);
+		TEST_CHECK_EQ(AF_INET, sender.ss_family);
+		TEST_CHECK(((SOCKADDR_IN *)&sender)->sin_port != 0);
 		TEST_CHECK_EQ('a', buffer[0]);
 		TEST_CHECK_EQ('b', buffer[1]);
 		TEST_CHECK_EQ(6, recv(handle, buffer, sizeof(buffer), 0));
 		TEST_CHECK_EQ(0, memcmp(buffer, "abcdef", 6));
-		TEST_CHECK_EQ(SOCKET_ERROR, recv(handle, buffer, 2, 0));
+		if (getenv("WIBO_FIXTURE_RUNTIME")) {
+			senderLength = 1;
+			TEST_CHECK_EQ(SOCKET_ERROR, recvfrom(handle, buffer, 2, 0, (SOCKADDR *)&sender, &senderLength));
+			TEST_CHECK_EQ(WSAEFAULT, WSAGetLastError());
+		}
+		senderLength = sizeof(sender);
+		TEST_CHECK_EQ(SOCKET_ERROR, recvfrom(handle, buffer, 2, 0, (SOCKADDR *)&sender, &senderLength));
 		TEST_CHECK_EQ(WSAEMSGSIZE, WSAGetLastError());
+		TEST_CHECK_EQ(sizeof(SOCKADDR_IN), senderLength);
 		TEST_CHECK_EQ('g', buffer[0]);
 		TEST_CHECK_EQ('h', buffer[1]);
 		TEST_CHECK_EQ(0, recv(handle, buffer, sizeof(buffer), 0));
@@ -84,6 +98,7 @@ int main(void) {
 		}
 		TEST_CHECK_EQ(0, memcmp(buffer, "abcdef", 6));
 		TEST_CHECK_EQ(0, recv(handle, buffer, sizeof(buffer), 0));
+		TEST_CHECK_EQ(0, recvfrom(handle, buffer, sizeof(buffer), 0, NULL, NULL));
 		if (getenv("WIBO_FIXTURE_RUNTIME")) {
 			HMODULE library = GetModuleHandleA("ws2_32.dll");
 			int(WSAAPI * ordinalReceive)(SOCKET, char *, int, int) = (void *)GetProcAddress(library, (LPCSTR)16);

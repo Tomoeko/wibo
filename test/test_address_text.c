@@ -12,6 +12,26 @@ static DWORD WINAPI worker(void *context) {
 	return 0;
 }
 int main(void) {
+	struct {
+		const char *text;
+		ULONG address;
+	} cases[] = {{"1.2.3.4", 0x04030201},	  {"127.1", 0x0100007F},
+				 {"0177.1", 0x0100007F},	  {"0x7f.1", 0x0100007F},
+				 {"1.2.3", 0x03000201},		  {"0x7f000001", 0x0100007F},
+				 {"1.16777215", 0xFFFFFF01},  {"1.2.65535", 0xFFFF0201},
+				 {"1 ", 0x01000000},		  {" ", 0},
+				 {"", INADDR_NONE},			  {"08", INADDR_NONE},
+				 {"0x", INADDR_NONE},		  {"1.16777216", INADDR_NONE},
+				 {"1.2.65536", INADDR_NONE},  {"256.0.0.1", INADDR_NONE},
+				 {"4294967296", INADDR_NONE}, {"1.2.3.", INADDR_NONE},
+				 {"1..2", INADDR_NONE}};
+	for (unsigned index = 0; index != sizeof(cases) / sizeof(cases[0]); ++index) {
+		WSASetLastError(0x1234);
+		TEST_CHECK_EQ(cases[index].address, inet_addr(cases[index].text));
+		TEST_CHECK_EQ(0x1234, WSAGetLastError());
+	}
+	TEST_CHECK_EQ(INADDR_NONE, inet_addr(NULL));
+	TEST_CHECK_EQ(WSAEFAULT, WSAGetLastError());
 	IN_ADDR address;
 	address.S_un.S_addr = 0;
 	char *text = inet_ntoa(address);
@@ -41,6 +61,9 @@ int main(void) {
 		TEST_CHECK(byOrdinal != NULL);
 		address.S_un.S_addr = 0x0100007F;
 		TEST_CHECK_STR_EQ("127.0.0.1", byOrdinal(address));
+		ULONG(WSAAPI * parseByOrdinal)(const char *) = (void *)GetProcAddress(module, (LPCSTR)11);
+		TEST_CHECK(parseByOrdinal != NULL);
+		TEST_CHECK_EQ(0x0100007F, parseByOrdinal("127.0.0.1"));
 	}
 	TEST_CHECK_EQ(0, WSACleanup());
 	return 0;
