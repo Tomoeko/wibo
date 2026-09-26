@@ -28,6 +28,7 @@ typedef BOOL(_CC_STDCALL *PHANDLER_ROUTINE)(DWORD CtrlType);
 
 namespace kernel32 {
 
+BOOL WINAPI AttachConsole(DWORD processId);
 BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode);
 BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode);
 UINT WINAPI GetConsoleCP();

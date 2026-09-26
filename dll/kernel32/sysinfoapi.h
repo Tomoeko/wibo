@@ -176,6 +176,7 @@ enum : BYTE {
 namespace kernel32 {
 BOOL WINAPI GlobalMemoryStatusEx(MEMORYSTATUSEX *status);
 
+DWORD WINAPI GetActiveProcessorCount(WORD groupNumber);
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 void WINAPI GetNativeSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer, PDWORD returnLength);

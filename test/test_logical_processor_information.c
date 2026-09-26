@@ -3,6 +3,13 @@
 #include "test_assert.h"
 
 int main(void) {
+	DWORD active = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+	TEST_CHECK(active > 0);
+	DWORD firstGroup = GetActiveProcessorCount(0);
+	TEST_CHECK(firstGroup > 0 && firstGroup <= active);
+	SetLastError(ERROR_SUCCESS);
+	TEST_CHECK_EQ(0, GetActiveProcessorCount(0xfffe));
+	TEST_CHECK(GetLastError() != ERROR_SUCCESS);
 	const LOGICAL_PROCESSOR_RELATIONSHIP relationships[] = {RelationProcessorCore, RelationProcessorPackage, RelationGroup};
 	for (unsigned int i = 0; i < 3; ++i) {
 		DWORD length = 0;
@@ -18,6 +25,11 @@ int main(void) {
 			TEST_CHECK(entry->Size > 0 && entry->Size <= length - offset);
 			if (relationships[i] == RelationGroup) {
 				TEST_CHECK(entry->Group.ActiveGroupCount > 0);
+				DWORD total = 0;
+				for (WORD group = 0; group < entry->Group.ActiveGroupCount; ++group)
+					total += GetActiveProcessorCount(group);
+				TEST_CHECK_EQ(active, total);
+				TEST_CHECK_EQ(firstGroup, entry->Group.GroupInfo[0].ActiveProcessorCount);
 				TEST_CHECK(entry->Group.GroupInfo[0].ActiveProcessorMask != 0);
 			} else {
 				TEST_CHECK(entry->Processor.GroupCount > 0);

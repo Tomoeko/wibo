@@ -164,6 +164,26 @@ DWORD verifyVersionConditions(const VersionInfo *requested, DWORD fields, ULONGL
 
 namespace kernel32 {
 
+DWORD WINAPI GetActiveProcessorCount(WORD groupNumber) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetActiveProcessorCount(%u)\n", groupNumber);
+	if (groupNumber != 0 && groupNumber != 0xffff) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	const long count = sysconf(_SC_NPROCESSORS_ONLN);
+	if (count <= 0 || static_cast<unsigned long>(count) > std::numeric_limits<DWORD>::max()) {
+		setLastError(ERROR_GEN_FAILURE);
+		return 0;
+	}
+	if (groupNumber == 0 && count > static_cast<long>(sizeof(DWORD_PTR) * 8)) {
+		// Processor-group mapping beyond the existing mask width is unavailable.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	return static_cast<DWORD>(count);
+}
+
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetSystemInfo(%p)\n", lpSystemInfo);

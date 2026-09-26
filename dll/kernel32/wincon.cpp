@@ -6,6 +6,10 @@
 #include "handles.h"
 #include "strutil.h"
 
+#include <cerrno>
+#include <csignal>
+#include <limits>
+
 namespace kernel32 {
 
 namespace {
@@ -20,6 +24,26 @@ BOOL rejectUnavailableConsole(HANDLE handle) {
 	return FALSE;
 }
 } // namespace
+
+BOOL WINAPI AttachConsole(DWORD processId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("AttachConsole(%u)\n", processId);
+	const auto target = processId == static_cast<DWORD>(-1) ? static_cast<DWORD>(getppid()) : processId;
+	if (!target || target > static_cast<DWORD>(std::numeric_limits<pid_t>::max())) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (kill(static_cast<pid_t>(target), 0) != 0 && errno != EPERM) {
+		setLastError(errno == ESRCH ? ERROR_INVALID_PARAMETER : wibo::winErrorFromErrno(errno));
+		return FALSE;
+	}
+	// Neither this process nor its parent has a registered console session.
+	// Cross-process console attachment requires a session backend.
+	setLastError(target == static_cast<DWORD>(getpid()) || target == static_cast<DWORD>(getppid())
+					 ? ERROR_INVALID_HANDLE
+					 : ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
 
 BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode) {
 	HOST_CONTEXT_GUARD();
