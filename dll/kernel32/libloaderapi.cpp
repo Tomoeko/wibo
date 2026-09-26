@@ -1,4 +1,5 @@
 #include "libloaderapi.h"
+#include "processthreadsapi.h"
 
 #include "context.h"
 #include "errors.h"
@@ -318,6 +319,14 @@ HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags
 	DEBUG_LOG("LoadLibraryExW(%x) -> ", dwFlags);
 	auto filename = wideStringToString(lpLibFileName);
 	return LoadLibraryA(filename.c_str());
+}
+
+[[noreturn]] VOID WINAPI FreeLibraryAndExitThread(HMODULE module, DWORD exitCode) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FreeLibraryAndExitThread(%p, %u)\n", module, exitCode);
+	// The return path stays in the host shim after releasing the guest module.
+	FreeLibrary(module);
+	ExitThread(exitCode);
 }
 
 BOOL WINAPI FreeLibrary(HMODULE hLibModule) {

@@ -23,6 +23,7 @@ HMODULE WINAPI LoadLibraryA(LPCSTR lpLibFileName);
 HMODULE WINAPI LoadLibraryW(LPCWSTR lpLibFileName);
 HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
 BOOL WINAPI FreeLibrary(HMODULE hLibModule);
+[[noreturn]] VOID WINAPI FreeLibraryAndExitThread(HMODULE module, DWORD exitCode);
 FARPROC WINAPI GetProcAddress(HMODULE hModule, LPCSTR lpProcName);
 
 } // namespace kernel32
