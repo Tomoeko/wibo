@@ -43,5 +43,6 @@ UINT WINAPI GetErrorMode();
 DWORD WINAPI GetThreadErrorMode();
 BOOL WINAPI SetThreadErrorMode(DWORD dwNewMode, LPDWORD lpOldMode);
 HRESULT WINAPI WerSetFlags(DWORD dwFlags);
+HRESULT WINAPI WerRegisterRuntimeExceptionModule(LPCWSTR callbackDll, PVOID context);
 
 } // namespace kernel32

@@ -121,4 +121,11 @@ HRESULT WINAPI WerSetFlags(DWORD dwFlags) {
 	return S_OK;
 }
 
+HRESULT WINAPI WerRegisterRuntimeExceptionModule(LPCWSTR callbackDll, PVOID context) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("WerRegisterRuntimeExceptionModule(%p, %p): reporting service unavailable\n", callbackDll, context);
+	// Registration requires a service that can load guest callbacks after a process failure.
+	return static_cast<HRESULT>(0x80070000U | ERROR_NOT_SUPPORTED);
+}
+
 } // namespace kernel32
