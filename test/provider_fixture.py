@@ -102,6 +102,27 @@ elif operation == 'system-metrics':
         response += b'\0'
     elif fault == 'failed':
         response = header(5)
+elif operation == 'volume-query':
+    path, kind, capacity = arguments
+    kind, capacity = int(kind), int(capacity)
+    payloads = {3: struct.pack('<qqII', 4096, 1024, 8, 512),
+                4: struct.pack('<II', 7, 0),
+                5: struct.pack('<III', 3, 255, 18) + 'FixtureFS'.encode('utf-16-le'),
+                7: struct.pack('<qqqII', 4096, 1024, 2048, 8, 512)}
+    payload = payloads.get(kind, b'')
+    status = 0 if payload else 0xc0000002
+    if capacity < len(payload):
+        status, payload = 0xc0000023, b''
+    response = header() + number(status) + number(len(payload)) + number(0) + blob(payload)
+    fault = os.environ.get('WIBO_FIXTURE_VOLUME_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'oversized':
+        response = header() + number(0) + number(0) + number(1) + blob(payload)
+    elif fault == 'failed':
+        response = header(5)
 elif operation == 'status-error':
     status = int(arguments[0])
     values = {0: 0, 0xc0000022: 5, 0xc0000008: 6, 0xc000000d: 87, 0x80000005: 234,

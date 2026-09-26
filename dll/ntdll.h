@@ -68,6 +68,8 @@ NTSTATUS WINAPI NtProtectVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseAd
 									   ULONG NewAccessProtection, PULONG OldAccessProtection);
 NTSTATUS WINAPI NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
 									 FILE_INFORMATION_CLASS informationClass);
+NTSTATUS WINAPI NtQueryVolumeInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
+											 ULONG informationClass);
 NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation,
 									   ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 NTSTATUS WINAPI NtQuerySystemTime(PLARGE_INTEGER SystemTime);

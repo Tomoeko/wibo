@@ -12,6 +12,7 @@
 #include <netlistmgr.h>
 #include <oleauto.h>
 #include <wbemcli.h>
+#include <winternl.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -604,6 +605,45 @@ bool statusError(const WCHAR *statusText) {
 	return response.write();
 }
 
+bool volumeQuery(const WCHAR *path, const WCHAR *classText, const WCHAR *lengthText) {
+	WCHAR *end = nullptr;
+	const auto informationClass = wcstoull(classText, &end, 10);
+	if (!*classText || *end || informationClass > UINT32_MAX)
+		return false;
+	const auto length = wcstoull(lengthText, &end, 10);
+	if (!*lengthText || *end || length > 1024 * 1024)
+		return false;
+	using QueryVolume = LONG(WINAPI *)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+	const auto query = reinterpret_cast<QueryVolume>(
+		reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryVolumeInformationFile")));
+	Response response;
+	if (!query) {
+		response.header(GetLastError());
+		return response.write();
+	}
+	HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+							  nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
+		response.header(GetLastError());
+		return response.write();
+	}
+	std::vector<BYTE> data(static_cast<size_t>(length));
+	IO_STATUS_BLOCK block{};
+	const LONG status = query(file, &block, data.empty() ? nullptr : data.data(), static_cast<ULONG>(length),
+							  static_cast<ULONG>(informationClass));
+	CloseHandle(file);
+	if (block.Information > length) {
+		response.header(ERROR_INVALID_DATA);
+		return response.write();
+	}
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(status));
+	response.number(static_cast<uint32_t>(block.Information));
+	response.number(0);
+	response.bytes(data.data(), static_cast<size_t>(block.Information));
+	return response.write();
+}
+
 bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
@@ -726,6 +766,8 @@ int wmain(int argc, WCHAR **argv) {
 		written = memoryStatus();
 	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
 		written = systemMetrics(argv[2], argv[3]);
+	else if (argc == 5 && wcscmp(argv[1], L"volume-query") == 0)
+		written = volumeQuery(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"status-error") == 0)
 		written = statusError(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
