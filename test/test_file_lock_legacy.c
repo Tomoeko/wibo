@@ -74,6 +74,17 @@ int main(int argc, char **argv) {
 	TEST_CHECK(!LockFile(second, 8, 0, 16, 0));
 	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
 	TEST_CHECK(UnlockFile(asynchronous, 8, 0, 16, 0));
+	region.Offset = 0;
+	region.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+	TEST_CHECK(region.hEvent != NULL);
+	TEST_CHECK(LockFileEx(asynchronous, 0, 0, 1, 0, &region));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(region.hEvent, 1000));
+	TEST_CHECK(GetOverlappedResult(asynchronous, &region, &transferred, FALSE));
+	TEST_CHECK_EQ(0, transferred);
+	TEST_CHECK(!LockFile(second, 0, 0, 1, 0));
+	TEST_CHECK_EQ(ERROR_LOCK_VIOLATION, GetLastError());
+	TEST_CHECK(UnlockFileEx(asynchronous, 0, 1, 0, &region));
+	TEST_CHECK(CloseHandle(region.hEvent));
 	TEST_CHECK(CloseHandle(asynchronous));
 	TEST_CHECK(CloseHandle(first));
 	TEST_CHECK(CloseHandle(second));

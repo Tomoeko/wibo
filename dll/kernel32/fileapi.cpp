@@ -877,15 +877,14 @@ BOOL lockFileRange(HANDLE handle, DWORD flags, uint64_t start, uint64_t length, 
 	auto file = rangeLockFile(handle);
 	if (!file)
 		return FALSE;
-	if (file->overlapped && !(flags & kLockFailImmediately)) {
-		// Pending asynchronous locks need cancellation and completion queue support.
-		setLastError(ERROR_NOT_SUPPORTED);
-		return FALSE;
-	}
-	const DWORD error =
-		files::lockRange(file.get(), start, length, (flags & kLockExclusive) != 0, (flags & kLockFailImmediately) == 0);
+	DEBUG_LOG("lockFileRange(%p, flags=%u, start=%llu, length=%llu)\n", handle, flags,
+			  static_cast<unsigned long long>(start), static_cast<unsigned long long>(length));
+	const bool asynchronous = file->overlapped && !(flags & kLockFailImmediately);
+	const DWORD error = files::lockRange(file.get(), start, length, (flags & kLockExclusive) != 0,
+										 !asynchronous && !(flags & kLockFailImmediately));
 	if (error) {
-		setLastError(error);
+		// Contended asynchronous locks need cancellation and completion queue support.
+		setLastError(asynchronous && error == ERROR_LOCK_VIOLATION ? ERROR_NOT_SUPPORTED : error);
 		return FALSE;
 	}
 	if (overlapped)
