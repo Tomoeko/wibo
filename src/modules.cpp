@@ -32,6 +32,7 @@ extern const wibo::ModuleStub lib_advapi32;
 extern const wibo::ModuleStub lib_bcrypt;
 extern const wibo::ModuleStub lib_dbghelp;
 extern const wibo::ModuleStub lib_kernel32;
+extern const wibo::ModuleStub lib_iphlpapi;
 extern const wibo::ModuleStub lib_lmgr;
 extern const wibo::ModuleStub lib_mscoree;
 #if WIBO_HAS_MSVCRT
@@ -321,6 +322,7 @@ LockedRegistry registry() {
 			&lib_bcrypt,
 			&lib_dbghelp,
 			&lib_kernel32,
+			&lib_iphlpapi,
 			&lib_lmgr,
 			&lib_mscoree,
 			&lib_ntdll,

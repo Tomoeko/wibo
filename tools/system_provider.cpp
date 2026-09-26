@@ -1,12 +1,14 @@
-// Standalone Windows service adapter. Build with a Windows C++ compiler and
-// link ole32, oleaut32, and wbemuuid. The caller selects its execution environment.
+// Standalone Windows service adapter. The caller selects its execution environment.
+// The build target supplies the compiler and system libraries.
 #define CINTERFACE
 #define COBJMACROS
 #include "../src/security_descriptor.h"
+#include <winsock2.h>
 #include <windows.h>
 
 #include <fcntl.h>
 #include <io.h>
+#include <iphlpapi.h>
 #include <netlistmgr.h>
 #include <oleauto.h>
 #include <wbemcli.h>
@@ -105,6 +107,40 @@ Property copyProperty(BSTR name, CIMTYPE type, LONG flavor, const VARIANT &value
 		break;
 	}
 	return result;
+}
+
+bool ipAddressTable(bool ordered) {
+	ULONG size = 0;
+	DWORD status = GetIpAddrTable(nullptr, &size, ordered);
+	std::vector<BYTE> storage;
+	for (unsigned attempt = 0; status == ERROR_INSUFFICIENT_BUFFER && attempt != 3; ++attempt) {
+		if (size < sizeof(DWORD) || size > kMaxResponse - 16) {
+			status = ERROR_NOT_ENOUGH_MEMORY;
+			break;
+		}
+		storage.resize(size);
+		status = GetIpAddrTable(reinterpret_cast<MIB_IPADDRTABLE *>(storage.data()), &size, ordered);
+	}
+	const auto *table = reinterpret_cast<const MIB_IPADDRTABLE *>(storage.data());
+	static_assert(sizeof(MIB_IPADDRROW) == 24 && offsetof(MIB_IPADDRTABLE, table) == 4);
+	if (status == NO_ERROR && (storage.size() < sizeof(DWORD) || table->dwNumEntries > 65536 ||
+							   table->dwNumEntries > (storage.size() - sizeof(DWORD)) / sizeof(MIB_IPADDRROW)))
+		status = ERROR_INVALID_DATA;
+	Response response;
+	response.header(status);
+	if (status == NO_ERROR) {
+		response.number(table->dwNumEntries);
+		for (DWORD index = 0; index != table->dwNumEntries; ++index) {
+			const auto &row = table->table[index];
+			response.number(row.dwAddr);
+			response.number(row.dwIndex);
+			response.number(row.dwMask);
+			response.number(row.dwBCastAddr);
+			response.number(row.dwReasmSize);
+			response.number(row.unused1 | (static_cast<DWORD>(row.wType) << 16));
+		}
+	}
+	return response.write();
 }
 
 bool formatMessage(WCHAR **parameters, bool wide) {
@@ -649,6 +685,9 @@ int wmain(int argc, WCHAR **argv) {
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)
 		written = networkConnectivity(argv[2]);
+	else if (argc == 3 && wcscmp(argv[1], L"ip-address-table") == 0 &&
+			 (wcscmp(argv[2], L"0") == 0 || wcscmp(argv[2], L"1") == 0))
+		written = ipAddressTable(wcscmp(argv[2], L"1") == 0);
 	else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
 		written = memoryStatus();
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)

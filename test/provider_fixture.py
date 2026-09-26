@@ -69,6 +69,21 @@ elif operation == 'network-connectivity':
         response = header() + number(0x8000) + number(1) + number(1)
     elif fault == 'failed':
         response = header(0x80070005)
+elif operation == 'ip-address-table':
+    rows = [struct.pack('<IIIIIHH', address, index, 0x00ffffff, 1, 65535, 0, 1)
+            for address, index in [(0x0100007f, 1), (0x0100000a, 2), (0x0200000a, 3)]]
+    if arguments == ['1']:
+        rows.sort(key=lambda row: row[:4])
+    response = header() + number(len(rows)) + b''.join(rows)
+    fault = os.environ.get('WIBO_FIXTURE_IP_TABLE_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'bad-count':
+        response = header() + number(0xffffffff)
+    elif fault == 'failed':
+        response = header(5)
 elif operation == 'memory-status':
     response = header() + blob(struct.pack('<II7Q', 64, 25, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
     fault = os.environ.get('WIBO_FIXTURE_MEMORY_RESPONSE')

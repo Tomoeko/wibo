@@ -61,7 +61,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -o ${_provider_image}
         DEPENDS tools/system_provider.cpp src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -322,6 +322,7 @@ add_executable(wibo
     dll/oleaut32.cpp
     dll/psapi.cpp
     dll/rpcrt4.cpp
+    dll/iphlpapi.cpp
     dll/shlwapi.cpp
     dll/shell32.cpp
     dll/user32.cpp
@@ -503,6 +504,7 @@ wibo_codegen_module(NAME mscoree HEADERS dll/mscoree.h)
 wibo_codegen_module(NAME version HEADERS dll/version.h)
 wibo_codegen_module(NAME winmm HEADERS dll/winmm.h)
 wibo_codegen_module(NAME rpcrt4 HEADERS dll/rpcrt4.h)
+wibo_codegen_module(NAME iphlpapi HEADERS dll/iphlpapi.h)
 wibo_codegen_module(NAME shlwapi HEADERS dll/shlwapi.h)
 wibo_codegen_module(NAME shell32 HEADERS dll/shell32.h)
 wibo_codegen_module(NAME ws2 HEADERS dll/ws2.h)
@@ -729,6 +731,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_descriptor_control SOURCES test/test_descriptor_control.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_ip_address_table SOURCES test/test_ip_address_table.c COMPILE_OPTIONS -liphlpapi -lws2_32)
+        set_tests_properties(wibo.test_ip_address_table PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_format_message SOURCES test/test_format_message.c)
         set_tests_properties(wibo.test_format_message PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
