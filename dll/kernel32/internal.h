@@ -64,7 +64,10 @@ struct FileObject : FsObject {
 struct DirectoryObject final : FsObject {
 	static constexpr ObjectType kType = ObjectType::Directory;
 
-	uint64_t enumCookie = 0;
+	std::vector<std::string> enumEntries;
+	std::u16string enumPattern;
+	size_t enumCookie = 0;
+	bool enumStarted = false;
 
 	explicit DirectoryObject(int dirfd) : FsObject(kType, dirfd) {}
 };

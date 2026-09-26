@@ -19,6 +19,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <dirent.h>
+#include <fcntl.h>
 #include <limits>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -181,6 +183,102 @@ std::vector<WCHAR> fileInformationName(const kernel32::FsObject &file) {
 	if (!wide.empty())
 		wide.pop_back(); // Native file names are byte-counted and exclude a terminator.
 	return wide;
+}
+
+std::optional<std::u16string> directoryNameToUtf16(std::string_view name) {
+	std::u16string result;
+	for (size_t i = 0; i < name.size();) {
+		uint32_t codePoint = static_cast<unsigned char>(name[i++]);
+		unsigned continuation = 0;
+		uint32_t minimum = 0;
+		if (codePoint >= 0xc2 && codePoint <= 0xdf) {
+			continuation = 1;
+			codePoint &= 0x1f;
+			minimum = 0x80;
+		} else if (codePoint >= 0xe0 && codePoint <= 0xef) {
+			continuation = 2;
+			codePoint &= 0xf;
+			minimum = 0x800;
+		} else if (codePoint >= 0xf0 && codePoint <= 0xf4) {
+			continuation = 3;
+			codePoint &= 7;
+			minimum = 0x10000;
+		} else if (codePoint >= 0x80) {
+			return std::nullopt;
+		}
+		if (continuation > name.size() - i)
+			return std::nullopt;
+		for (unsigned j = 0; j < continuation; ++j) {
+			uint32_t next = static_cast<unsigned char>(name[i++]);
+			if ((next & 0xc0) != 0x80)
+				return std::nullopt;
+			codePoint = (codePoint << 6) | (next & 0x3f);
+		}
+		if (codePoint < minimum || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff))
+			return std::nullopt;
+		if (codePoint < 0x10000) {
+			result.push_back(static_cast<char16_t>(codePoint));
+		} else {
+			codePoint -= 0x10000;
+			result.push_back(static_cast<char16_t>(0xd800 + (codePoint >> 10)));
+			result.push_back(static_cast<char16_t>(0xdc00 + (codePoint & 0x3ff)));
+		}
+	}
+	return result;
+}
+
+bool directoryNameMatches(std::u16string_view pattern, std::u16string_view name) {
+	size_t patternIndex = 0, nameIndex = 0;
+	size_t star = std::u16string_view::npos, retry = 0;
+	auto upper = [](char16_t c) { return c >= u'a' && c <= u'z' ? c - (u'a' - u'A') : c; };
+	while (nameIndex < name.size()) {
+		if (patternIndex < pattern.size() &&
+			(pattern[patternIndex] == u'?' || upper(pattern[patternIndex]) == upper(name[nameIndex]))) {
+			++patternIndex;
+			++nameIndex;
+		} else if (patternIndex < pattern.size() && pattern[patternIndex] == u'*') {
+			star = patternIndex++;
+			retry = nameIndex;
+		} else if (star != std::u16string_view::npos) {
+			patternIndex = star + 1;
+			nameIndex = ++retry;
+		} else {
+			return false;
+		}
+	}
+	while (patternIndex < pattern.size() && pattern[patternIndex] == u'*')
+		++patternIndex;
+	return patternIndex == pattern.size();
+}
+
+NTSTATUS readDirectoryEntries(kernel32::DirectoryObject &directory) {
+	// A separate open description keeps native enumeration independent of duplicate handles.
+	int fd = openat(directory.fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return wibo::statusFromErrno(errno);
+	DIR *stream = fdopendir(fd);
+	if (!stream) {
+		int error = errno;
+		close(fd);
+		return wibo::statusFromErrno(error);
+	}
+	std::vector<std::string> entries;
+	int error = 0;
+	for (;;) {
+		errno = 0;
+		dirent *entry = readdir(stream);
+		if (!entry) {
+			error = errno;
+			break;
+		}
+		entries.emplace_back(entry->d_name);
+	}
+	closedir(stream);
+	if (error)
+		return wibo::statusFromErrno(error);
+	directory.enumEntries = std::move(entries);
+	directory.enumCookie = 0;
+	return STATUS_SUCCESS;
 }
 
 bool resolveProcessDetails(HANDLE processHandle, ProcessHandleDetails &details) {
@@ -480,6 +578,132 @@ NTSTATUS WINAPI NtProtectVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseAd
 
 	DEBUG_LOG("-> 0x%x\n", STATUS_SUCCESS);
 	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
+									 PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
+									 FILE_INFORMATION_CLASS informationClass, BOOLEAN singleEntry,
+									 UNICODE_STRING *fileName, BOOLEAN restartScan) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("NtQueryDirectoryFile(%p, %p, %p, %p, %p, %p, %u, %u, %u, %p, %u)\n", file, event, apcRoutine, apcContext,
+			  ioStatus, information, length, static_cast<unsigned>(informationClass), singleEntry, fileName,
+			  restartScan);
+	static_assert(offsetof(FILE_DIRECTORY_INFORMATION, FileName) == 64);
+	static_assert(sizeof(FILE_DIRECTORY_INFORMATION) == 72);
+	if (!ioStatus || !information)
+		return STATUS_ACCESS_VIOLATION;
+	if (informationClass != FileDirectoryInformation)
+		return STATUS_NOT_SUPPORTED;
+	if (length < sizeof(FILE_DIRECTORY_INFORMATION))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	// Async completion and APC delivery must not be silently omitted.
+	if (event || apcRoutine || apcContext)
+		return STATUS_NOT_SUPPORTED;
+	HandleMeta metadata{};
+	auto object = wibo::handles().getAs<kernel32::FsObject>(file, &metadata);
+	if (!object || !object->valid())
+		return STATUS_INVALID_HANDLE;
+	if (object->type != ObjectType::Directory)
+		return STATUS_INVALID_PARAMETER;
+	if (!(metadata.grantedAccess & FILE_LIST_DIRECTORY))
+		return STATUS_ACCESS_DENIED;
+	if (object->openFlags & FILE_FLAG_OVERLAPPED)
+		return STATUS_NOT_SUPPORTED;
+	auto directoryHandle = std::move(object).downcast<kernel32::DirectoryObject>();
+	std::lock_guard lock(directoryHandle->m);
+	auto &directory = *directoryHandle;
+	bool first = !directory.enumStarted;
+	if (first) {
+		std::u16string pattern = u"*";
+		if (fileName) {
+			if (fileName->Length % sizeof(WCHAR) || fileName->Length > fileName->MaximumLength)
+				return STATUS_INVALID_PARAMETER;
+			if (fileName->Length && !fileName->Buffer)
+				return STATUS_ACCESS_VIOLATION;
+			const auto *buffer = reinterpret_cast<const char16_t *>(fileName->Buffer);
+			if (fileName->Length)
+				pattern.assign(buffer, fileName->Length / sizeof(WCHAR));
+		}
+		// Extended DOS expressions and non-ASCII case folding need separate support.
+		for (char16_t c : pattern) {
+			if (c >= 0x80 || c == u'<' || c == u'>' || c == u'"')
+				return STATUS_NOT_SUPPORTED;
+			if (c == 0 || c == u'/' || c == u'\\')
+				return STATUS_OBJECT_NAME_INVALID;
+		}
+		directory.enumPattern = std::move(pattern);
+	}
+	ioStatus->Information = 0;
+	auto finish = [&](NTSTATUS status) {
+		ioStatus->Status = status;
+		DEBUG_LOG("-> 0x%x, bytes=%llu\n", status, static_cast<unsigned long long>(ioStatus->Information));
+		return status;
+	};
+	if (first || restartScan) {
+		NTSTATUS status = readDirectoryEntries(directory);
+		if (status != STATUS_SUCCESS)
+			return finish(status);
+		directory.enumStarted = true;
+	}
+	constexpr size_t prefix = offsetof(FILE_DIRECTORY_INFORMATION, FileName);
+	size_t written = 0, previous = 0;
+	while (directory.enumCookie < directory.enumEntries.size()) {
+		const auto &name = directory.enumEntries[directory.enumCookie];
+		auto wide = directoryNameToUtf16(name);
+		if (!wide)
+			return finish(STATUS_OBJECT_NAME_INVALID);
+		if (!directoryNameMatches(directory.enumPattern, *wide)) {
+			++directory.enumCookie;
+			continue;
+		}
+		struct stat st{};
+		if (fstatat(directory.fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+			if (errno == ENOENT) {
+				++directory.enumCookie;
+				continue; // The entry disappeared during enumeration.
+			}
+			return finish(wibo::statusFromErrno(errno));
+		}
+		bool symlink = S_ISLNK(st.st_mode);
+		if (symlink && fstatat(directory.fd, name.c_str(), &st, 0) != 0)
+			return finish(wibo::statusFromErrno(errno));
+		size_t offset = (written + 7) & ~size_t(7);
+		size_t nameBytes = wide->size() * sizeof(WCHAR);
+		size_t recordBytes = prefix + nameBytes;
+		bool overflow = offset + recordBytes > length;
+		if (overflow && (written || !first))
+			break;
+		FILE_BASIC_INFORMATION basic{};
+		populateBasicInformation(st, basic);
+		FILE_DIRECTORY_INFORMATION entry{};
+		entry.CreationTime = basic.CreationTime;
+		entry.LastAccessTime = basic.LastAccessTime;
+		entry.LastWriteTime = basic.LastWriteTime;
+		entry.ChangeTime = basic.ChangeTime;
+		entry.EndOfFile.QuadPart = S_ISDIR(st.st_mode) ? 0 : st.st_size;
+		entry.AllocationSize.QuadPart = S_ISDIR(st.st_mode) ? 0 : static_cast<LONGLONG>(st.st_blocks) * 512;
+		entry.FileAttributes = basic.FileAttributes | (symlink ? FILE_ATTRIBUTE_REPARSE_POINT : 0);
+		entry.FileNameLength = static_cast<ULONG>(nameBytes);
+		auto *output = static_cast<BYTE *>(information);
+		std::memset(output + written, 0, offset - written);
+		std::memcpy(output + offset, &entry, prefix);
+		std::memcpy(output + offset + prefix, wide->data(), std::min(nameBytes, length - offset - prefix));
+		if (written) {
+			ULONG next = static_cast<ULONG>(offset - previous);
+			std::memcpy(output + previous, &next, sizeof(next));
+		}
+		previous = offset;
+		written = overflow ? length : offset + recordBytes;
+		ioStatus->Information = static_cast<ULONG_PTR>(written);
+		++directory.enumCookie;
+		if (overflow)
+			return finish(STATUS_BUFFER_OVERFLOW);
+		if (singleEntry)
+			break;
+	}
+	if (written || directory.enumCookie < directory.enumEntries.size())
+		return finish(STATUS_SUCCESS);
+	return finish(first ? STATUS_NO_SUCH_FILE : STATUS_NO_MORE_FILES);
 }
 
 NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation,

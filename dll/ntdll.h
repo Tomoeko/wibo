@@ -88,6 +88,10 @@ NTSTATUS WINAPI NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVO
 									 FILE_INFORMATION_CLASS informationClass);
 NTSTATUS WINAPI NtQueryVolumeInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
 											 ULONG informationClass);
+NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
+									 PIO_STATUS_BLOCK ioStatus, PVOID information, ULONG length,
+									 FILE_INFORMATION_CLASS informationClass, BOOLEAN singleEntry,
+									 UNICODE_STRING *fileName, BOOLEAN restartScan);
 NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation,
 									   ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 NTSTATUS WINAPI NtQuerySystemTime(PLARGE_INTEGER SystemTime);
