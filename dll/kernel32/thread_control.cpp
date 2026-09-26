@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <sched.h>
 
 namespace kernel32 {
 namespace {
@@ -23,6 +24,13 @@ DWORD controlError(kern_return_t result) {
 }
 #endif
 } // namespace
+
+BOOL WINAPI SwitchToThread() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SwitchToThread()\n");
+	// The host reports whether it accepted the yield, not whether another thread ran.
+	return sched_yield() == 0;
+}
 
 DWORD WINAPI SuspendThread(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();

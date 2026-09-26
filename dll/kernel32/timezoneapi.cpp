@@ -11,6 +11,33 @@
 #include <ctime>
 
 namespace {
+template <typename Information> DWORD providerTimeZone(const char *operation, Information *information) {
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({operation}, response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return TIME_ZONE_ID_INVALID;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t error = 0;
+	uint32_t state = 0;
+	std::vector<uint8_t> data;
+	if (!reader.header(error)) {
+		kernel32::setLastError(13);
+		return TIME_ZONE_ID_INVALID;
+	}
+	if (error) {
+		kernel32::setLastError(reader.done() ? static_cast<DWORD>(error) : 13);
+		return TIME_ZONE_ID_INVALID;
+	}
+	if (!reader.number(state) || state > TIME_ZONE_ID_DAYLIGHT || !reader.bytes(data) ||
+		data.size() != sizeof(*information) || !reader.done()) {
+		kernel32::setLastError(13);
+		return TIME_ZONE_ID_INVALID;
+	}
+	std::memcpy(information, data.data(), data.size());
+	return state;
+}
+
 bool transitionTime(const SYSTEMTIME &rule, WORD year, int64_t bias, __int128 &ticks) {
 	SYSTEMTIME date = rule;
 	if (!rule.wYear) {
@@ -292,6 +319,20 @@ BOOL WINAPI FileTimeToDosDateTime(const FILETIME *lpFileTime, LPWORD lpFatDate, 
 	return TRUE;
 }
 
+DWORD WINAPI GetDynamicTimeZoneInformation(PDYNAMIC_TIME_ZONE_INFORMATION information) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetDynamicTimeZoneInformation(%p)\n", information);
+	if (!information) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return TIME_ZONE_ID_INVALID;
+	}
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return TIME_ZONE_ID_INVALID;
+	}
+	return providerTimeZone("dynamic-time-zone-information", information);
+}
+
 DWORD WINAPI GetTimeZoneInformation(LPTIME_ZONE_INFORMATION lpTimeZoneInformation) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetTimeZoneInformation(%p)\n", lpTimeZoneInformation);
@@ -300,30 +341,7 @@ DWORD WINAPI GetTimeZoneInformation(LPTIME_ZONE_INFORMATION lpTimeZoneInformatio
 		return TIME_ZONE_ID_INVALID;
 	}
 	if (wibo::provider::configured()) {
-		std::vector<uint8_t> response;
-		if (!wibo::provider::request({"time-zone-information"}, response)) {
-			setLastError(ERROR_NOT_SUPPORTED);
-			return TIME_ZONE_ID_INVALID;
-		}
-		wibo::provider::Reader reader(response);
-		int32_t error = 0;
-		uint32_t state = 0;
-		std::vector<uint8_t> data;
-		if (!reader.header(error)) {
-			setLastError(13);
-			return TIME_ZONE_ID_INVALID;
-		}
-		if (error) {
-			setLastError(reader.done() ? static_cast<DWORD>(error) : 13);
-			return TIME_ZONE_ID_INVALID;
-		}
-		if (!reader.number(state) || state > TIME_ZONE_ID_DAYLIGHT || !reader.bytes(data) ||
-			data.size() != sizeof(*lpTimeZoneInformation) || !reader.done()) {
-			setLastError(13);
-			return TIME_ZONE_ID_INVALID;
-		}
-		std::memcpy(lpTimeZoneInformation, data.data(), data.size());
-		return state;
+		return providerTimeZone("time-zone-information", lpTimeZoneInformation);
 	}
 	std::memset(lpTimeZoneInformation, 0, sizeof(*lpTimeZoneInformation));
 	tzset();

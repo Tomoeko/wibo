@@ -41,10 +41,13 @@ if operation == 'known-folder-path':
     elif fault == 'embedded-zero':
         response = header() + text('C:\\Fixture\0suffix')
 
-elif operation == 'time-zone-information':
+elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)
     zone += bytes(64) + transition(3, 2, 2) + number(-60)
+    if operation == 'dynamic-time-zone-information':
+        key = 'Synthetic Zone'.encode('utf-16-le')
+        zone += key + bytes(256 - len(key)) + bytes(4)
     response = header() + number(2) + blob(zone)
     fault = os.environ.get('WIBO_FIXTURE_ZONE_RESPONSE')
     if fault == 'failed':

@@ -759,6 +759,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
         wibo_add_fixture_bin(NAME test_threading SOURCES test/test_threading.c)
+        wibo_add_fixture_bin(NAME test_thread_yield SOURCES test/test_thread_yield.c)
         wibo_add_fixture_bin(NAME test_thread_priority_boost SOURCES test/test_thread_priority_boost.c)
         wibo_add_fixture_bin(NAME test_thread_ideal_processor SOURCES test/test_thread_ideal_processor.c)
         wibo_add_fixture_bin(NAME test_raise_exception SOURCES test/test_raise_exception.c)
@@ -860,6 +861,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             add_test(NAME wibo.test_timezone_provider_${fault}
                 COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_timezone_conversion.exe)
             set_tests_properties(wibo.test_timezone_provider_${fault} PROPERTIES
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_ZONE_RESPONSE=${fault}")
+        endforeach()
+        wibo_add_fixture_bin(NAME test_dynamic_timezone SOURCES test/test_dynamic_timezone.c)
+        set_tests_properties(wibo.test_dynamic_timezone PROPERTIES
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        foreach(fault failed truncated trailing invalid-state)
+            add_test(NAME wibo.test_dynamic_timezone_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_dynamic_timezone.exe)
+            set_tests_properties(wibo.test_dynamic_timezone_${fault} PROPERTIES
                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
                 ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_ZONE_RESPONSE=${fault}")
         endforeach()

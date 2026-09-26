@@ -85,6 +85,18 @@ bool timeZoneInformation() {
 	return response.write();
 }
 
+bool dynamicTimeZoneInformation() {
+	DYNAMIC_TIME_ZONE_INFORMATION zone{};
+	const DWORD state = GetDynamicTimeZoneInformation(&zone);
+	Response response;
+	response.header(state == TIME_ZONE_ID_INVALID ? GetLastError() : ERROR_SUCCESS);
+	if (state != TIME_ZONE_ID_INVALID) {
+		response.number(state);
+		response.bytes(&zone, sizeof(zone));
+	}
+	return response.write();
+}
+
 bool environmentDefaults() {
 	constexpr const char *names[] = {"APPDATA",		 "LOCALAPPDATA", "ALLUSERSPROFILE", "PROGRAMDATA",
 									 "SYSTEMROOT",	 "WINDIR",		 "USERPROFILE",		"HOMEDRIVE",
@@ -911,6 +923,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
 	else if (argc == 2 && wcscmp(argv[1], L"time-zone-information") == 0)
 		written = timeZoneInformation();
+	else if (argc == 2 && wcscmp(argv[1], L"dynamic-time-zone-information") == 0)
+		written = dynamicTimeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"environment-defaults") == 0)
 		written = environmentDefaults();
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)

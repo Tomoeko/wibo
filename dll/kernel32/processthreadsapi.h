@@ -87,6 +87,7 @@ typedef void(_CC_STDCALL *PAPCFUNC)(ULONG_PTR);
 namespace kernel32 {
 
 BOOL WINAPI GetSystemTimes(FILETIME *idleTime, FILETIME *kernelTime, FILETIME *userTime);
+BOOL WINAPI SwitchToThread();
 
 BOOL WINAPI QueueUserWorkItem(LPTHREAD_START_ROUTINE function, PVOID context, ULONG flags);
 DWORD WINAPI QueueUserAPC(PAPCFUNC callback, HANDLE thread, ULONG_PTR argument);
