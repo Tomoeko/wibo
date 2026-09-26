@@ -75,6 +75,7 @@ typedef void(_CC_STDCALL *PAPCFUNC)(ULONG_PTR);
 
 namespace kernel32 {
 
+BOOL WINAPI QueueUserWorkItem(LPTHREAD_START_ROUTINE function, PVOID context, ULONG flags);
 DWORD WINAPI QueueUserAPC(PAPCFUNC callback, HANDLE thread, ULONG_PTR argument);
 
 BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,

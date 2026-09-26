@@ -106,6 +106,8 @@ void closeApcState();
 bool dispatchPendingApcs();
 DWORD waitAlertable(HANDLE handle, WaitableObject *object, DWORD milliseconds);
 
+bool createWorkerThread(DWORD (*function)(void *), void *parameter, DWORD &error);
+
 struct ThreadObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Thread;
 

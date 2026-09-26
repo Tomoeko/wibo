@@ -109,8 +109,7 @@ thread_local ThreadObject *g_currentThreadObject = nullptr;
 
 struct ThreadStartData {
 	ThreadObject *obj;
-	LPTHREAD_START_ROUTINE entry;
-	void *userData;
+	std::function<DWORD()> entry;
 };
 
 size_t defaultThreadStackReserve() {
@@ -170,7 +169,7 @@ void *threadTrampoline(void *param) {
 	// We ref'd the ThreadObject when constructing ThreadStartData,
 	// so we need to deref it when done. (Either normal exit or via pthread_cleanup)
 	ThreadStartData *dataPtr = static_cast<ThreadStartData *>(param);
-	ThreadStartData data = *dataPtr;
+	ThreadStartData data = std::move(*dataPtr);
 	delete dataPtr;
 
 	g_currentThreadObject = data.obj;
@@ -200,10 +199,10 @@ void *threadTrampoline(void *param) {
 
 	wibo::notifyDllThreadAttach();
 	kernel32::dispatchPendingApcs();
-	DEBUG_LOG("Calling thread entry %p with userData %p\n", data.entry, data.userData);
+	DEBUG_LOG("Calling thread entry\n");
 	DWORD result = 0;
 	if (data.entry) {
-		result = call_LPTHREAD_START_ROUTINE(data.entry, data.userData);
+		result = data.entry();
 	}
 	DEBUG_LOG("Thread exiting with code %u\n", result);
 	{
@@ -607,36 +606,32 @@ HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription)
 	return S_OK;
 }
 
-HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
-						   LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags,
-						   LPDWORD lpThreadId) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("CreateThread(%p, %zu, %p, %p, %u, %p)\n", lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter,
-			  dwCreationFlags, lpThreadId);
-	(void)lpThreadAttributes;
+namespace {
+Pin<ThreadObject> startThread(SIZE_T dwStackSize, std::function<DWORD()> entry, DWORD dwCreationFlags, DWORD &error) {
+	error = ERROR_SUCCESS;
 	constexpr DWORD CREATE_SUSPENDED = 0x00000004;
 	constexpr DWORD STACK_SIZE_PARAM_IS_A_RESERVATION = 0x00010000;
 	constexpr DWORD SUPPORTED_FLAGS = CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION;
 	if ((dwCreationFlags & ~SUPPORTED_FLAGS) != 0) {
 		DEBUG_LOG("CreateThread: unsupported creation flags 0x%x\n", dwCreationFlags);
-		setLastError(ERROR_NOT_SUPPORTED);
-		return NO_HANDLE;
+		error = ERROR_NOT_SUPPORTED;
+		return {};
 	}
 
 	Pin<ThreadObject> obj = make_pin<ThreadObject>(); // tid set during pthread_create
 	if ((dwCreationFlags & CREATE_SUSPENDED) != 0) {
 		obj->suspendCount = 1;
 	}
+	ThreadStartData *startData = new ThreadStartData{obj.get(), std::move(entry)};
 	detail::ref(obj.get()); // Increment ref for the new thread to adopt
-	ThreadStartData *startData = new ThreadStartData{obj.get(), lpStartAddress, lpParameter};
 
 	pthread_attr_t attr;
 	int rc = pthread_attr_init(&attr);
 	if (rc != 0) {
 		delete startData;
 		detail::deref(obj.get());
-		setLastError(wibo::winErrorFromErrno(rc));
-		return INVALID_HANDLE_VALUE;
+		error = wibo::winErrorFromErrno(rc);
+		return {};
 	}
 	size_t stackReserve = pthreadStackReserve(dwStackSize, dwCreationFlags);
 	rc = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -649,8 +644,8 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 		pthread_attr_destroy(&attr);
 		delete startData;
 		detail::deref(obj.get());
-		setLastError(wibo::winErrorFromErrno(rc));
-		return INVALID_HANDLE_VALUE;
+		error = wibo::winErrorFromErrno(rc);
+		return {};
 	}
 
 	rc = pthread_create(&obj->thread, &attr, threadTrampoline, startData);
@@ -659,19 +654,40 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 		// Clean up
 		delete startData;
 		detail::deref(obj.get());
-		setLastError(wibo::winErrorFromErrno(rc));
-		return INVALID_HANDLE_VALUE;
+		error = wibo::winErrorFromErrno(rc);
+		return {};
 	}
 
 	{
 		std::unique_lock lock(obj->m);
 		obj->cv.wait(lock, [&] { return obj->initialized; });
 	}
-	if (lpThreadId) {
-		*lpThreadId = obj->threadId;
-	}
+	return obj;
+}
 
-	return wibo::handles().alloc(std::move(obj), 0x1FFFFF, 0);
+} // namespace
+
+bool createWorkerThread(DWORD (*function)(void *), void *parameter, DWORD &error) {
+	return static_cast<bool>(startThread(0, [=] { return function(parameter); }, 0, error));
+}
+
+HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
+						   LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags,
+						   LPDWORD lpThreadId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateThread(%p, %zu, %p, %p, %u, %p)\n", lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter,
+			  dwCreationFlags, lpThreadId);
+	DWORD error = ERROR_SUCCESS;
+	auto object = startThread(
+		dwStackSize, [=] { return lpStartAddress ? call_LPTHREAD_START_ROUTINE(lpStartAddress, lpParameter) : 0; },
+		dwCreationFlags, error);
+	if (!object) {
+		setLastError(error);
+		return NO_HANDLE;
+	}
+	if (lpThreadId)
+		*lpThreadId = object->threadId;
+	return wibo::handles().alloc(std::move(object), 0x1FFFFF, 0);
 }
 
 [[noreturn]] void WINAPI ExitThread(DWORD dwExitCode) {
