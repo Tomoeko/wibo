@@ -334,6 +334,7 @@ add_executable(wibo
     dll/ws2/resolution.cpp
     dll/ws2/sockets.cpp
     dll/ws2/events.cpp
+    dll/ws2/options.cpp
     src/access.cpp
     src/async_io.cpp
     src/errors.cpp
@@ -659,6 +660,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_address_resolution SOURCES test/test_address_resolution.c COMPILE_OPTIONS -lws2_32)
         set_tests_properties(wibo.test_address_resolution PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_socket_options SOURCES test/test_socket_options.c COMPILE_OPTIONS -lws2_32)
+        set_tests_properties(wibo.test_socket_options PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_socket_events SOURCES test/test_socket_events.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_socket_lifetime SOURCES test/test_socket_lifetime.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
@@ -718,6 +721,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
+        wibo_add_fixture_bin(NAME test_descriptor_control SOURCES test/test_descriptor_control.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_format_message SOURCES test/test_format_message.c)

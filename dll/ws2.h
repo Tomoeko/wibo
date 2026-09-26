@@ -47,6 +47,9 @@ SOCKET WINAPI WSASocketA(int family, int type, int protocol, LPCVOID protocolInf
 SOCKET WINAPI socket(int family, int type, int protocol);
 int WINAPI closesocket(SOCKET handle);
 int WINAPI bind(SOCKET handle, LPCVOID address, int length);
+int WINAPI setsockopt(SOCKET handle, int level, int name, LPCSTR value, int length);
+int WINAPI getsockopt(SOCKET handle, int level, int name, LPSTR value, int *length);
+int WINAPI ioctlsocket(SOCKET handle, LONG command, ULONG *value);
 int WINAPI getsockname(SOCKET handle, LPVOID address, int *length);
 ULONG WINAPI(ntohl)(ULONG netlong);
 ULONG WINAPI(htonl)(ULONG value);

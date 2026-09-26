@@ -197,6 +197,12 @@ static const char *resolveNameByOrdinal(uint16_t ordinal) {
 		return "getsockname";
 	case 23:
 		return "socket";
+	case 7:
+		return "getsockopt";
+	case 10:
+		return "ioctlsocket";
+	case 21:
+		return "setsockopt";
 	case 8:
 		return "htonl";
 	case 9:

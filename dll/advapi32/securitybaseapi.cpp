@@ -709,6 +709,37 @@ BOOL WINAPI SetKernelObjectSecurity(HANDLE Handle, SECURITY_INFORMATION Security
 	return TRUE;
 }
 
+BOOL WINAPI GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR descriptor, WORD *control, DWORD *revision) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetSecurityDescriptorControl(%p, %p, %p)\n", descriptor, control, revision);
+	if (!descriptor || !control || !revision) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	*revision = descriptor->Revision;
+	if (descriptor->Revision != SECURITY_DESCRIPTOR_REVISION) {
+		kernel32::setLastError(1305); // ERROR_UNKNOWN_REVISION
+		return FALSE;
+	}
+	*control = descriptor->Control;
+	return TRUE;
+}
+
+BOOL WINAPI SetSecurityDescriptorControl(PSECURITY_DESCRIPTOR descriptor, WORD interest, WORD values) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetSecurityDescriptorControl(%p, 0x%x, 0x%x)\n", descriptor, interest, values);
+	if (!descriptor || (interest & ~0x3F00)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (descriptor->Revision != SECURITY_DESCRIPTOR_REVISION) {
+		kernel32::setLastError(ERROR_INVALID_SECURITY_DESCR);
+		return FALSE;
+	}
+	descriptor->Control = static_cast<WORD>((descriptor->Control & ~interest) | (values & interest));
+	return TRUE;
+}
+
 BOOL WINAPI InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR pSecurityDescriptor, DWORD dwRevision) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("InitializeSecurityDescriptor(%p, %u)\n", pSecurityDescriptor, dwRevision);

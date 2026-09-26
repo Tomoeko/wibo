@@ -1,4 +1,7 @@
 #include "user32.h"
+#include "user32/internal.h"
+
+#include <atomic>
 
 #include "common.h"
 #include "context.h"
@@ -15,6 +18,7 @@
 
 namespace {
 
+std::atomic<bool> g_ghostingDisabled = false;
 std::mutex g_atomMutex;
 std::unordered_map<std::u16string, UINT> g_registeredAtoms;
 
@@ -48,7 +52,17 @@ UINT registerAtom(LPCWSTR lpString) {
 
 } // namespace
 
+namespace user32::detail {
+bool ghostingDisabled() { return g_ghostingDisabled.load(); }
+} // namespace user32::detail
+
 namespace user32 {
+
+void WINAPI DisableProcessWindowsGhosting() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("DisableProcessWindowsGhosting()\n");
+	g_ghostingDisabled.store(true);
+}
 
 UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString) {
 	HOST_CONTEXT_GUARD();

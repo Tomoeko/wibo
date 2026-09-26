@@ -121,6 +121,8 @@ BOOL WINAPI GetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR pSecurityDescriptor, 
 									  LPBOOL lpbDaclDefaulted);
 BOOL WINAPI SetKernelObjectSecurity(HANDLE Handle, SECURITY_INFORMATION SecurityInformation,
 									PSECURITY_DESCRIPTOR SecurityDescriptor);
+BOOL WINAPI GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR descriptor, WORD *control, DWORD *revision);
+BOOL WINAPI SetSecurityDescriptorControl(PSECURITY_DESCRIPTOR descriptor, WORD interest, WORD values);
 BOOL WINAPI InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR pSecurityDescriptor, DWORD dwRevision);
 BOOL WINAPI SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR pSecurityDescriptor, BOOL bDaclPresent, PACL pDacl,
 									  BOOL bDaclDefaulted);

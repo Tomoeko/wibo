@@ -9,6 +9,8 @@
 
 namespace user32::detail {
 
+bool ghostingDisabled();
+
 struct WindowClass {
 	WNDCLASSEXW definition{};
 	ATOM atom = 0;

@@ -10,6 +10,8 @@ static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM first,
 }
 
 int main(void) {
+	DisableProcessWindowsGhosting();
+	DisableProcessWindowsGhosting();
 	HINSTANCE instance = GetModuleHandleW(NULL);
 	WCHAR name[] = L"wibo.fixture.class.\x4e2d";
 	WCHAR menu[] = L"fixture.menu";
