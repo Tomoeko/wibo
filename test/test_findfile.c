@@ -297,6 +297,41 @@ static void test_findclose_invalid_handle(void) {
 	TEST_CHECK_EQ(ERROR_INVALID_HANDLE, GetLastError());
 }
 
+static void test_extended_enumeration(void) {
+	WIN32_FIND_DATAW data;
+	HANDLE search = FindFirstFileExW(L"dir\\data??.txt", FindExInfoBasic, &data, FindExSearchNameMatch, NULL,
+									 FIND_FIRST_EX_LARGE_FETCH);
+	TEST_CHECK(search != INVALID_HANDLE_VALUE);
+	unsigned count = 0;
+	do {
+		TEST_CHECK(data.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE);
+		TEST_CHECK_EQ(0, data.nFileSizeHigh);
+		TEST_CHECK_EQ(7, data.nFileSizeLow);
+		TEST_CHECK_EQ(0, data.cAlternateFileName[0]);
+		TEST_CHECK(wcscmp(data.cFileName, L"data01.txt") == 0 || wcscmp(data.cFileName, L"data02.txt") == 0 ||
+				   wcscmp(data.cFileName, L"data10.txt") == 0);
+		++count;
+	} while (FindNextFileW(search, &data));
+	TEST_CHECK_EQ(ERROR_NO_MORE_FILES, GetLastError());
+	TEST_CHECK_EQ(3, count);
+	TEST_CHECK(FindClose(search));
+	WIN32_FIND_DATAA narrow;
+	search = FindFirstFileExA("dir\\file.txt", FindExInfoBasic, &narrow, FindExSearchNameMatch, NULL, 0);
+	TEST_CHECK(search != INVALID_HANDLE_VALUE);
+	TEST_CHECK_STR_EQ("file.txt", narrow.cFileName);
+	TEST_CHECK_EQ(9, narrow.nFileSizeLow);
+	TEST_CHECK_EQ(0, narrow.cAlternateFileName[0]);
+	TEST_CHECK(FindClose(search));
+	search = FindFirstFileExW(L"dir\\file.txt", FindExInfoStandard, &data, FindExSearchNameMatch, NULL, 0);
+	TEST_CHECK(search != INVALID_HANDLE_VALUE);
+	TEST_CHECK(wcscmp(data.cFileName, L"file.txt") == 0);
+	TEST_CHECK_EQ(9, data.nFileSizeLow);
+	TEST_CHECK(FindClose(search));
+	TEST_CHECK(FindFirstFileExW(L"dir\\*", FindExInfoMaxInfoLevel, &data, FindExSearchNameMatch, NULL, 0) ==
+			   INVALID_HANDLE_VALUE);
+	TEST_CHECK_EQ(ERROR_INVALID_PARAMETER, GetLastError());
+}
+
 int main(void) {
 	setup_fixture();
 
@@ -311,6 +346,7 @@ int main(void) {
 	test_wildcard_in_directory_segment();
 	test_directory_iteration_includes_special_entries();
 	test_findclose_invalid_handle();
+	test_extended_enumeration();
 
 	cleanup_fixture();
 	return EXIT_SUCCESS;
