@@ -59,14 +59,17 @@ BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode) {
 
 UINT WINAPI GetConsoleCP() {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetConsoleCP() -> 65001\n");
-	return 65001; // UTF-8
+	DEBUG_LOG("GetConsoleCP()\n");
+	// Standard streams and host terminals do not establish a Windows console session.
+	setLastError(ERROR_INVALID_HANDLE);
+	return 0;
 }
 
 UINT WINAPI GetConsoleOutputCP() {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetConsoleOutputCP() -> 65001\n");
-	return 65001; // UTF-8
+	DEBUG_LOG("GetConsoleOutputCP()\n");
+	setLastError(ERROR_INVALID_HANDLE);
+	return 0;
 }
 
 BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add) {

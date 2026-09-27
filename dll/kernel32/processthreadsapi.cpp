@@ -65,6 +65,7 @@ const FILETIME kDefaultThreadFileTime = {static_cast<DWORD>(UNIX_TIME_ZERO & 0xF
 constexpr DWORD STARTF_USESTDHANDLES = 0x00000100;
 
 constexpr DWORD CREATE_SUSPENDED = 0x00000004;
+constexpr DWORD DETACHED_PROCESS = 0x00000008;
 constexpr DWORD CREATE_NO_WINDOW = 0x08000000;
 constexpr DWORD CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 constexpr DWORD EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
@@ -1174,8 +1175,8 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	constexpr DWORD supportedFlags =
-		CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
+	constexpr DWORD supportedFlags = CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT |
+									 EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
 	if (dwCreationFlags & ~supportedFlags) {
 		DEBUG_LOG("Unsupported process creation flags: 0x%x\n", dwCreationFlags & ~supportedFlags);
 		setLastError(ERROR_NOT_SUPPORTED);
@@ -1236,6 +1237,9 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 		}
 		options.standardHandles =
 			files::StandardHandles{lpStartupInfo->hStdInput, lpStartupInfo->hStdOutput, lpStartupInfo->hStdError};
+	} else if (dwCreationFlags & DETACHED_PROCESS) {
+		// A detached process has no default console streams. Explicit startup streams still apply.
+		options.standardHandles = files::StandardHandles{NO_HANDLE, NO_HANDLE, NO_HANDLE, false};
 	} else {
 		files::StandardHandles standard{files::getStdHandle(STD_INPUT_HANDLE), files::getStdHandle(STD_OUTPUT_HANDLE),
 										files::getStdHandle(STD_ERROR_HANDLE), false};

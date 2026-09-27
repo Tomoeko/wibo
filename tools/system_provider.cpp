@@ -2159,7 +2159,7 @@ bool volumeQuery(const WCHAR *path, const WCHAR *classText, const WCHAR *lengthT
 	return response.write();
 }
 
-bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
+bool openRegistryPath(const WCHAR *pathText, const WCHAR *view, REGSAM access, HKEY &key, LSTATUS &status) {
 	std::wstring path(pathText);
 	const auto separator = path.find(L'\\');
 	const auto rootName = path.substr(0, separator);
@@ -2175,15 +2175,153 @@ bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool 
 		root = HKEY_USERS;
 	else if (_wcsicmp(rootName.c_str(), L"HKEY_CURRENT_CONFIG") == 0)
 		root = HKEY_CURRENT_CONFIG;
-	REGSAM access = KEY_QUERY_VALUE;
 	if (wcscmp(view, L"64") == 0)
 		access |= KEY_WOW64_64KEY;
 	else if (wcscmp(view, L"32") == 0)
 		access |= KEY_WOW64_32KEY;
 	else
 		return false;
+	status = root ? RegOpenKeyExW(root, subkey, 0, access, &key) : ERROR_INVALID_PARAMETER;
+	return true;
+}
+
+struct RegistrySubkey {
+	std::wstring name;
+	std::wstring className;
+	FILETIME lastWrite{};
+};
+
+LSTATUS captureRegistrySubkeys(HKEY key, std::vector<RegistrySubkey> &entries) {
+	constexpr size_t kMaxSubkeys = 4096;
+	constexpr size_t kNameCapacity = 256;
+	constexpr size_t kClassCapacity = 32768;
+	static_assert(sizeof(WCHAR) == 2);
+	entries.clear();
+	std::vector<WCHAR> classBuffer(kClassCapacity);
+	size_t responseBytes = 4 * sizeof(uint32_t);
+	for (DWORD index = 0;; ++index) {
+		WCHAR nameBuffer[kNameCapacity]{};
+		DWORD nameLength = kNameCapacity, classLength = kClassCapacity;
+		FILETIME lastWrite{};
+		const LSTATUS status =
+			RegEnumKeyExW(key, index, nameBuffer, &nameLength, nullptr, classBuffer.data(), &classLength, &lastWrite);
+		if (status == ERROR_NO_MORE_ITEMS)
+			return ERROR_SUCCESS;
+		if (status != ERROR_SUCCESS)
+			return status;
+		if (index >= kMaxSubkeys)
+			return ERROR_NOT_ENOUGH_MEMORY;
+		if (!nameLength || nameLength >= kNameCapacity || classLength >= kClassCapacity ||
+			nameBuffer[nameLength] != 0 || classBuffer[classLength] != 0 ||
+			std::find(nameBuffer, nameBuffer + nameLength, WCHAR(0)) != nameBuffer + nameLength ||
+			std::find(nameBuffer, nameBuffer + nameLength, L'\\') != nameBuffer + nameLength ||
+			std::find(classBuffer.begin(), classBuffer.begin() + classLength, WCHAR(0)) !=
+				classBuffer.begin() + classLength)
+			return ERROR_INVALID_DATA;
+		const size_t entryBytes = 4 * sizeof(uint32_t) + (size_t(nameLength) + classLength) * sizeof(WCHAR);
+		if (entryBytes > kMaxResponse - responseBytes)
+			return ERROR_NOT_ENOUGH_MEMORY;
+		responseBytes += entryBytes;
+		entries.push_back(
+			{std::wstring(nameBuffer, nameLength), std::wstring(classBuffer.data(), classLength), lastWrite});
+	}
+}
+
+bool sameRegistrySubkeys(const std::vector<RegistrySubkey> &first, const std::vector<RegistrySubkey> &second) {
+	if (first.size() != second.size())
+		return false;
+	for (size_t index = 0; index != first.size(); ++index) {
+		if (first[index].name != second[index].name || first[index].className != second[index].className ||
+			first[index].lastWrite.dwLowDateTime != second[index].lastWrite.dwLowDateTime ||
+			first[index].lastWrite.dwHighDateTime != second[index].lastWrite.dwHighDateTime)
+			return false;
+	}
+	return true;
+}
+
+bool registrySubkeys(const WCHAR *pathText, const WCHAR *view) {
 	HKEY key = nullptr;
-	LSTATUS status = root ? RegOpenKeyExW(root, subkey, 0, access, &key) : ERROR_INVALID_PARAMETER;
+	LSTATUS status = ERROR_SUCCESS;
+	if (!openRegistryPath(pathText, view, KEY_ENUMERATE_SUB_KEYS, key, status))
+		return false;
+	std::vector<RegistrySubkey> entries, verification;
+	if (status == ERROR_SUCCESS) {
+		// Repeated complete captures detect observed changes without requiring KEY_QUERY_VALUE.
+		// This is a bounded consistency check, not a transaction over concurrent registry writers.
+		for (unsigned attempt = 0; attempt != 3; ++attempt) {
+			status = captureRegistrySubkeys(key, entries);
+			if (status != ERROR_SUCCESS)
+				break;
+			status = captureRegistrySubkeys(key, verification);
+			if (status != ERROR_SUCCESS || sameRegistrySubkeys(entries, verification))
+				break;
+			status = ERROR_RETRY;
+		}
+	}
+	if (key) {
+		const LSTATUS closeStatus = RegCloseKey(key);
+		if (status == ERROR_SUCCESS)
+			status = closeStatus;
+	}
+	Response response;
+	response.header(status);
+	if (status == ERROR_SUCCESS) {
+		response.number(static_cast<uint32_t>(entries.size()));
+		for (const auto &entry : entries) {
+			response.bytes(entry.name.data(), entry.name.size() * sizeof(WCHAR));
+			response.bytes(entry.className.data(), entry.className.size() * sizeof(WCHAR));
+			response.number(entry.lastWrite.dwLowDateTime);
+			response.number(entry.lastWrite.dwHighDateTime);
+		}
+	}
+	return response.write();
+}
+
+bool registryAnsiString(const WCHAR *sourceText) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	// Hex encoding uses four request bytes for each counted UTF-16 code unit.
+	constexpr size_t kMaxSourceUnits = (64 * 1024 - 256) / 4;
+	constexpr size_t kMaxHexCharacters = kMaxSourceUnits * 4;
+	if (wcsnlen(sourceText, kMaxHexCharacters + 1) > kMaxHexCharacters)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	std::vector<WCHAR> source;
+	if (wcscmp(sourceText, L"-") != 0 && !decodeMappingString(sourceText, source))
+		return fail(ERROR_INVALID_PARAMETER);
+	std::vector<char> converted;
+	if (!source.empty()) {
+		SetLastError(ERROR_SUCCESS);
+		const int required = WideCharToMultiByte(CP_ACP, 0, source.data(), static_cast<int>(source.size()), nullptr, 0,
+												 nullptr, nullptr);
+		const DWORD queryError = GetLastError();
+		if (!required)
+			return fail(queryError ? queryError : ERROR_INVALID_DATA);
+		if (static_cast<size_t>(required) > kMaxResponse - 4 * sizeof(uint32_t))
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		converted.resize(static_cast<size_t>(required));
+		SetLastError(ERROR_SUCCESS);
+		const int written = WideCharToMultiByte(CP_ACP, 0, source.data(), static_cast<int>(source.size()),
+												converted.data(), required, nullptr, nullptr);
+		const DWORD conversionError = GetLastError();
+		if (!written)
+			return fail(conversionError ? conversionError : ERROR_INVALID_DATA);
+		if (written != required)
+			return fail(ERROR_INVALID_DATA);
+	}
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.bytes(converted.data(), converted.size());
+	return response.write();
+}
+
+bool registry(const WCHAR *pathText, const WCHAR *name, const WCHAR *view, bool snapshot = false) {
+	HKEY key = nullptr;
+	LSTATUS status = ERROR_SUCCESS;
+	if (!openRegistryPath(pathText, view, KEY_QUERY_VALUE, key, status))
+		return false;
 	DWORD type = 0, size = 0;
 	std::vector<BYTE> value;
 	if (status == ERROR_SUCCESS && name) {
@@ -2360,6 +2498,10 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = account(argv[2], argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-w") == 0)
 		written = account(argv[2], argv[3], false);
+	else if (argc == 3 && wcscmp(argv[1], L"registry-ansi-string") == 0)
+		written = registryAnsiString(argv[2]);
+	else if (argc == 4 && wcscmp(argv[1], L"registry-subkeys") == 0)
+		written = registrySubkeys(argv[2], argv[3]);
 	else if (argc == 4 && wcscmp(argv[1], L"registry-snapshot") == 0)
 		written = registry(argv[2], nullptr, argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"registry-open") == 0)

@@ -57,6 +57,8 @@ LSTATUS WINAPI RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserv
 								LPDWORD lpcbData);
 LSTATUS WINAPI RegEnumValueW(HKEY key, DWORD index, LPWSTR name, LPDWORD length, LPDWORD reserved, LPDWORD type,
 							 BYTE *data, LPDWORD size);
+LSTATUS WINAPI RegEnumKeyA(HKEY key, DWORD index, LPSTR name, DWORD capacity);
+LSTATUS WINAPI RegEnumKeyW(HKEY key, DWORD index, LPWSTR name, DWORD capacity);
 LSTATUS WINAPI RegEnumKeyExA(HKEY hKey, DWORD dwIndex, LPSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved,
 							 LPSTR lpClass, LPDWORD lpcchClass, FILETIME *lpftLastWriteTime);
 LSTATUS WINAPI RegEnumKeyExW(HKEY hKey, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved,

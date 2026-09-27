@@ -763,6 +763,22 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_process_std_handles SOURCES test/test_process_std_handles.c)
         set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
+        wibo_add_fixture_bin(NAME test_console_code_pages SOURCES test/test_console_code_pages.c
+            COMPILE_OPTIONS -municode)
+        set_tests_properties(wibo.test_console_code_pages PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_reg_enum_keys SOURCES test/test_reg_enum_keys.c
+            COMPILE_OPTIONS -ladvapi32)
+        set_tests_properties(wibo.test_reg_enum_keys PROPERTIES TIMEOUT 20)
+        wibo_add_fixture_bin(NAME test_reg_enum_provider SOURCES test/test_reg_enum_provider.c NO_TEST
+            COMPILE_OPTIONS -ladvapi32)
+        foreach(_registry_enum_mode success retry failed unavailable duplicate empty-name nested-name embedded-null
+                truncated trailing huge-count failed-with-data ansi-success ansi-truncated ansi-zero ansi-failed ansi-trailing)
+            add_test(NAME wibo.test_reg_enum_provider_${_registry_enum_mode}
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/registry_enumeration_provider_fixture.py
+                    $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_reg_enum_provider.exe ${_registry_enum_mode})
+            set_tests_properties(wibo.test_reg_enum_provider_${_registry_enum_mode} PROPERTIES TIMEOUT 30
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+        endforeach()
         wibo_add_fixture_bin(NAME test_crt_null_stdio SOURCES test/test_crt_null_stdio.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_crt_null_stdio PROPERTIES TIMEOUT 15)
