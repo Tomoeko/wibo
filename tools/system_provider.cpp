@@ -692,6 +692,72 @@ bool cpInfoExW(const WCHAR *codePageText, const WCHAR *flagsText) {
 	return response.write();
 }
 
+bool localeInfoEx(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t type = 0, incomingError = 0;
+	int capacity = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, type) || !parseMappingCount(parameters[2], capacity) ||
+		!parseUnsignedDecimal(parameters[4], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kRequestLimit = 64 * 1024;
+	constexpr size_t kRequestOverhead = 256;
+	constexpr size_t kMaxLocaleHex = 84 * sizeof(WCHAR) * 2;
+	const size_t nameLength = wcslen(parameters[1]);
+	const size_t seedLength = wcslen(parameters[3]);
+	if (nameLength > kMaxLocaleHex)
+		return fail(ERROR_INVALID_PARAMETER);
+	if (seedLength > kRequestLimit - kRequestOverhead - nameLength)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	const bool hasLocale = wcscmp(parameters[1], L"-") != 0;
+	std::vector<WCHAR> locale;
+	if (hasLocale) {
+		if (!decodeMappingString(parameters[1], locale))
+			return fail(ERROR_INVALID_PARAMETER);
+		for (WCHAR value : locale)
+			if (!value)
+				return fail(ERROR_INVALID_PARAMETER);
+		locale.push_back(0);
+	}
+	const bool hasData = wcscmp(parameters[3], L"-") != 0;
+	if (!hasData && capacity > 0)
+		return fail(ERROR_NOT_SUPPORTED);
+	const size_t units = hasData && capacity > 0 ? static_cast<size_t>(capacity) : 0;
+	const size_t byteCapacity = units * sizeof(WCHAR);
+	constexpr size_t kGuardUnits = 8;
+	constexpr WCHAR kGuardValue = 0xa5a5;
+	std::vector<WCHAR> buffer;
+	if (hasData) {
+		if (units > (kRequestLimit - kRequestOverhead - nameLength) / (2 * sizeof(WCHAR)))
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		std::string initial;
+		if (seedLength != byteCapacity * 2 || !decodeHex(parameters[3], initial, true) ||
+			initial.size() != byteCapacity)
+			return fail(ERROR_INVALID_PARAMETER);
+		// Retain a non-NULL pointer for zero and negative original capacities.
+		buffer.assign(units + kGuardUnits, kGuardValue);
+		if (byteCapacity)
+			std::memcpy(buffer.data(), initial.data(), byteCapacity);
+	}
+	SetLastError(incomingError);
+	const int result =
+		GetLocaleInfoEx(hasLocale ? locale.data() : nullptr, type, hasData ? buffer.data() : nullptr, capacity);
+	const DWORD nativeError = GetLastError();
+	if (result < 0 || (result && (capacity < 0 || (capacity > 0 && result > capacity))) ||
+		(hasData &&
+		 !std::all_of(buffer.begin() + units, buffer.end(), [](WCHAR value) { return value == kGuardValue; })))
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(result));
+	response.number(nativeError);
+	response.bytes(hasData ? buffer.data() : nullptr, byteCapacity);
+	return response.write();
+}
+
 bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
 	uint32_t flags = 0, capacity = 0, mode = 0;
 	const auto write = [](DWORD status, BOOL result, bool countPresent, ULONG count, ULONG units,
@@ -1403,6 +1469,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = compareStringEx(argv + 2);
 	else if (argc == 4 && wcscmp(argv[1], L"cp-info-ex-w") == 0)
 		written = cpInfoExW(argv[2], argv[3]);
+	else if (argc == 7 && wcscmp(argv[1], L"locale-info-ex") == 0)
+		written = localeInfoEx(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)

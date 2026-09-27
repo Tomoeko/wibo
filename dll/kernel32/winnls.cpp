@@ -26,9 +26,6 @@ constexpr DWORD LCID_ALTERNATE_SORTS = 0x00000004;
 constexpr LCID kEnUsLcid = 0x0409;
 constexpr LCID kInvariantLcid = 0x007f;
 constexpr DWORD LOCALE_ALLOW_NEUTRAL_NAMES = 0x08000000;
-constexpr DWORD kLocaleNoUserOverride = 0x80000000u;
-constexpr DWORD kLocaleReturnNumber = 0x20000000u;
-constexpr DWORD kLocaleFlagMask = 0xF0000000u;
 constexpr DWORD kMapSortKey = 0x00000400;
 constexpr DWORD kMapHash = 0x00040000;
 constexpr DWORD kMapSortHandle = 0x20000000;
@@ -557,50 +554,63 @@ int WINAPI GetLocaleInfoW(LCID Locale, LCTYPE LCType, LPWSTR lpLCData, int cchDa
 
 int WINAPI GetLocaleInfoEx(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData, int cchData) {
 	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
 	DEBUG_LOG("GetLocaleInfoEx(%p, %u, %p, %d)\n", lpLocaleName, LCType, lpLCData, cchData);
-
-	if (cchData < 0) {
-		setLastError(ERROR_INSUFFICIENT_BUFFER);
+	if (!lpLCData && cchData > 0) {
+		// Some providers do not validate this pointer before writing.
+		setLastError(ERROR_NOT_SUPPORTED);
 		return 0;
 	}
-
-	DWORD lctypeFlags = static_cast<DWORD>(LCType) & kLocaleFlagMask;
-	constexpr DWORD kSupportedFlags = kLocaleNoUserOverride;
-	if ((lctypeFlags & kLocaleReturnNumber) != 0 || (lctypeFlags & ~kSupportedFlags) != 0) {
-		setLastError(ERROR_INVALID_FLAGS);
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
 		return 0;
 	}
-
-	if (lpLocaleName) {
-		std::string localeName = wideStringToString(reinterpret_cast<const uint16_t *>(lpLocaleName));
-		std::string normalized = stringToLower(localeName);
-		if (!normalized.empty() && normalized != "en-us" && normalized != "en_us" &&
-			normalized != "!x-sys-default-locale") {
-			DEBUG_LOG("GetLocaleInfoEx: unsupported locale name '%s'\n", localeName.c_str());
+	std::string locale;
+	if (!encodeNlsLocale(lpLocaleName, locale)) {
+		return 0;
+	}
+	constexpr size_t kRequestOverhead = 256;
+	const size_t remainingHexBytes = kMaxNlsRequest - kRequestOverhead - locale.size();
+	size_t byteCapacity = 0;
+	if (lpLCData && cchData > 0) {
+		if (static_cast<size_t>(cchData) > remainingHexBytes / (2 * sizeof(WCHAR))) {
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return 0;
+		}
+		byteCapacity = static_cast<size_t>(cchData) * sizeof(WCHAR);
+		if (byteCapacity > std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(lpLCData)) {
 			setLastError(ERROR_INVALID_PARAMETER);
 			return 0;
 		}
 	}
-
-	DWORD baseType = static_cast<DWORD>(LCType) & ~kLocaleFlagMask;
-	std::string info = localeInfoString(static_cast<int>(baseType));
-	auto wide = stringToWideString(info.c_str());
-	size_t required = wide.size();
-
-	if (cchData == 0) {
-		return static_cast<int>(required);
-	}
-	if (!lpLCData) {
-		setLastError(ERROR_INVALID_PARAMETER);
+	// Preserve untouched bytes and native failure writes, including numeric and binary data.
+	const std::string seed =
+		lpLCData ? wibo::provider::encodeBytes(std::string_view(reinterpret_cast<const char *>(lpLCData), byteCapacity))
+				 : "-";
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"locale-info-ex", std::to_string(LCType), locale, std::to_string(cchData), seed,
+								  std::to_string(incomingError)},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
 		return 0;
 	}
-	if (static_cast<size_t>(cchData) < required) {
-		setLastError(ERROR_INSUFFICIENT_BUFFER);
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader)) {
 		return 0;
 	}
-
-	std::memcpy(lpLCData, wide.data(), required * sizeof(uint16_t));
-	return static_cast<int>(required);
+	uint32_t result = 0, nativeError = 0;
+	std::vector<uint8_t> output;
+	if (!reader.number(result) || result > INT32_MAX || !reader.number(nativeError) || !reader.bytes(output) ||
+		!reader.done() || output.size() != byteCapacity ||
+		(result && (cchData < 0 || (cchData > 0 && result > static_cast<uint32_t>(cchData))))) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (byteCapacity) {
+		std::memcpy(lpLCData, output.data(), byteCapacity);
+	}
+	setLastError(nativeError);
+	return static_cast<int>(result);
 }
 
 BOOL WINAPI EnumSystemLocalesA(LOCALE_ENUMPROCA lpLocaleEnumProc, DWORD dwFlags) {

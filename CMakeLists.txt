@@ -867,6 +867,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             SOURCES test/test_file_version_info_size_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
         wibo_add_fixture_bin(NAME test_file_version_info_ex
             SOURCES test/test_file_version_info_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
+        wibo_add_fixture_bin(NAME test_locale_info_ex SOURCES test/test_locale_info_ex.c NO_TEST)
+        foreach(mode success null-locale success-cleared false-zero false-mutated query-data negative-success write-overflow invalid-result truncated trailing short-blob failed failed-with-data)
+            add_test(NAME wibo.test_locale_info_ex_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_locale_info_ex.exe)
+            set_tests_properties(wibo.test_locale_info_ex_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/locale_info_provider_fixture.py;WIBO_FIXTURE_LOCALE_INFO_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_locale_info_ex_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_locale_info_ex.exe)
+        set_tests_properties(wibo.test_locale_info_ex_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_LOCALE_INFO_RESPONSE=unavailable")
+        add_test(NAME wibo.test_locale_info_ex_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_locale_info_ex.exe)
+        set_tests_properties(wibo.test_locale_info_ex_local PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/locale_info_provider_fixture.py;WIBO_EXPECT_LOCALE_INFO_LOCAL=1")
         foreach(mode success success-preserved no-handle zero-result zero-error unwritten-handle null-filename empty-filename failed truncated trailing invalid-presence nonzero-handle absent-value unexpected-handle)
             add_test(NAME wibo.test_file_version_info_size_ex_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
