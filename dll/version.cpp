@@ -8,9 +8,12 @@
 #include "modules.h"
 #include "resources.h"
 #include "strutil.h"
+#include "system_provider.h"
 #include "types.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -19,6 +22,97 @@
 namespace {
 
 constexpr uint32_t RT_VERSION = 16;
+constexpr size_t kMaxVersionPathUnits = (64 * 1024 - 128) / 4;
+
+bool encodeVersionFileName(LPCWSTR filename, std::string &encoded) {
+	encoded = "-";
+	if (!filename)
+		return true;
+	const size_t units = wstrnlen(filename, kMaxVersionPathUnits);
+	if (units == kMaxVersionPathUnits) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
+	if (!units) {
+		encoded.clear();
+		return true;
+	}
+	std::u16string name;
+	name.reserve(units);
+	for (size_t index = 0; index < units; ++index)
+		name.push_back(static_cast<char16_t>(filename[index]));
+	std::string path;
+	if (!utf16ToUtf8(name, path)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	std::string normalized = path;
+	std::replace(normalized.begin(), normalized.end(), '\\', '/');
+	if (normalized.starts_with("//?/"))
+		normalized.erase(0, 4);
+	const bool rootedDrive =
+		normalized.size() >= 3 && normalized[1] == ':' && normalized[2] == '/' &&
+		(normalized[0] == 'C' || normalized[0] == 'c' || normalized[0] == 'Z' || normalized[0] == 'z');
+	const bool rootedHost = !path.empty() && path[0] == '/' && !normalized.empty() && normalized[0] == '/' &&
+							(normalized.size() == 1 || normalized[1] != '/');
+	if (!rootedDrive && !rootedHost) {
+		// Relative paths require the guest loader's search context.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	const char *configured = std::getenv("WIBO_SYSTEM_PROVIDER_HOST_ROOT");
+	if (!configured || !*configured) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	const size_t rootLength = strnlen(configured, kMaxVersionPathUnits);
+	if (rootLength == kMaxVersionPathUnits) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
+	std::string root(configured, rootLength);
+	std::replace(root.begin(), root.end(), '/', '\\');
+	const bool driveLetter = (root[0] >= 'A' && root[0] <= 'Z') || (root[0] >= 'a' && root[0] <= 'z');
+	if (root.size() < 2 || !driveLetter || root[1] != ':' || (root.size() > 2 && root[2] != '\\') ||
+		root.find(':', 2) != std::string::npos) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	while (root.size() > 2 && root.back() == '\\')
+		root.pop_back();
+	std::error_code error;
+	const auto absolute = std::filesystem::absolute(files::pathFromWindows(path.c_str()), error);
+	if (error) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	const auto canonical = std::filesystem::weakly_canonical(absolute, error);
+	const std::string physical = (error ? absolute.lexically_normal() : canonical).generic_string();
+	if (physical.find_first_of(":\\") != std::string::npos) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	// This setting declares the provider namespace corresponding to the host root.
+	auto backend = utf8ToUtf16(root + physical);
+	if (!backend) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	if (backend->size() > kMaxVersionPathUnits) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
+	std::string bytes;
+	bytes.reserve(backend->size() * sizeof(WCHAR));
+	for (char16_t value : *backend) {
+		if (value == '/')
+			value = '\\';
+		bytes.push_back(static_cast<char>(value & 0xff));
+		bytes.push_back(static_cast<char>(value >> 8));
+	}
+	encoded = wibo::provider::encodeBytes(bytes);
+	return true;
+}
 
 uint16_t readU16(const uint8_t *ptr) { return static_cast<uint16_t>(ptr[0] | (ptr[1] << 8)); }
 
@@ -291,6 +385,46 @@ UINT WINAPI GetFileVersionInfoSizeW(LPCWSTR lptstrFilename, LPDWORD lpdwHandle) 
 	DEBUG_LOG("GetFileVersionInfoSizeW -> ");
 	auto narrow = wideStringToString(lptstrFilename);
 	return GetFileVersionInfoSizeA(narrow.c_str(), lpdwHandle);
+}
+
+DWORD WINAPI GetFileVersionInfoSizeExW(DWORD dwFlags, LPCWSTR lpwstrFilename, LPDWORD lpdwHandle) {
+	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = kernel32::getLastError();
+	DEBUG_LOG("GetFileVersionInfoSizeExW(0x%x, %p, %p)\n", dwFlags, lpwstrFilename, lpdwHandle);
+	std::string filename;
+	if (!encodeVersionFileName(lpwstrFilename, filename))
+		return 0;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"file-version-info-size-ex-w", std::to_string(dwFlags), filename,
+								  lpdwHandle ? "1" : "0", std::to_string(incomingError)},
+								 response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (status != ERROR_SUCCESS) {
+		DWORD error = status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status);
+		if (!reader.done())
+			error = ERROR_INVALID_DATA;
+		kernel32::setLastError(error);
+		return 0;
+	}
+	uint32_t size = 0, nativeError = 0, handlePresent = 0, handle = 0;
+	if (!reader.number(size) || !reader.number(nativeError) || !reader.number(handlePresent) || handlePresent > 1 ||
+		!reader.number(handle) || handle || (handlePresent && !lpdwHandle) || !reader.done()) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (handlePresent)
+		*lpdwHandle = handle;
+	// LastError is part of this native result, including successful calls.
+	kernel32::setLastError(nativeError);
+	return size;
 }
 
 UINT WINAPI GetFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData) {

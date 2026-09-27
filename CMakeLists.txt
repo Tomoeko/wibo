@@ -67,7 +67,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lsetupapi -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lsetupapi -lversion -o ${_provider_image}
         DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -861,6 +861,32 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
+        wibo_add_fixture_dll(NAME file_version_no_resource SOURCES test/fixture_relocation_anchor.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0)
+        wibo_add_fixture_bin(NAME test_file_version_info_size_ex
+            SOURCES test/test_file_version_info_size_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
+        foreach(mode success success-preserved no-handle zero-result zero-error unwritten-handle null-filename empty-filename failed truncated trailing invalid-presence nonzero-handle absent-value unexpected-handle)
+            add_test(NAME wibo.test_file_version_info_size_ex_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
+            set_tests_properties(wibo.test_file_version_info_size_ex_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/version_size_provider_fixture.py;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_FIXTURE_VERSION_SIZE_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_file_version_info_size_ex_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
+        set_tests_properties(wibo.test_file_version_info_size_ex_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_FIXTURE_VERSION_SIZE_RESPONSE=unavailable")
+        add_test(NAME wibo.test_file_version_info_size_ex_namespace_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
+        set_tests_properties(wibo.test_file_version_info_size_ex_namespace_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/version_size_provider_fixture.py;WIBO_SYSTEM_PROVIDER_HOST_ROOT=;WIBO_FIXTURE_VERSION_SIZE_RESPONSE=namespace-unavailable")
+        add_test(NAME wibo.test_file_version_info_size_ex_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
+        set_tests_properties(wibo.test_file_version_info_size_ex_local PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_EXPECT_VERSION_SIZE_LOCAL=1")
         wibo_add_fixture_bin(NAME test_threading SOURCES test/test_threading.c)
         wibo_add_fixture_bin(NAME test_process_write_buffers SOURCES test/test_process_write_buffers.c)
         set_tests_properties(wibo.test_process_write_buffers PROPERTIES TIMEOUT 30)

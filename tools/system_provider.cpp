@@ -744,6 +744,43 @@ bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText,
 	return write(status, result, countPresent, count, units, languages);
 }
 
+bool fileVersionInfoSizeExW(const WCHAR *flagsText, const WCHAR *filenameText, const WCHAR *handleText,
+							const WCHAR *lastErrorText) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t flags = 0, hasHandle = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(flagsText, UINT32_MAX, flags) || !parseUnsignedDecimal(handleText, 1, hasHandle) ||
+		!parseUnsignedDecimal(lastErrorText, UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	const bool hasFilename = wcscmp(filenameText, L"-") != 0;
+	std::vector<WCHAR> filename;
+	if (hasFilename) {
+		if (!decodeMappingString(filenameText, filename))
+			return fail(ERROR_INVALID_PARAMETER);
+		for (WCHAR value : filename)
+			if (!value)
+				return fail(ERROR_INVALID_PARAMETER);
+		filename.push_back(0);
+	}
+	constexpr DWORD kUnwrittenHandle = UINT32_MAX;
+	DWORD handle = kUnwrittenHandle;
+	SetLastError(incomingError);
+	const DWORD size =
+		GetFileVersionInfoSizeExW(flags, hasFilename ? filename.data() : nullptr, hasHandle ? &handle : nullptr);
+	const DWORD nativeError = GetLastError();
+	const bool handlePresent = hasHandle && handle != kUnwrittenHandle;
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(size);
+	response.number(nativeError);
+	response.number(handlePresent ? 1 : 0);
+	response.number(handlePresent ? handle : 0);
+	return response.write();
+}
+
 bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
 	std::string classBytes, enumerator;
 	GUID classGuid{};
@@ -1307,6 +1344,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = cpInfoExW(argv[2], argv[3]);
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
+	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)
+		written = fileVersionInfoSizeExW(argv[2], argv[3], argv[4], argv[5]);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)
