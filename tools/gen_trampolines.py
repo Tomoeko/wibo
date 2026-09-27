@@ -17,6 +17,7 @@ if __name__ == "__main__":
 import argparse
 import ctypes
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -137,6 +138,7 @@ class FuncInfo:
     variadic: bool
     return_type: ArgInfo
     args: List[ArgInfo] = field(default_factory=list)
+    guest_entry: Optional[str] = None
 
 
 @dataclass
@@ -214,6 +216,34 @@ def _source_cc_from_annotations(func: Cursor) -> CallingConv:
             elif child.spelling == "CC:cdecl":
                 return CallingConv.C
     return CallingConv.DEFAULT
+
+
+_CPP_KEYWORDS = frozenset("""
+alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t
+char16_t char32_t class compl concept const consteval constexpr constinit const_cast
+continue co_await co_return co_yield decltype default delete do double dynamic_cast
+else enum explicit export extern false float for friend goto if inline int long
+mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected
+public register reinterpret_cast requires return short signed sizeof static
+static_assert static_cast struct switch template this thread_local throw true try
+typedef typeid typename union unsigned using virtual void volatile wchar_t while xor xor_eq
+""".split())
+
+
+def _guest_entry_from_annotations(func: Cursor) -> Optional[str]:
+    annotations = [
+        child.spelling for child in func.get_children()
+        if child.kind == CursorKind.ANNOTATE_ATTR
+        and child.spelling.strip().startswith("GUEST_ENTRY")
+    ]
+    if not annotations:
+        return None
+    if len(annotations) != 1:
+        raise ValueError(f"{func.spelling}: duplicate GUEST_ENTRY annotations")
+    match = re.fullmatch(r"GUEST_ENTRY:([A-Za-z_][A-Za-z0-9_]*)", annotations[0])
+    if not match or match.group(1) in _CPP_KEYWORDS:
+        raise ValueError(f"{func.spelling}: malformed GUEST_ENTRY annotation {annotations[0]!r}")
+    return match.group(1)
 
 
 def _is_handle_typedef(arg_type: CXType) -> bool:
@@ -400,8 +430,11 @@ def collect_functions(
             name = node.spelling
             if not name:
                 return
+            guest_entry = _guest_entry_from_annotations(node)
             source_cc = _source_cc_from_annotations(node)
             if source_cc == CallingConv.DEFAULT:
+                if guest_entry:
+                    raise ValueError(f"{name}: GUEST_ENTRY requires a CC annotation")
                 return  # No CC annotation; skip
             out[name] = FuncInfo(
                 qualified_ns="::".join(ns_parts),
@@ -412,6 +445,7 @@ def collect_functions(
                 variadic=node.type.is_function_variadic(),
                 return_type=_calculate_arg_info(node.type.get_result()),
                 args=_collect_args(node.type),
+                guest_entry=guest_entry,
             )
 
         # Recurse into children
@@ -1051,7 +1085,7 @@ def emit_header_mapping(
             lines.append("}")
 
         for f in funcs:
-            if f.variadic:
+            if f.variadic and not f.guest_entry:
                 continue
             qualified = f.name
             params = []
@@ -1060,24 +1094,31 @@ def emit_header_mapping(
                 type_str = _type_to_string(arg.type)
                 params.append(f"{type_str} arg{i}")
                 arg_names.append(f"arg{i}")
+            if f.variadic:
+                params.append("...")
             param_list = ", ".join(params)
             call_args = ", ".join(arg_names)
             return_type = _type_to_string(f.return_type.type)
             thunk = f"wibo_guest_to_host_{dll}_{f.name}"
             if f.qualified_ns:
                 lines.append(f"namespace {f.qualified_ns} {{")
-            lines.append(
-                f"static {return_type} __attribute__((ms_abi)) {thunk}({param_list}) {{"
-            )
-            lines.append("\tTEB *teb = enterHostContext();")
-            if f.return_type.type.get_canonical().kind == TypeKind.VOID:
-                lines.append(f"\t{qualified}({call_args});")
-                lines.append("\tenterGuestContext(teb);")
+            if f.guest_entry:
+                lines.append(
+                    f'extern "C" {return_type} __attribute__((ms_abi)) {f.guest_entry}({param_list});'
+                )
             else:
-                lines.append(f"\tauto result = {qualified}({call_args});")
-                lines.append("\tenterGuestContext(teb);")
-                lines.append("\treturn result;")
-            lines.append("}")
+                lines.append(
+                    f"static {return_type} __attribute__((ms_abi)) {thunk}({param_list}) {{"
+                )
+                lines.append("\tTEB *teb = enterHostContext();")
+                if f.return_type.type.get_canonical().kind == TypeKind.VOID:
+                    lines.append(f"\t{qualified}({call_args});")
+                    lines.append("\tenterGuestContext(teb);")
+                else:
+                    lines.append(f"\tauto result = {qualified}({call_args});")
+                    lines.append("\tenterGuestContext(teb);")
+                    lines.append("\treturn result;")
+                lines.append("}")
             if f.qualified_ns:
                 lines.append(f"}} // namespace {f.qualified_ns}")
 
@@ -1086,7 +1127,10 @@ def emit_header_mapping(
         for f in funcs:
             qualified = f"{f.qualified_ns}::{f.name}" if f.qualified_ns else f.name
             thunk = f"wibo_guest_to_host_{dll}_{f.name}"
-            target = qualified if f.variadic else (f"{f.qualified_ns}::{thunk}" if f.qualified_ns else thunk)
+            if f.guest_entry:
+                target = f"{f.qualified_ns}::{f.guest_entry}" if f.qualified_ns else f.guest_entry
+            else:
+                target = qualified if f.variadic else (f"{f.qualified_ns}::{thunk}" if f.qualified_ns else thunk)
             lines.append(f'\tif (strcmp(name, "{f.name}") == 0) return (void*)&{target};')
         for v in variables:
             qualified = f"{v.qualified_ns}::{v.name}" if v.qualified_ns else v.name
@@ -1228,7 +1272,11 @@ def main() -> int:
     except TranslationUnitLoadError as error:
         sys.stderr.write(f"{error}\n")
         return 1
-    funcs = collect_functions(tu, args.ns, arch)
+    try:
+        funcs = collect_functions(tu, args.ns, arch)
+    except ValueError as error:
+        sys.stderr.write(f"Cannot generate trampolines: {error}\n")
+        return 1
     typedefs = collect_typedefs(tu, arch)
     variables = collect_variables(tu, args.ns)
 

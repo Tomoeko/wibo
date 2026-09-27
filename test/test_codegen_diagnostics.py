@@ -12,6 +12,13 @@ namespace fixture {
 __attribute__((annotate("CC:stdcall"), ms_abi)) int Probe(unsigned long long value);
 }
 """
+DIRECT_ENTRY_PROTOTYPE = """
+namespace fixture {
+struct Record { unsigned long long value; };
+__attribute__((annotate("CC:stdcall"), annotate("GUEST_ENTRY:fixtureDirectEntry"), ms_abi))
+unsigned long long Probe(Record *value);
+}
+"""
 
 
 class CodegenDiagnosticsTests(unittest.TestCase):
@@ -120,6 +127,49 @@ class CodegenDiagnosticsTests(unittest.TestCase):
             self.assertEqual(assembly.read_bytes(), original[assembly])
             self.assertNotEqual(assembly.stat().st_mtime_ns, timestamps[assembly])
             self.assertEqual(header.stat().st_mtime_ns, header_timestamp)
+
+    def test_external_guest_entry_is_direct_only_for_x64(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = self.generate(directory, DIRECT_ENTRY_PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            mapping = (directory / "fixture_trampolines.h").read_text()
+            self.assertIn('extern "C" unsigned long long __attribute__((ms_abi)) fixtureDirectEntry(', mapping)
+            self.assertIn('return (void*)&fixture::fixtureDirectEntry;', mapping)
+            self.assertNotIn("wibo_guest_to_host_fixture_Probe", mapping)
+
+            result = self.generate(directory, DIRECT_ENTRY_PROTOTYPE, ["--guest-arch", "x86"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = [directory / "fixture.S", directory / "fixture_trampolines.h"]
+            annotated = [output.read_bytes() for output in outputs]
+            source = DIRECT_ENTRY_PROTOTYPE.replace('annotate("GUEST_ENTRY:fixtureDirectEntry"), ', "")
+            result = self.generate(directory, source, ["--guest-arch", "x86"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([output.read_bytes() for output in outputs], annotated)
+
+    def test_guest_entry_annotation_errors_preserve_previous_outputs(self):
+        cases = [
+            ('annotate("GUEST_ENTRY:")', "malformed GUEST_ENTRY"),
+            ('annotate("GUEST_ENTRY:bad-name")', "malformed GUEST_ENTRY"),
+            ('annotate("GUEST_ENTRY:class")', "malformed GUEST_ENTRY"),
+            ('annotate("GUEST_ENTRY:entry"), annotate("GUEST_ENTRY:entry")', "duplicate GUEST_ENTRY"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = self.generate(directory, PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = [directory / "fixture.S", directory / "fixture_trampolines.h"]
+            previous = [(output.read_bytes(), output.stat().st_mtime_ns) for output in outputs]
+            for annotation, diagnostic in cases:
+                with self.subTest(annotation=annotation):
+                    source = PROTOTYPE.replace('annotate("CC:stdcall")', 'annotate("CC:stdcall"), ' + annotation)
+                    result = self.generate(directory, source)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(diagnostic, result.stderr)
+                    self.assertIn("Cannot generate trampolines", result.stderr)
+                    self.assertEqual(
+                        [(output.read_bytes(), output.stat().st_mtime_ns) for output in outputs], previous
+                    )
 
 
 if __name__ == "__main__":
