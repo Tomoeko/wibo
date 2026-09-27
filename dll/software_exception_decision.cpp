@@ -9,6 +9,7 @@ namespace {
 constexpr DWORD kNoncontinuable = 1;
 constexpr DWORD kNoncontinuableException = 0xc0000025;
 constexpr DWORD kInvalidParameter = 0xc000000d;
+constexpr DWORD kLegacyThreadNameException = 0x406d1388;
 constexpr DWORD kMutableArithmeticFlags = 0x8d5;
 constexpr WORD kX87ExceptionMasks = 0x3f;
 constexpr DWORD kSseExceptionMasks = 0x1f80;
@@ -48,6 +49,15 @@ DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *c
 	const LONG result = wibo::invokeVectoredExceptionHandlers(&info, wibo::invokeVectoredGuestHandler64);
 	if (result != EXCEPTION_CONTINUE_EXECUTION) {
 		output->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
+		if (result == EXCEPTION_CONTINUE_SEARCH && output->originalCode == kLegacyThreadNameException &&
+			((output->originalFlags | capture->record->ExceptionFlags) & kNoncontinuable) == 0 &&
+			capture->callerCapture && capture->record == &capture->callerCapture->localRecord) {
+			// Preserve the notification return policy using the immutable capture.
+			// Context mutations from unsuccessful handlers do not select a resume.
+			std::memcpy(&output->resumeContext, &capture->context, sizeof(CONTEXT64));
+			output->kind = SoftwareExceptionDecisionKind64::LegacyNotificationReturn;
+			output->failureCode = 0;
+		}
 		return static_cast<DWORD>(output->kind);
 	}
 	// Neither clearing an original noncontinuable flag nor setting it while

@@ -9,6 +9,7 @@ namespace {
 using Kind = SoftwareExceptionDecisionKind64;
 constexpr DWORD kOuterCode = 0xe0420701;
 constexpr DWORD kInnerCode = 0xe0420702;
+constexpr DWORD kLegacyThreadNameException = 0x406d1388;
 unsigned hostTransitions, guestTransitions, handlerCalls;
 bool guestActive;
 char order[32];
@@ -215,10 +216,102 @@ LONG GUEST_STDCALL mutateThenAccept(PEXCEPTION_POINTERS info) {
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+LONG GUEST_STDCALL mutateThenSearch(PEXCEPTION_POINTERS info) {
+	mutateThenAccept(info);
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG GUEST_STDCALL setNotificationCodeThenSearch(PEXCEPTION_POINTERS info) {
+	fromGuestPtr<EXCEPTION_RECORD>(info->ExceptionRecord)->ExceptionCode = kLegacyThreadNameException;
+	++handlerCalls;
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void remove(PVOID token) {
 	TEST_CHECK(token != nullptr);
 	TEST_CHECK_EQ(1, kernel32::RemoveVectoredExceptionHandler(token));
 	TEST_CHECK_EQ(0, kernel32::RemoveVectoredExceptionHandler(token));
+}
+
+void initializeNotificationCapture(SoftwareExceptionCapture64 &capture, SoftwareExceptionCapture64 &caller,
+								   DWORD flags = 0) {
+	initializeCapture(capture, kLegacyThreadNameException);
+	initializeCapture(caller, kLegacyThreadNameException);
+	caller.localRecord.ExceptionFlags = flags;
+	capture.record = &caller.localRecord;
+	capture.callerCapture = &caller;
+}
+
+void checkLegacyNotification() {
+	SoftwareExceptionCapture64 capture{}, caller{};
+	initializeNotificationCapture(capture, caller);
+	auto result = decide(capture, Kind::LegacyNotificationReturn);
+	TEST_CHECK_EQ(0, result.failureCode);
+	TEST_CHECK_EQ(kLegacyThreadNameException, result.originalCode);
+	TEST_CHECK(std::memcmp(&capture.context, &result.resumeContext, sizeof(CONTEXT64)) == 0);
+
+	// Captures without matching Raise ancestry do not inherit the notification policy.
+	capture.callerCapture = nullptr;
+	decide(capture, Kind::UnsupportedFrameDispatch);
+	capture.callerCapture = &caller;
+	capture.record = &capture.localRecord;
+	decide(capture, Kind::UnsupportedFrameDispatch);
+	initializeNotificationCapture(capture, caller, 1);
+	decide(capture, Kind::UnsupportedFrameDispatch);
+
+	initializeNotificationCapture(capture, caller);
+	CONTEXT64 callerBefore{};
+	std::memcpy(&callerBefore, &caller.context, sizeof(callerBefore));
+	PVOID token = kernel32::AddVectoredExceptionHandler(0, changeThenSearch);
+	TEST_CHECK(token != nullptr);
+	result = decide(capture, Kind::LegacyNotificationReturn);
+	TEST_CHECK_EQ(0, result.failureCode);
+	TEST_CHECK_EQ(2, capture.record->ExceptionInformation[0]);
+	TEST_CHECK(std::memcmp(&capture.context, &result.resumeContext, sizeof(CONTEXT64)) == 0);
+	TEST_CHECK(std::memcmp(&callerBefore, &caller.context, sizeof(callerBefore)) == 0);
+	remove(token);
+
+	token = kernel32::AddVectoredExceptionHandler(0, mutateThenSearch);
+	TEST_CHECK(token != nullptr);
+	initializeNotificationCapture(capture, caller, 1);
+	mutation = Mutation::ClearNoncontinuable;
+	result = decide(capture, Kind::UnsupportedFrameDispatch);
+	TEST_CHECK_EQ(1, result.originalFlags);
+	TEST_CHECK_EQ(0, capture.record->ExceptionFlags);
+	initializeNotificationCapture(capture, caller);
+	mutation = Mutation::SetNoncontinuable;
+	result = decide(capture, Kind::UnsupportedFrameDispatch);
+	TEST_CHECK_EQ(0, result.originalFlags);
+	TEST_CHECK_EQ(1, capture.record->ExceptionFlags);
+	initializeNotificationCapture(capture, caller);
+	mutation = Mutation::Rip;
+	result = decide(capture, Kind::LegacyNotificationReturn);
+	TEST_CHECK(std::memcmp(&capture.context, &result.resumeContext, sizeof(CONTEXT64)) == 0);
+	initializeNotificationCapture(capture, caller);
+	capture.callerCapture = nullptr;
+	decide(capture, Kind::UnsupportedFrameDispatch);
+	remove(token);
+
+	// A changed record code cannot convert an ordinary exception into a notification.
+	initializeNotificationCapture(capture, caller);
+	caller.localRecord.ExceptionCode = kOuterCode;
+	token = kernel32::AddVectoredExceptionHandler(0, setNotificationCodeThenSearch);
+	TEST_CHECK(token != nullptr);
+	result = decide(capture, Kind::UnsupportedFrameDispatch);
+	TEST_CHECK_EQ(kOuterCode, result.originalCode);
+	TEST_CHECK_EQ(kLegacyThreadNameException, capture.record->ExceptionCode);
+	remove(token);
+
+	// Successful handlers retain the normal context-selection and validation path.
+	token = kernel32::AddVectoredExceptionHandler(0, mutateThenAccept);
+	TEST_CHECK(token != nullptr);
+	initializeNotificationCapture(capture, caller);
+	mutation = Mutation::Rip;
+	decide(capture, Kind::UnsupportedControlTransfer);
+	initializeNotificationCapture(capture, caller);
+	mutation = Mutation::ClearNoncontinuable;
+	decide(capture, Kind::Resume);
+	remove(token);
 }
 } // namespace
 
@@ -331,6 +424,7 @@ int main() {
 	remove(first);
 	initializeCapture(capture);
 	decide(capture, Kind::UnsupportedFrameDispatch);
+	checkLegacyNotification();
 	std::puts("decision and actual registry checks passed; no public raise or context restoration exercised");
 	return EXIT_SUCCESS;
 }

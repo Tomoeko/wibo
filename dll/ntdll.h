@@ -46,6 +46,7 @@ using PRTL_OSVERSIONINFOW = RTL_OSVERSIONINFOW *;
 
 #ifdef WIBO_GUEST_64
 struct CONTEXT64;
+struct EXCEPTION_RECORD;
 struct KNONVOLATILE_CONTEXT_POINTERS;
 struct RUNTIME_FUNCTION {
 	DWORD BeginAddress;
@@ -59,6 +60,7 @@ namespace ntdll {
 
 #ifdef WIBO_GUEST_64
 void WINAPI RtlCaptureContext(CONTEXT64 *context) WIBO_ANNOTATE("GUEST_ENTRY:wiboCaptureContext64");
+void WINAPI RtlRaiseException(EXCEPTION_RECORD *record) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRtlRaiseException64");
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll);

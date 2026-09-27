@@ -33,8 +33,13 @@ namespace kernel32 {
 
 DWORD WINAPI GetLastError();
 void WINAPI SetLastError(DWORD dwErrCode);
+#ifdef WIBO_GUEST_64
+void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD nNumberOfArguments,
+						   const ULONG_PTR *lpArguments) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRaiseException64");
+#else
 void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD nNumberOfArguments,
 						   const ULONG_PTR *lpArguments);
+#endif
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
 ULONG WINAPI RemoveVectoredExceptionHandler(PVOID Handle);
 LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter);

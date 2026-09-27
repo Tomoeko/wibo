@@ -6,13 +6,14 @@
 #ifdef WIBO_GUEST_64
 static_assert(sizeof(SoftwareExceptionDecision64) == WIBO_SOFTWARE_DISPATCH_DECISION_SIZE);
 static_assert(static_cast<DWORD>(SoftwareExceptionDecisionKind64::Resume) == WIBO_SOFTWARE_DISPATCH_RESUME);
+static_assert(static_cast<DWORD>(SoftwareExceptionDecisionKind64::LegacyNotificationReturn) ==
+			  WIBO_SOFTWARE_DISPATCH_NOTIFICATION_RETURN);
 static_assert(WIBO_SOFTWARE_DISPATCH_FRAME_DECISION + sizeof(SoftwareExceptionDecision64) <=
 			  WIBO_SOFTWARE_DISPATCH_FRAME_SIZE);
 
 extern "C" {
-// Internal entries for fixed-continuation, normal-return vectored handling.
-// Public exception exports and general frame dispatch remain separate work.
-// Public API return-register behavior remains unverified.
+// Guest entries for fixed-continuation, normal-return vectored handling.
+// General frame dispatch and arbitrary context transfers remain unsupported.
 void GUEST_STDCALL wiboDispatchRaiseException64(DWORD code, DWORD flags, DWORD count, const ULONG_PTR *arguments);
 void GUEST_STDCALL wiboDispatchRtlRaiseException64(EXCEPTION_RECORD *record);
 extern const BYTE wiboRaiseDispatchContinuation64[];

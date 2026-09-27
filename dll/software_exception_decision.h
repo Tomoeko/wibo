@@ -10,6 +10,7 @@ enum class SoftwareExceptionDecisionKind64 : DWORD {
 	UnsupportedControlTransfer,
 	UnsupportedContextState,
 	InvalidCapture,
+	LegacyNotificationReturn,
 };
 
 struct alignas(16) SoftwareExceptionDecision64 {
@@ -29,6 +30,8 @@ static_assert(sizeof(SoftwareExceptionDecision64) == 1248);
 // This helper never restores context.
 // A Resume result covers only the supported decision subset; frame dispatch,
 // continuation execution, and nonlocal callback cleanup remain separate work.
+// LegacyNotificationReturn preserves the existing notification policy without
+// treating unsuccessful handler traversal as a Resume result.
 extern "C" DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *capture,
 														SoftwareExceptionDecision64 *output);
 #endif

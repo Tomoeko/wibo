@@ -9,9 +9,11 @@
 #ifdef __APPLE__
 #define RAISE_DISPATCH_CONTINUATION LwiboRaiseDispatchContinuation
 #define DISPATCH_UNSUPPORTED LwiboDispatchUnsupported
+#define DISPATCH_RESTORE LwiboDispatchRestore
 #else
 #define RAISE_DISPATCH_CONTINUATION .LwiboRaiseDispatchContinuation
 #define DISPATCH_UNSUPPORTED .LwiboDispatchUnsupported
+#define DISPATCH_RESTORE .LwiboDispatchRestore
 #endif
 
 ASM_GLOBAL(wiboDispatchRaiseException64, @function)
@@ -45,7 +47,10 @@ ASM_GLOBAL(wiboDispatchRtlRaiseException64, @function)
 	lea rsi, [rsp+WIBO_SOFTWARE_DISPATCH_FRAME_DECISION]
 	call SYMBOL_NAME(wiboPrepareSoftwareExceptionDecision64)
 	cmp eax, WIBO_SOFTWARE_DISPATCH_RESUME
+	je DISPATCH_RESTORE
+	cmp eax, WIBO_SOFTWARE_DISPATCH_NOTIFICATION_RETURN
 	jne DISPATCH_UNSUPPORTED
+DISPATCH_RESTORE:
 	# The helper and every callback returned normally. No traversal lock or
 	# reference from this dispatch remains live across the restoration.
 	reenter_guest

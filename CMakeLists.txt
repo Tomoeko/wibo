@@ -390,6 +390,10 @@ add_executable(wibo
 )
 
 if(WIBO_GUEST_64)
+    target_sources(wibo PRIVATE
+        dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
+        dll/software_exception_decision.cpp dll/software_exception_dispatch.cpp
+        dll/software_exception_dispatch_x64.S dll/software_exception_failure.cpp)
     target_compile_definitions(wibo PRIVATE WIBO_GUEST_64=1)
     set_target_properties(wibo PROPERTIES OUTPUT_NAME wibo64)
 endif()
@@ -700,6 +704,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         endif()
         if(WIBO_GUEST_64)
+            wibo_add_fixture_bin(NAME test_software_exception_dispatch_public
+                SOURCES test/test_software_exception_dispatch_public.cpp test/test_software_exception_dispatch_x64.S
+                COMPILE_OPTIONS -std=c++20 -fno-exceptions -fno-rtti
+                DEPENDS dll/context_x64_offsets.h)
+            set_tests_properties(wibo.test_software_exception_dispatch_public PROPERTIES TIMEOUT 15)
             wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
             wibo_add_fixture_bin(NAME test_function_table_callback SOURCES test/test_function_table_callback.c)
             set_tests_properties(wibo.test_function_table_callback PROPERTIES TIMEOUT 15)
@@ -718,6 +727,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             set_tests_properties(wibo.test_context_capture_helpers PROPERTIES TIMEOUT 15)
             add_executable(test_software_exception_capture_helpers
                 dll/software_exception_capture.cpp dll/software_exception_capture_x64.S
+                dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
                 test/test_software_exception_capture.cpp test/test_software_exception_capture_x64.S)
             target_compile_features(test_software_exception_capture_helpers PRIVATE cxx_std_20)
             target_compile_options(test_software_exception_capture_helpers PRIVATE -fno-exceptions -fno-rtti)
@@ -729,6 +739,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             add_executable(test_software_exception_decision_helpers
                 dll/software_exception_decision.cpp dll/kernel32/vectored_exception.cpp
                 dll/software_exception_capture.cpp dll/software_exception_capture_x64.S dll/context_x64.S
+                dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
                 test/test_software_exception_decision.cpp)
             target_compile_features(test_software_exception_decision_helpers PRIVATE cxx_std_20)
             target_compile_options(test_software_exception_decision_helpers PRIVATE -fno-exceptions -fno-rtti)
@@ -741,6 +752,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                     dll/software_exception_dispatch.cpp dll/software_exception_dispatch_x64.S
                     dll/software_exception_decision.cpp dll/kernel32/vectored_exception.cpp
                     dll/software_exception_capture.cpp dll/software_exception_capture_x64.S dll/context_x64.S
+                    dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
                     test/test_software_exception_dispatch.cpp test/test_software_exception_dispatch_x64.S)
                 target_compile_features(${target} PRIVATE cxx_std_20)
                 target_compile_options(${target} PRIVATE -fno-exceptions -fno-rtti)

@@ -318,7 +318,7 @@ int main() {
 	void *result = nullptr;
 	TEST_CHECK_EQ(0, pthread_join(worker, &result));
 	TEST_CHECK(result == nullptr);
-	std::puts("internal dispatch and genuine thread storage checks passed; public exports unchanged");
+	std::puts("internal dispatch and genuine thread storage checks passed");
 #else
 	checkDispatch();
 #if defined(__APPLE__)
