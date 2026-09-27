@@ -3,6 +3,8 @@
 #include "test_assert.h"
 #include <windows.h>
 
+static char payloadByte(DWORD offset, DWORD length) { return (char)(offset * 17 + 11 + (offset >= length / 2)); }
+
 int main(void) {
 	WSADATA data;
 	TEST_CHECK_EQ(0, WSAStartup(MAKEWORD(2, 2), &data));
@@ -19,6 +21,11 @@ int main(void) {
 	SOCKET server = accept(listener, NULL, NULL);
 	TEST_CHECK(server != INVALID_SOCKET);
 	TEST_CHECK_EQ(0, closesocket(listener));
+	const DWORD receiveTimeout = 5000;
+	TEST_CHECK_EQ(0,
+				  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char *)&receiveTimeout, sizeof(receiveTimeout)));
+	TEST_CHECK_EQ(0,
+				  setsockopt(server, SOL_SOCKET, SO_RCVTIMEO, (const char *)&receiveTimeout, sizeof(receiveTimeout)));
 	TEST_CHECK_EQ(SOCKET_ERROR, shutdown(INVALID_SOCKET, SD_BOTH));
 	TEST_CHECK_EQ(WSAENOTSOCK, WSAGetLastError());
 	TEST_CHECK_EQ(SOCKET_ERROR, shutdown(client, 3));
@@ -27,7 +34,7 @@ int main(void) {
 	char *payload = (char *)malloc(payloadLength);
 	TEST_CHECK(payload != NULL);
 	for (DWORD i = 0; i < payloadLength; ++i)
-		payload[i] = (char)(i * 17 + 11 + (i >= payloadLength / 2));
+		payload[i] = payloadByte(i, payloadLength);
 	int smallBuffer = 4096;
 	TEST_CHECK_EQ(0, setsockopt(client, SOL_SOCKET, SO_SNDBUF, (const char *)&smallBuffer, sizeof(smallBuffer)));
 	OVERLAPPED writes[2] = {{0}, {0}};
@@ -46,19 +53,20 @@ int main(void) {
 	TEST_CHECK_EQ(0, closeSend(client, SD_SEND));
 	TEST_CHECK_EQ(SOCKET_ERROR, send(client, "!", 1, 0));
 	TEST_CHECK_EQ(WSAESHUTDOWN, WSAGetLastError());
-	Sleep(20);
 	char buffer[4096] = {0};
 	DWORD offset = 0;
 	while (offset < payloadLength) {
 		int count = recv(server, buffer, sizeof(buffer), 0);
 		TEST_CHECK(count > 0 && offset + (DWORD)count <= payloadLength);
-		TEST_CHECK(memcmp(buffer, payload + offset, count) == 0);
+		for (int i = 0; i < count; ++i)
+			TEST_CHECK_EQ(payloadByte(offset + (DWORD)i, payloadLength), buffer[i]);
 		offset += (DWORD)count;
 	}
 	TEST_CHECK_EQ(0, recv(server, buffer, sizeof(buffer), 0));
 	DWORD bytes = 0, flags = 0;
 	for (unsigned i = 0; i < 2; ++i) {
-		TEST_CHECK(WSAGetOverlappedResult(client, &writes[i], &bytes, TRUE, &flags));
+		TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(writes[i].hEvent, 5000));
+		TEST_CHECK(WSAGetOverlappedResult(client, &writes[i], &bytes, FALSE, &flags));
 		TEST_CHECK_EQ(payloadLength / 2, bytes);
 		TEST_CHECK_EQ(0, flags);
 		TEST_CHECK(CloseHandle(writes[i].hEvent));
@@ -74,7 +82,8 @@ int main(void) {
 	TEST_CHECK_EQ(SOCKET_ERROR, WSARecv(client, &input, 1, NULL, &flags, &pending, NULL));
 	TEST_CHECK_EQ(ERROR_IO_PENDING, WSAGetLastError());
 	TEST_CHECK_EQ(0, shutdown(server, SD_SEND));
-	TEST_CHECK(WSAGetOverlappedResult(client, &pending, &bytes, TRUE, &flags));
+	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(pending.hEvent, 5000));
+	TEST_CHECK(WSAGetOverlappedResult(client, &pending, &bytes, FALSE, &flags));
 	TEST_CHECK_EQ(0, bytes);
 	TEST_CHECK_EQ(0, flags);
 	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(pending.hEvent, 0));
@@ -91,6 +100,8 @@ int main(void) {
 	SOCKET datagram = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	address.sin_port = 0;
 	TEST_CHECK_EQ(0, bind(datagram, (const struct sockaddr *)&address, sizeof(address)));
+	TEST_CHECK_EQ(0,
+				  setsockopt(datagram, SOL_SOCKET, SO_RCVTIMEO, (const char *)&receiveTimeout, sizeof(receiveTimeout)));
 	TEST_CHECK_EQ(0, shutdown(datagram, SD_BOTH));
 	TEST_CHECK_EQ(SOCKET_ERROR, recvfrom(datagram, buffer, sizeof(buffer), 0, NULL, NULL));
 	TEST_CHECK_EQ(WSAESHUTDOWN, WSAGetLastError());
