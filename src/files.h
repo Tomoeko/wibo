@@ -47,6 +47,8 @@ struct SystemSearchDirectories {
 	std::filesystem::path windows;
 };
 
+bool isNullDevice(const FileObject &file);
+
 DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusive, bool blocking);
 DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length);
 DWORD checkRangeAccess(FileObject *file, off_t start, size_t length, bool writing);

@@ -140,8 +140,7 @@ class DirectoryWatcher {
 		request->done = true;
 		if (request->operation) {
 			if (request->callback) {
-				__atomic_store_n(&request->operation->InternalHigh, static_cast<ULONG_PTR>(bytes), __ATOMIC_RELAXED);
-				__atomic_store_n(&request->operation->Internal, static_cast<ULONG_PTR>(status), __ATOMIC_RELEASE);
+				detail::storeOverlappedResult(*request->operation, status, bytes);
 				const DWORD error = wibo::winErrorFromNtStatus(status);
 				queueIoCompletion(request->apc, request->callback, error, bytes, toGuestPtr(request->operation));
 				std::lock_guard completionLock(directory.overlappedMutex);

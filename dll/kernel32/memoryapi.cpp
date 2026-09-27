@@ -180,7 +180,7 @@ bool mappedViewRegionForAddress(uintptr_t request, uintptr_t pageBase, MEMORY_BA
 		if (request != 0 && (request < viewStart || request >= viewEnd)) {
 			continue;
 		}
-		uintptr_t blockStart = viewStart;
+		uintptr_t blockStart = pageBase;
 		uintptr_t blockEnd = alignUp(viewEnd, pageSize);
 		info.BaseAddress = toGuestPtr(reinterpret_cast<void *>(blockStart));
 		info.AllocationBase = toGuestPtr(reinterpret_cast<void *>(view.viewBase));

@@ -96,6 +96,8 @@ NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcR
 NTSTATUS WINAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
 							PIO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length, PLARGE_INTEGER ByteOffset,
 							PULONG Key);
+NTSTATUS WINAPI NtQueryVirtualMemory(HANDLE processHandle, LPCVOID baseAddress, ULONG informationClass,
+									 PVOID information, SIZE_T length, PSIZE_T returnedLength);
 NTSTATUS WINAPI NtAllocateVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseAddress, ULONG_PTR ZeroBits,
 										PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
 NTSTATUS WINAPI NtProtectVirtualMemory(HANDLE ProcessHandle, guest_ptr<> *BaseAddress, PSIZE_T NumberOfBytesToProtect,

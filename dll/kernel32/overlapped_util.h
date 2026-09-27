@@ -21,15 +21,18 @@ inline HANDLE normalizedOverlappedEventHandle(const OVERLAPPED *ov) {
 	return ov->hEvent & ~HANDLE{1};
 }
 
+inline void storeOverlappedResult(OVERLAPPED &operation, NTSTATUS status, size_t bytesTransferred) {
+	__atomic_store_n(&operation.InternalHigh, static_cast<ULONG_PTR>(bytesTransferred), __ATOMIC_RELAXED);
+	__atomic_store_n(&operation.Internal, static_cast<ULONG_PTR>(static_cast<DWORD>(status)), __ATOMIC_RELEASE);
+}
+
 inline void signalOverlappedCompletion(const std::shared_ptr<const CompletionBinding> &binding, OVERLAPPED *ov,
 									   NTSTATUS status, size_t bytesTransferred) {
 	const bool postCompletion = binding && ov && !(ov->hEvent & 1U);
 	const auto context = toGuestPtr(ov);
 	const HANDLE eventHandle = normalizedOverlappedEventHandle(ov);
-	if (ov) {
-		__atomic_store_n(&ov->InternalHigh, static_cast<ULONG_PTR>(bytesTransferred), __ATOMIC_RELAXED);
-		__atomic_store_n(&ov->Internal, static_cast<ULONG_PTR>(status), __ATOMIC_RELEASE);
-	}
+	if (ov)
+		storeOverlappedResult(*ov, status, bytesTransferred);
 	if (eventHandle) {
 		if (auto ev = wibo::handles().getAs<EventObject>(eventHandle)) {
 			ev->set();

@@ -256,7 +256,16 @@ DWORD prepareInheritanceLocked(FileObject &file) {
 	return ERROR_SUCCESS;
 }
 
+bool isNullDevice(const FileObject &file) {
+	struct stat descriptor{}, device{};
+	return file.valid() && fstat(file.fd, &descriptor) == 0 && S_ISCHR(descriptor.st_mode) &&
+		   stat("/dev/null", &device) == 0 && descriptor.st_rdev == device.st_rdev;
+}
+
 DWORD queryPositionLocked(FileObject &file, off_t &position) {
+	// The host null device does not retain a shared logical cursor.
+	if (isNullDevice(file))
+		return ERROR_NOT_SUPPORTED;
 	CursorOperation operation(file.cursor);
 	if (operation.error())
 		return wibo::winErrorFromErrno(operation.error());
@@ -272,6 +281,8 @@ DWORD queryPositionLocked(FileObject &file, off_t &position) {
 }
 
 DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t &position, uint64_t maximumPosition) {
+	if (isNullDevice(file))
+		return ERROR_NOT_SUPPORTED;
 	if (method != FILE_BEGIN && method != FILE_CURRENT && method != FILE_END)
 		return ERROR_INVALID_PARAMETER;
 	if (file.isPipe)
@@ -315,6 +326,8 @@ DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t
 }
 
 DWORD truncateAtPositionLocked(FileObject &file) {
+	if (isNullDevice(file))
+		return ERROR_NOT_SUPPORTED;
 	if (file.isPipe)
 		return ERROR_INVALID_PARAMETER;
 	CursorOperation operation(file.cursor);

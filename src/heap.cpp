@@ -1320,23 +1320,22 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 #endif
 		return VmStatus::InvalidParameter;
 	}
+	const uintptr_t pageBase = alignDown(request, pageSize);
 #ifndef WIBO_GUEST_64
 	if (request >= kTwoGB) {
 		// The upper host image range is unavailable for guest allocation.
 		// It remains part of the guest address space as a reserved region.
 		*outInfo = {};
-		outInfo->BaseAddress = static_cast<GUEST_PTR>(kTwoGB);
+		outInfo->BaseAddress = static_cast<GUEST_PTR>(pageBase);
 		outInfo->AllocationBase = static_cast<GUEST_PTR>(kTwoGB);
 		outInfo->AllocationProtect = PAGE_NOACCESS;
-		outInfo->RegionSize = 0x80000000UL - kTwoGB;
+		outInfo->RegionSize = 0x80000000UL - pageBase;
 		outInfo->State = MEM_RESERVE;
 		outInfo->Protect = PAGE_NOACCESS;
 		outInfo->Type = MEM_PRIVATE;
 		return VmStatus::Success;
 	}
 #endif
-	uintptr_t pageBase = alignDown(request, pageSize);
-
 	std::unique_lock allocLock(g_mappingsMutex);
 	VirtualAllocation *region = lookupRegion(pageBase);
 	if (!region) {
@@ -1386,20 +1385,8 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 	}
 	const DWORD pageProtect = region->pageProtect[pageIndex];
 	const bool committed = pageProtect != 0;
-	uintptr_t blockStart = pageBase;
+	const uintptr_t blockStart = pageBase;
 	uintptr_t blockEnd = pageBase + pageSize;
-	while (blockStart > region->base) {
-		std::size_t idx = (blockStart - region->base) / pageSize - 1;
-		DWORD protect = region->pageProtect[idx];
-		bool pageCommitted = protect != 0;
-		if (pageCommitted != committed) {
-			break;
-		}
-		if (committed && protect != pageProtect) {
-			break;
-		}
-		blockStart -= pageSize;
-	}
 	while (blockEnd < regionLimit) {
 		std::size_t idx = (blockEnd - region->base) / pageSize;
 		if (idx >= region->pageProtect.size()) {
@@ -1416,7 +1403,7 @@ VmStatus virtualQuery(const void *address, MEMORY_BASIC_INFORMATION *outInfo) {
 		blockEnd += pageSize;
 	}
 	DWORD allocationProtect = region->allocationProtect != 0 ? region->allocationProtect : PAGE_NOACCESS;
-	DWORD finalProtect = committed ? pageProtect : PAGE_NOACCESS;
+	DWORD finalProtect = committed ? pageProtect : 0;
 	const uintptr_t allocationBase = region->base;
 	const DWORD allocationType = region->type;
 	allocLock.unlock();

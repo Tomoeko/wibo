@@ -557,6 +557,83 @@ HANDLE findFirstFileExCommon(const std::string &name, FINDEX_INFO_LEVELS level, 
 	return findFirstFileCommon(name, data);
 }
 
+bool tryOpenNullDevice(const char *name, DWORD access, DWORD sharing, LPSECURITY_ATTRIBUTES security, DWORD disposition,
+					   DWORD flags, HANDLE &handle) {
+	std::string path(name);
+	std::replace(path.begin(), path.end(), '/', '\\');
+	std::string_view component(path);
+	std::string parent;
+	if (component.starts_with(R"(\\)")) {
+		// Direct device aliases do not apply DOS filename normalization to suffixes.
+		if ((component.starts_with(R"(\\.\)") || component.starts_with(R"(\\?\)")) &&
+			stringToLower(std::string(component.substr(4))) == "nul") {
+			component = "nul";
+		} else {
+			return false;
+		}
+	} else {
+		const auto separator = component.find_last_of('\\');
+		size_t prefixLength = 0;
+		if (separator != std::string_view::npos)
+			prefixLength = separator + 1;
+		else if (component.size() >= 2 && component[1] == ':')
+			prefixLength = 2;
+		parent = path.substr(0, prefixLength);
+		component.remove_prefix(prefixLength);
+		component = component.substr(0, component.find_first_of(".:"));
+		while (!component.empty() && component.back() == ' ')
+			component.remove_suffix(1);
+	}
+	if (stringToLower(std::string(component)) != "nul")
+		return false;
+	handle = INVALID_HANDLE_VALUE;
+	if (!parent.empty()) {
+		if (parent.size() == 2 && parent[1] == ':') {
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+			return true;
+		}
+		std::error_code error;
+		if (!std::filesystem::is_directory(files::pathFromWindows(parent.c_str()), error)) {
+			kernel32::setLastError(ERROR_PATH_NOT_FOUND);
+			return true;
+		}
+	}
+	if (disposition < CREATE_NEW || disposition > TRUNCATE_EXISTING || (flags & FILE_FLAG_DELETE_ON_CLOSE)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return true;
+	}
+	constexpr DWORD kMaximumAllowed = 0x02000000;
+	if (access & kMaximumAllowed)
+		access = (access & ~kMaximumAllowed) | FILE_ALL_ACCESS;
+	const auto normalized = wibo::access::normalizeDesiredAccess(access, wibo::access::kFileGenericMapping,
+																 FILE_ALL_ACCESS, SYNCHRONIZE, FILE_READ_ATTRIBUTES);
+	if (normalized.deniedMask) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return true;
+	}
+	const bool readable = containsAny(normalized.grantedMask, kFileReadMask | FILE_EXECUTE);
+	const bool writable = containsAny(normalized.grantedMask, kFileWriteMask);
+	const int mode = writable ? (readable ? O_RDWR : O_WRONLY) : O_RDONLY;
+	const int fd = open("/dev/null", mode | O_CLOEXEC);
+	if (fd < 0) {
+		kernel32::setLastErrorFromErrno();
+		return true;
+	}
+	auto file = make_pin<kernel32::FileObject>(fd);
+	file->canonicalPath = "/dev/null";
+	file->overlapped = (flags & FILE_FLAG_OVERLAPPED) != 0;
+	file->appendOnly =
+		containsAny(normalized.grantedMask, FILE_APPEND_DATA) && !containsAny(normalized.grantedMask, FILE_WRITE_DATA);
+	file->shareAccess = sharing;
+	file->openFlags = flags;
+	const DWORD handleFlags = security && security->bInheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	handle = wibo::handles().alloc(std::move(file), normalized.grantedMask, handleFlags);
+	kernel32::setLastError(disposition == OPEN_ALWAYS ? ERROR_ALREADY_EXISTS : ERROR_SUCCESS);
+	DEBUG_LOG("CreateFileA(null=%s, access=0x%x, disposition=%u, flags=0x%x) -> %p\n", name, access, disposition, flags,
+			  handle);
+	return true;
+}
+
 std::optional<DWORD> stdHandleForConsoleDevice(const std::string &name, DWORD desiredAccess) {
 	std::string lowered = stringToLower(name);
 	if (lowered == "conin$") {
@@ -782,6 +859,9 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 	DEBUG_LOG("WriteFile(%p, %p, %u, %p, %p)\n", hFile, lpBuffer, nNumberOfBytesToWrite, lpNumberOfBytesWritten,
 			  lpOverlapped);
 
+	if (lpNumberOfBytesWritten)
+		*lpNumberOfBytesWritten = 0;
+
 	HandleMeta meta{};
 	auto file = wibo::handles().getAs<FileObject>(hFile, &meta);
 	if (!file || !file->valid()) {
@@ -802,10 +882,6 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 	if (lpOverlapped == nullptr && lpNumberOfBytesWritten == nullptr) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
-	}
-
-	if (lpNumberOfBytesWritten && (!file->overlapped || lpOverlapped == nullptr)) {
-		*lpNumberOfBytesWritten = 0;
 	}
 
 	if (file->overlapped && lpOverlapped == nullptr) {
@@ -969,6 +1045,10 @@ BOOL WINAPI FlushFileBuffers(HANDLE hFile) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	if (files::isNullDevice(*file)) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
 	if (fsync(file->fd) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -981,6 +1061,9 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("ReadFile(%p, %p, %u, %p, %p)\n", hFile, lpBuffer, nNumberOfBytesToRead, lpNumberOfBytesRead,
 			  lpOverlapped);
+
+	if (lpNumberOfBytesRead)
+		*lpNumberOfBytesRead = 0;
 
 	HandleMeta meta{};
 	auto file = wibo::handles().getAs<FileObject>(hFile, &meta);
@@ -997,10 +1080,6 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 	if (lpOverlapped == nullptr && lpNumberOfBytesRead == nullptr) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
-	}
-
-	if (lpNumberOfBytesRead && (!file->overlapped || lpOverlapped == nullptr)) {
-		*lpNumberOfBytesRead = 0;
 	}
 
 	if (file->overlapped && lpOverlapped == nullptr) {
@@ -1053,6 +1132,11 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 			return FALSE;
 		}
 		completionStatus = STATUS_END_OF_FILE;
+		if (lpOverlapped) {
+			setLastError(ERROR_HANDLE_EOF);
+			detail::signalOverlappedEvent(file.get(), lpOverlapped, completionStatus, 0);
+			return FALSE;
+		}
 	}
 
 	if (lpNumberOfBytesRead && (!file->overlapped || lpOverlapped == nullptr)) {
@@ -1075,6 +1159,11 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		setLastError(ERROR_INVALID_PARAMETER);
 		return INVALID_HANDLE_VALUE;
 	}
+
+	HANDLE nullHandle = INVALID_HANDLE_VALUE;
+	if (tryOpenNullDevice(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
+						  dwFlagsAndAttributes, nullHandle))
+		return nullHandle;
 
 	HANDLE consoleHandle = INVALID_HANDLE_VALUE;
 	if (tryOpenConsoleDevice(dwDesiredAccess, dwShareMode, dwCreationDisposition, dwFlagsAndAttributes, consoleHandle,
