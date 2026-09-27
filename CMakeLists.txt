@@ -689,6 +689,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         # Define fixture tests
         wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        wibo_add_fixture_bin(NAME test_pipe_inherit_flags SOURCES test/test_pipe_inherit_flags.c)
         wibo_add_fixture_bin(NAME test_exit_resources SOURCES test/test_exit_resources.c)
         set_tests_properties(wibo.test_exit_resources PROPERTIES TIMEOUT 20
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
