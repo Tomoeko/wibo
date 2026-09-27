@@ -24,6 +24,14 @@ struct CONSOLE_SCREEN_BUFFER_INFO {
 
 struct INPUT_RECORD;
 
+struct CONSOLE_READCONSOLE_CONTROL {
+	DWORD nLength;
+	DWORD nInitialChars;
+	DWORD dwCtrlWakeupMask;
+	DWORD dwControlKeyState;
+};
+static_assert(sizeof(CONSOLE_READCONSOLE_CONTROL) == 16);
+
 typedef BOOL(_CC_STDCALL *PHANDLER_ROUTINE)(DWORD CtrlType);
 
 namespace kernel32 {
@@ -38,6 +46,7 @@ BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE hConsoleOutput, CONSOLE_SCREEN_BUF
 BOOL WINAPI SetConsoleTextAttribute(HANDLE hConsoleOutput, WORD wAttributes);
 BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumberOfCharsToWrite,
 						  LPDWORD lpNumberOfCharsWritten, LPVOID lpReserved);
+BOOL WINAPI ReadConsoleW(HANDLE hConsoleInput, LPVOID buffer, DWORD charsToRead, LPDWORD charsRead, LPVOID control);
 DWORD WINAPI GetConsoleTitleA(LPSTR lpConsoleTitle, DWORD nSize);
 DWORD WINAPI GetConsoleTitleW(LPWSTR lpConsoleTitle, DWORD nSize);
 BOOL WINAPI PeekConsoleInputA(HANDLE hConsoleInput, INPUT_RECORD *lpBuffer, DWORD nLength,

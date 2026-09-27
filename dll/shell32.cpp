@@ -4,6 +4,8 @@
 #include "context.h"
 #include "errors.h"
 #include "files.h"
+#include "kernel32/fileapi.h"
+#include "kernel32/handleapi.h"
 #include "kernel32/internal.h"
 #include "kernel32/libloaderapi.h"
 #include "kernel32/minwinbase.h"
@@ -15,11 +17,16 @@
 #include "strutil.h"
 #include "system_provider.h"
 
+#include <array>
+#include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -110,6 +117,143 @@ DWORD missingPathError(const std::filesystem::path &path) {
 	std::error_code error;
 	const auto parent = std::filesystem::status(path.parent_path(), error);
 	return !error && std::filesystem::is_directory(parent) ? ERROR_FILE_NOT_FOUND : ERROR_PATH_NOT_FOUND;
+}
+
+class ExecutableFile {
+  public:
+	explicit ExecutableFile(HANDLE handle)
+		: handle_(handle), file_(wibo::handles().getAs<kernel32::FileObject>(handle)) {
+		if (!file_) {
+			kernel32::setLastError(ERROR_INVALID_HANDLE);
+			return;
+		}
+		const int descriptor = fcntl(file_->fd, F_DUPFD_CLOEXEC, 0);
+		if (descriptor < 0) {
+			kernel32::setLastError(wibo::winErrorFromErrno(errno));
+			return;
+		}
+		stream_.reset(fdopen(descriptor, "rb"));
+		if (!stream_) {
+			const int error = errno;
+			close(descriptor);
+			kernel32::setLastError(wibo::winErrorFromErrno(error));
+		}
+	}
+	~ExecutableFile() {
+		const DWORD error = kernel32::getLastError();
+		stream_.reset();
+		kernel32::CloseHandle(handle_);
+		kernel32::setLastError(error);
+	}
+	[[nodiscard]] FILE *stream() const { return stream_.get(); }
+	template <size_t Size> bool readFile(uint64_t offset, std::array<BYTE, Size> &header) const {
+		if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - Size) {
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+			return false;
+		}
+		const auto result = files::read(file_.get(), header.data(), Size, static_cast<off_t>(offset), false);
+		if (result.windowsError || result.unixError) {
+			kernel32::setLastError(result.windowsError ? result.windowsError
+													   : wibo::winErrorFromErrno(result.unixError));
+			return false;
+		}
+		return result.bytesTransferred == Size;
+	}
+
+	// Image classification has mapped-file semantics, which do not observe byte-range locks.
+	template <size_t Size> bool readImage(uint64_t offset, std::array<BYTE, Size> &header) const {
+		size_t read = 0;
+		while (read < Size) {
+			if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - read)
+				return false;
+			const ssize_t count =
+				pread(fileno(stream_.get()), header.data() + read, Size - read, static_cast<off_t>(offset + read));
+			if (count < 0 && errno == EINTR)
+				continue;
+			if (count < 0)
+				kernel32::setLastError(wibo::winErrorFromErrno(errno));
+			if (count <= 0)
+				return false;
+			read += static_cast<size_t>(count);
+		}
+		return true;
+	}
+
+  private:
+	HANDLE handle_;
+	Pin<kernel32::FileObject> file_;
+	std::unique_ptr<FILE, decltype(&fclose)> stream_{nullptr, fclose};
+};
+
+WORD headerWord(const BYTE *bytes) { return static_cast<WORD>(bytes[0] | (static_cast<WORD>(bytes[1]) << 8)); }
+
+DWORD headerDword(const BYTE *bytes) {
+	return static_cast<DWORD>(headerWord(bytes)) | (static_cast<DWORD>(headerWord(bytes + 2)) << 16);
+}
+
+DWORD executableType(LPCWSTR path, const std::filesystem::path &hostPath) {
+	const HANDLE handle = kernel32::CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, 0);
+	if (handle == INVALID_HANDLE_VALUE) {
+		if (kernel32::getLastError() == ERROR_FILE_NOT_FOUND)
+			kernel32::setLastError(missingPathError(hostPath));
+		return 0;
+	}
+	kernel32::setLastError(ERROR_SUCCESS);
+	ExecutableFile file(handle);
+	if (!file.stream())
+		return 0;
+	std::array<BYTE, 64> dos{};
+	if (!file.readImage(0, dos))
+		return 0;
+	if (headerWord(dos.data()) != 0x5A4D) {
+		std::string extension = hostPath.extension().string();
+		toLowerInPlace(extension);
+		return extension == ".com" || extension == ".pif" ? 0x4D5A : 0;
+	}
+	const DWORD offset = headerDword(dos.data() + 0x3C);
+	std::array<BYTE, 24> coff{};
+	if (!file.readImage(offset, coff))
+		return kernel32::getLastError() ? 0 : 0x4D5A;
+	if (headerWord(coff.data()) == 0x454E) {
+		std::array<BYTE, 64> ne{};
+		std::array<BYTE, 4> signature{};
+		if (!file.readFile(0, dos) || !file.readFile(offset, signature) || !file.readFile(offset, ne))
+			return 0;
+		return ne[0x36] == 2 ? 0x454E | (static_cast<DWORD>(headerWord(ne.data() + 0x3E)) << 16) : 0;
+	}
+	if (headerDword(coff.data()) != 0x4550)
+		return 0x4D5A;
+	const WORD machine = headerWord(coff.data() + 4);
+	if (machine != 0x14C && machine != 0x8664) {
+		if (machine == 0x1C4 || machine == 0xAA64)
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	const DWORD openingError = kernel32::getLastError();
+	size_t imageSize = 0;
+	if (!wibo::Executable::imageMappingSize(file.stream(), imageSize)) {
+		if (kernel32::getLastError() != ERROR_NOT_SUPPORTED)
+			kernel32::setLastError(openingError);
+		return 0;
+	}
+	kernel32::setLastError(openingError);
+	if (headerWord(coff.data() + 22) & 0x2000)
+		return 0;
+	std::array<BYTE, 4> signature{};
+#ifdef WIBO_GUEST_64
+	std::array<BYTE, 264> nt{};
+#else
+	std::array<BYTE, 248> nt{};
+#endif
+	if (!file.readFile(0, dos) || !file.readFile(offset, signature) || !file.readFile(offset, nt))
+		return 0;
+	const BYTE *optional = nt.data() + coff.size();
+	DWORD result = 0x4550;
+	if (headerWord(optional + 68) == 2) {
+		result |= static_cast<DWORD>(headerWord(optional + 48)) << 24;
+		result |= static_cast<DWORD>(headerWord(optional + 50)) << 16;
+	}
+	return result;
 }
 
 std::vector<std::u16string> parseArguments(LPCWSTR command) {
@@ -249,6 +393,49 @@ HINSTANCE WINAPI FindExecutableW(LPCWSTR file, LPCWSTR directory, LPWSTR result)
 	std::memcpy(result, wide->c_str(), (wide->size() + 1) * sizeof(WCHAR));
 	kernel32::setLastError(successError);
 	return 33;
+}
+
+DWORD_PTR WINAPI SHGetFileInfoW(LPCWSTR path, DWORD attributes, SHFILEINFOW *info, UINT size, UINT flags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SHGetFileInfoW(%p, %u, %p, %u, 0x%x)\n", path, attributes, info, size, flags);
+	if (!path)
+		return 0;
+	if (info) {
+		info->szDisplayName[0] = 0;
+		info->szTypeName[0] = 0;
+		info->iIcon = 0;
+	}
+	constexpr UINT executableTypeFlag = 0x2000;
+	if (flags & executableTypeFlag) {
+		if (flags != executableTypeFlag)
+			return 0;
+		const size_t length = wstrnlen(path, MAX_PATH);
+		std::string name;
+		if (length == MAX_PATH ||
+			!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(path), length), name) ||
+			!supportsShellPath(name)) {
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+			return 0;
+		}
+		if (name.empty()) {
+			kernel32::setLastError(ERROR_ACCESS_DENIED);
+			return 0;
+		}
+		auto hostPath = files::pathFromWindows(name.c_str());
+		if (hostPath.is_relative()) {
+			std::error_code error;
+			const auto current = std::filesystem::current_path(error);
+			if (error) {
+				kernel32::setLastError(wibo::winErrorFromErrno(error.value()));
+				return 0;
+			}
+			hostPath = current / hostPath;
+		}
+		return executableType(path, hostPath);
+	}
+	// Display names, attributes, associations, and icon handles require an owned shell context.
+	kernel32::setLastError(ERROR_NOT_SUPPORTED);
+	return 0;
 }
 
 HRESULT WINAPI SHGetFolderPathW(HWND hwnd, int csidl, HANDLE hToken, DWORD dwFlags, LPWSTR pszPath) {

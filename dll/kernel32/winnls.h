@@ -37,6 +37,7 @@ static_assert(offsetof(CPINFOEXW, CodePage) == 20);
 static_assert(offsetof(CPINFOEXW, CodePageName) == 24);
 
 typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCA)(LPSTR);
+typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCW)(LPWSTR);
 
 struct NLSVERSIONINFO;
 using LPNLSVERSIONINFO = NLSVERSIONINFO *;
@@ -47,6 +48,10 @@ UINT WINAPI GetACP();
 UINT WINAPI GetOEMCP();
 BOOL WINAPI GetStringTypeExA(LCID locale, DWORD type, LPCSTR source, int count, LPWORD characterTypes);
 BOOL WINAPI IsValidLocaleName(LPCWSTR name);
+int WINAPI GetDateFormatW(LCID locale, DWORD flags, const SYSTEMTIME *date, LPCWSTR picture, LPWSTR output,
+						  int capacity);
+int WINAPI GetTimeFormatW(LCID locale, DWORD flags, const SYSTEMTIME *time, LPCWSTR picture, LPWSTR output,
+						  int capacity);
 LANGID WINAPI GetSystemDefaultLangID();
 LANGID WINAPI GetUserDefaultUILanguage();
 BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,
@@ -73,6 +78,7 @@ int WINAPI GetLocaleInfoW(LCID Locale, LCTYPE LCType, LPWSTR lpLCData, int cchDa
 int WINAPI GetLocaleInfoEx(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData, int cchData);
 int WINAPI ResolveLocaleName(LPCWSTR lpNameToResolve, LPWSTR lpLocaleName, int cchLocaleName);
 BOOL WINAPI EnumSystemLocalesA(LOCALE_ENUMPROCA lpLocaleEnumProc, DWORD dwFlags);
+BOOL WINAPI EnumSystemLocalesW(LOCALE_ENUMPROCW lpLocaleEnumProc, DWORD dwFlags);
 LCID WINAPI GetUserDefaultLCID();
 BOOL WINAPI IsDBCSLeadByte(BYTE TestChar);
 BOOL WINAPI IsDBCSLeadByteEx(UINT CodePage, BYTE TestChar);

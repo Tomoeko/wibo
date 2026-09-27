@@ -25,7 +25,55 @@
 #include <unistd.h>
 #include <utility>
 
+namespace files {
+
+struct FileShareRegistry {
+	std::mutex mutex;
+	std::vector<const FileShareLease *> opens;
+};
+
+struct FileShareLease {
+	std::shared_ptr<FileShareRegistry> registry;
+	dev_t device;
+	ino_t inode;
+	uint32_t access;
+	uint32_t sharing;
+	bool registered = false;
+
+	FileShareLease(std::shared_ptr<FileShareRegistry> owner, const struct stat &metadata, uint32_t access,
+				   uint32_t sharing)
+		: registry(std::move(owner)), device(metadata.st_dev), inode(metadata.st_ino), access(access),
+		  sharing(sharing) {}
+	~FileShareLease();
+};
+
+} // namespace files
+
 namespace {
+
+std::shared_ptr<files::FileShareRegistry> fileShareRegistry() {
+	// Leases keep the registry alive while filesystem objects are destroyed.
+	static const auto registry = std::make_shared<files::FileShareRegistry>();
+	return registry;
+}
+
+uint32_t sharingAccess(uint32_t grantedAccess) {
+	uint32_t access = 0;
+	if (grantedAccess & (FILE_READ_DATA | FILE_EXECUTE))
+		access |= FILE_SHARE_READ;
+	if (grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA))
+		access |= FILE_SHARE_WRITE;
+	if (grantedAccess & DELETE)
+		access |= FILE_SHARE_DELETE;
+	return access;
+}
+
+void removeFileShareLocked(files::FileShareLease &lease) {
+	if (!lease.registered)
+		return;
+	std::erase(lease.registry->opens, &lease);
+	lease.registered = false;
+}
 
 int cursorRecordLock(int fd, short type) {
 	if (fd < 0)
@@ -66,6 +114,53 @@ class CursorOperation {
 };
 
 } // namespace
+
+files::FileShareLease::~FileShareLease() {
+	if (registered) {
+		std::lock_guard lock(registry->mutex);
+		removeFileShareLocked(*this);
+	}
+}
+
+files::FileOpenAdmission::FileOpenAdmission() : mRegistry(fileShareRegistry()), mLock(mRegistry->mutex) {}
+
+void files::FileOpenAdmission::releaseForStreamOpen() { mLock.unlock(); }
+
+DWORD files::FileOpenAdmission::admit(kernel32::FsObject &file, uint32_t grantedAccess, uint32_t sharing,
+									  bool truncate) {
+	if (!mLock.owns_lock())
+		mLock.lock();
+	struct stat metadata{};
+	if (fstat(file.fd, &metadata) != 0)
+		return wibo::winErrorFromErrno(errno);
+	const uint32_t access = sharingAccess(grantedAccess);
+	std::shared_ptr<FileShareLease> lease;
+	if (S_ISREG(metadata.st_mode) || S_ISDIR(metadata.st_mode)) {
+		for (const auto *existing : mRegistry->opens) {
+			if (existing->device != metadata.st_dev || existing->inode != metadata.st_ino || !existing->access ||
+				!access)
+				continue;
+			if ((access & ~existing->sharing) || (existing->access & ~sharing))
+				return ERROR_SHARING_VIOLATION;
+		}
+		lease = std::make_shared<FileShareLease>(mRegistry, metadata, access, sharing);
+		// Allocate the registry entry before making a destructive change.
+		mRegistry->opens.push_back(lease.get());
+	}
+	if (truncate && S_ISREG(metadata.st_mode) && ftruncate(file.fd, 0) != 0) {
+		const DWORD error = wibo::winErrorFromErrno(errno);
+		if (lease)
+			mRegistry->opens.pop_back();
+		return error;
+	}
+	if (lease) {
+		lease->registered = true;
+		file.shareLease = std::move(lease);
+	}
+	// The lease reserves this open before handle allocation can release its owner.
+	mLock.unlock();
+	return ERROR_SUCCESS;
+}
 
 kernel32::FileCursor::~FileCursor() {
 	if (mControlFd >= 0)
@@ -123,6 +218,11 @@ kernel32::FileObject::~FileObject() {
 }
 
 kernel32::FsObject::~FsObject() {
+	// Native close and share removal are one operation relative to admission.
+	auto share = std::move(shareLease);
+	std::unique_lock<std::mutex> shareLock;
+	if (share)
+		shareLock = std::unique_lock(share->registry->mutex);
 	int fd = std::exchange(this->fd, -1);
 	if (fd >= 0 && closeOnDestroy) {
 		close(fd);
@@ -132,6 +232,8 @@ kernel32::FsObject::~FsObject() {
 			perror("Failed to delete file on close");
 		}
 	}
+	if (share)
+		removeFileShareLocked(*share);
 }
 
 namespace files {

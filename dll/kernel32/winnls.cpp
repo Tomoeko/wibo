@@ -15,6 +15,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -174,6 +175,68 @@ bool readNlsResponseHeader(wibo::provider::Reader &reader) {
 	}
 	kernel32::setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
 	return false;
+}
+
+template <typename Character, typename Callback> BOOL enumerateLocales(DWORD flags, bool wide, Callback callback) {
+	const DWORD incomingError = kernel32::getLastError();
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request(
+			{"enum-system-locales", wide ? "wide" : "narrow", std::to_string(flags), std::to_string(incomingError)},
+			response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return FALSE;
+	uint32_t result = 0, nativeError = 0, firstError = 0, count = 0;
+	constexpr size_t localeRecordBytes = sizeof(uint32_t) + 8 * sizeof(WCHAR);
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.number(firstError) ||
+		!reader.number(count) || count > (wibo::provider::kMaxResponse - 28) / localeRecordBytes ||
+		(!result && count)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	std::vector<std::u16string> locales;
+	locales.reserve(count);
+	for (uint32_t index = 0; index < count; ++index) {
+		std::u16string locale;
+		if (!reader.text(locale) || locale.size() != 8 ||
+			!std::all_of(locale.begin(), locale.end(), [](char16_t value) {
+				return (value >= u'0' && value <= u'9') || (value >= u'A' && value <= u'F') ||
+					   (value >= u'a' && value <= u'f');
+			})) {
+			kernel32::setLastError(ERROR_INVALID_DATA);
+			return FALSE;
+		}
+		locales.push_back(std::move(locale));
+	}
+	if (!reader.done()) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (locales.empty()) {
+		kernel32::setLastError(nativeError);
+		return static_cast<BOOL>(result);
+	}
+	std::unique_ptr<Character, decltype(&wibo::heap::guestFree)> buffer(
+		static_cast<Character *>(wibo::heap::guestMalloc(9 * sizeof(Character))), wibo::heap::guestFree);
+	if (!buffer) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	kernel32::setLastError(firstError);
+	for (const auto &locale : locales) {
+		std::transform(locale.begin(), locale.end(), buffer.get(),
+					   [](char16_t value) { return static_cast<Character>(value); });
+		buffer.get()[8] = 0;
+		if (!callback(buffer.get()))
+			break;
+	}
+	const DWORD callbackError = kernel32::getLastError();
+	buffer.reset();
+	kernel32::setLastError(callbackError);
+	return TRUE;
 }
 
 bool supportedFindFlags(DWORD flags) {
@@ -896,21 +959,23 @@ int WINAPI ResolveLocaleName(LPCWSTR lpNameToResolve, LPWSTR lpLocaleName, int c
 BOOL WINAPI EnumSystemLocalesA(LOCALE_ENUMPROCA lpLocaleEnumProc, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("EnumSystemLocalesA(%p, 0x%x)\n", lpLocaleEnumProc, dwFlags);
-	(void)dwFlags;
 	if (!lpLocaleEnumProc) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	constexpr char defaultLocaleId[] = "00000409"; // en-US
-	char *localeId = reinterpret_cast<char *>(wibo::heap::guestMalloc(sizeof(defaultLocaleId)));
-	if (!localeId) {
-		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+	return enumerateLocales<CHAR>(dwFlags, false,
+								  [&](LPSTR locale) { return call_LOCALE_ENUMPROCA(lpLocaleEnumProc, locale); });
+}
+
+BOOL WINAPI EnumSystemLocalesW(LOCALE_ENUMPROCW lpLocaleEnumProc, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("EnumSystemLocalesW(%p, 0x%x)\n", lpLocaleEnumProc, dwFlags);
+	if (!lpLocaleEnumProc) {
+		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	std::memcpy(localeId, defaultLocaleId, sizeof(defaultLocaleId));
-	BOOL ret = call_LOCALE_ENUMPROCA(lpLocaleEnumProc, localeId);
-	wibo::heap::guestFree(localeId);
-	return ret;
+	return enumerateLocales<WCHAR>(dwFlags, true,
+								   [&](LPWSTR locale) { return call_LOCALE_ENUMPROCW(lpLocaleEnumProc, locale); });
 }
 
 LCID WINAPI GetUserDefaultLCID() {

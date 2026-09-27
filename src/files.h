@@ -12,6 +12,21 @@ using kernel32::FileObject;
 
 namespace files {
 
+struct FileShareRegistry;
+
+// Admission is process-local and covers opens through CreateFile. It does not
+// establish sharing policy for imported descriptors or mapped sections.
+class FileOpenAdmission {
+  public:
+	FileOpenAdmission();
+	void releaseForStreamOpen();
+	DWORD admit(kernel32::FsObject &file, uint32_t grantedAccess, uint32_t sharing, bool truncate);
+
+  private:
+	std::shared_ptr<FileShareRegistry> mRegistry;
+	std::unique_lock<std::mutex> mLock;
+};
+
 struct IOResult {
 	size_t bytesTransferred = 0;
 	int unixError = 0;

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "types.h"
 #include "minwinbase.h"
+#include "types.h"
 
 struct TIME_ZONE_INFORMATION {
 	LONG Bias;
@@ -42,6 +42,8 @@ BOOL WINAPI SystemTimeToFileTime(const SYSTEMTIME *lpSystemTime, LPFILETIME lpFi
 BOOL WINAPI FileTimeToSystemTime(const FILETIME *lpFileTime, LPSYSTEMTIME lpSystemTime);
 BOOL WINAPI SystemTimeToTzSpecificLocalTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *utc,
 											LPSYSTEMTIME local);
+BOOL WINAPI TzSpecificLocalTimeToSystemTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *local,
+											LPSYSTEMTIME utc);
 BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *lpFileTime, LPFILETIME lpLocalFileTime);
 BOOL WINAPI LocalFileTimeToFileTime(const FILETIME *lpLocalFileTime, LPFILETIME lpFileTime);
 BOOL WINAPI DosDateTimeToFileTime(WORD wFatDate, WORD wFatTime, LPFILETIME lpFileTime);

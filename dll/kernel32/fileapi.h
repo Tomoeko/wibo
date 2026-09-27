@@ -97,6 +97,7 @@ constexpr DWORD INVALID_FILE_SIZE = 0xFFFFFFFF;
 typedef void(_CC_STDCALL *LPOVERLAPPED_COMPLETION_ROUTINE)(DWORD, DWORD, LPOVERLAPPED);
 
 namespace kernel32 {
+BOOL WINAPI AreFileApisANSI();
 BOOL WINAPI ReadDirectoryChangesW(HANDLE handle, LPVOID buffer, DWORD length, BOOL subtree, DWORD filter,
 								  LPDWORD returned, LPOVERLAPPED operation, LPOVERLAPPED_COMPLETION_ROUTINE callback);
 

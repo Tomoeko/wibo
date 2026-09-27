@@ -4,10 +4,10 @@
 #include "errors.h"
 #include "files.h"
 #include "handles.h"
-#include "strutil.h"
 
 #include <cerrno>
 #include <csignal>
+#include <cstring>
 #include <limits>
 
 namespace kernel32 {
@@ -79,30 +79,14 @@ BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add) {
 
 BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE hConsoleOutput, CONSOLE_SCREEN_BUFFER_INFO *lpConsoleScreenBufferInfo) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetConsoleScreenBufferInfo(%p, %p)\n", hConsoleOutput, lpConsoleScreenBufferInfo);
-	(void)hConsoleOutput;
-	if (!lpConsoleScreenBufferInfo) {
-		setLastError(ERROR_INVALID_PARAMETER);
-		return FALSE;
-	}
-	lpConsoleScreenBufferInfo->dwSize = {80, 25};
-	lpConsoleScreenBufferInfo->dwCursorPosition = {0, 0};
-	lpConsoleScreenBufferInfo->wAttributes = 0;
-	lpConsoleScreenBufferInfo->srWindow = {0, 0, 79, 24};
-	lpConsoleScreenBufferInfo->dwMaximumWindowSize = {80, 25};
-	return TRUE;
+	DEBUG_LOG("GetConsoleScreenBufferInfo(%p, %p)\n", hConsoleOutput, lpConsoleScreenBufferInfo);
+	return rejectUnavailableConsole(hConsoleOutput);
 }
 
 BOOL WINAPI SetConsoleTextAttribute(HANDLE hConsoleOutput, WORD wAttributes) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetConsoleTextAttribute(%p, 0x%x)\n", hConsoleOutput, wAttributes);
-	(void)wAttributes;
-	auto file = wibo::handles().getAs<FileObject>(hConsoleOutput);
-	if (!file || (file->fd != STDOUT_FILENO && file->fd != STDERR_FILENO)) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return FALSE;
-	}
-	return TRUE;
+	return rejectUnavailableConsole(hConsoleOutput);
 }
 
 BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumberOfCharsToWrite,
@@ -110,31 +94,29 @@ BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumber
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("WriteConsoleW(%p, %p, %u, %p, %p)\n", hConsoleOutput, lpBuffer, nNumberOfCharsToWrite,
 			  lpNumberOfCharsWritten, lpReserved);
-	(void)lpReserved;
-	if (lpNumberOfCharsWritten) {
+	if (lpNumberOfCharsWritten)
 		*lpNumberOfCharsWritten = 0;
-	}
-	if (!lpBuffer && nNumberOfCharsToWrite != 0) {
-		setLastError(ERROR_INVALID_PARAMETER);
+	return rejectUnavailableConsole(hConsoleOutput);
+}
+
+BOOL WINAPI ReadConsoleW(HANDLE hConsoleInput, LPVOID buffer, DWORD charsToRead, LPDWORD charsRead, LPVOID control) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("ReadConsoleW(%p, %p, %u, %p, %p)\n", hConsoleInput, buffer, charsToRead, charsRead, control);
+	if (charsToRead > static_cast<DWORD>(std::numeric_limits<int32_t>::max())) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return FALSE;
 	}
-
-	auto file = wibo::handles().getAs<FileObject>(hConsoleOutput);
-	if (file->fd == STDOUT_FILENO || file->fd == STDERR_FILENO) {
-		auto str = wideStringToString(lpBuffer, static_cast<int>(nNumberOfCharsToWrite));
-		auto io = files::write(file.get(), str.c_str(), str.size(), std::nullopt, true);
-		if (lpNumberOfCharsWritten) {
-			*lpNumberOfCharsWritten = io.bytesTransferred;
-		}
-		if (io.windowsError != 0 || io.unixError != 0) {
-			setLastError(io.windowsError ? io.windowsError : wibo::winErrorFromErrno(io.unixError));
+	if (control) {
+		CONSOLE_READCONSOLE_CONTROL parameters{};
+		std::memcpy(&parameters, control, sizeof(parameters));
+		if (parameters.nLength != sizeof(parameters) || parameters.nInitialChars >= charsToRead) {
+			setLastError(ERROR_INVALID_PARAMETER);
 			return FALSE;
 		}
-		return TRUE;
 	}
-
-	setLastError(ERROR_INVALID_HANDLE);
-	return FALSE;
+	if (charsRead)
+		*charsRead = 0;
+	return rejectUnavailableConsole(hConsoleInput);
 }
 
 DWORD WINAPI GetConsoleTitleA(LPSTR lpConsoleTitle, DWORD nSize) {
@@ -160,27 +142,15 @@ DWORD WINAPI GetConsoleTitleW(LPWSTR lpConsoleTitle, DWORD nSize) {
 BOOL WINAPI PeekConsoleInputA(HANDLE hConsoleInput, INPUT_RECORD *lpBuffer, DWORD nLength,
 							  LPDWORD lpNumberOfEventsRead) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: PeekConsoleInputA(%p, %p, %u)\n", hConsoleInput, lpBuffer, nLength);
-	(void)hConsoleInput;
-	(void)lpBuffer;
-	(void)nLength;
-	if (lpNumberOfEventsRead) {
-		*lpNumberOfEventsRead = 0;
-	}
-	return TRUE;
+	DEBUG_LOG("PeekConsoleInputA(%p, %p, %u, %p)\n", hConsoleInput, lpBuffer, nLength, lpNumberOfEventsRead);
+	return rejectUnavailableConsole(hConsoleInput);
 }
 
 BOOL WINAPI ReadConsoleInputA(HANDLE hConsoleInput, INPUT_RECORD *lpBuffer, DWORD nLength,
 							  LPDWORD lpNumberOfEventsRead) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: ReadConsoleInputA(%p, %p, %u)\n", hConsoleInput, lpBuffer, nLength);
-	(void)hConsoleInput;
-	(void)lpBuffer;
-	(void)nLength;
-	if (lpNumberOfEventsRead) {
-		*lpNumberOfEventsRead = 0;
-	}
-	return TRUE;
+	DEBUG_LOG("ReadConsoleInputA(%p, %p, %u, %p)\n", hConsoleInput, lpBuffer, nLength, lpNumberOfEventsRead);
+	return rejectUnavailableConsole(hConsoleInput);
 }
 
 BOOL WINAPI VerifyConsoleIoHandle(HANDLE handle) {

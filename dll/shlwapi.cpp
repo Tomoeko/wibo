@@ -8,13 +8,124 @@
 #include "kernel32/minwinbase.h"
 #include "modules.h"
 #include "strutil.h"
+#include "system_provider.h"
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
+
+namespace {
+
+constexpr size_t kMaxPatternUnits = (64 * 1024 - 256) / (2 * sizeof(WCHAR));
+
+WCHAR upperAscii(WCHAR value) { return value >= 'a' && value <= 'z' ? value - ('a' - 'A') : value; }
+
+bool matchesAsciiPattern(std::basic_string_view<WCHAR> file, std::basic_string_view<WCHAR> pattern) {
+	size_t filePosition = 0, patternPosition = 0;
+	size_t starPosition = decltype(pattern)::npos, retryPosition = 0;
+	while (filePosition < file.size()) {
+		if (patternPosition < pattern.size() && pattern[patternPosition] == '*') {
+			starPosition = patternPosition++;
+			retryPosition = filePosition;
+		} else if (patternPosition < pattern.size() &&
+				   (pattern[patternPosition] == '?' ||
+					upperAscii(pattern[patternPosition]) == upperAscii(file[filePosition]))) {
+			++filePosition;
+			++patternPosition;
+		} else if (starPosition != decltype(pattern)::npos) {
+			filePosition = ++retryPosition;
+			patternPosition = starPosition + 1;
+		} else {
+			return false;
+		}
+	}
+	while (patternPosition < pattern.size() && pattern[patternPosition] == '*')
+		++patternPosition;
+	return patternPosition == pattern.size();
+}
+
+bool matchesAsciiPatterns(std::basic_string_view<WCHAR> file, std::basic_string_view<WCHAR> patterns) {
+	if (patterns.size() == 3 && patterns[0] == '*' && patterns[1] == '.' && patterns[2] == '*')
+		return true;
+	for (size_t position = 0; position < patterns.size();) {
+		const size_t separator = patterns.find(';', position);
+		const size_t end = separator == decltype(patterns)::npos ? patterns.size() : separator;
+		while (position < end && patterns[position] == ' ')
+			++position;
+		if (matchesAsciiPattern(file, patterns.substr(position, end - position)))
+			return true;
+		position = end + 1;
+	}
+	return false;
+}
+
+} // namespace
 
 namespace shlwapi {
+
+BOOL WINAPI PathMatchSpecW(LPCWSTR file, LPCWSTR pattern) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathMatchSpecW(%p, %p)\n", file, pattern);
+	const DWORD incomingError = kernel32::getLastError();
+	if (!file || !pattern) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const auto validRange = [](const void *pointer) {
+		return kMaxPatternUnits * sizeof(WCHAR) <=
+			   std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(pointer);
+	};
+	if (!validRange(file) || !validRange(pattern)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const size_t fileUnits = wstrnlen(file, kMaxPatternUnits);
+	const size_t patternUnits = wstrnlen(pattern, kMaxPatternUnits);
+	if (fileUnits == kMaxPatternUnits || patternUnits == kMaxPatternUnits ||
+		fileUnits + patternUnits > kMaxPatternUnits) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	const std::basic_string_view<WCHAR> fileName(file, fileUnits), patterns(pattern, patternUnits);
+	const auto ascii = [](WCHAR unit) { return unit < 128; };
+	if (std::all_of(fileName.begin(), fileName.end(), ascii) && std::all_of(patterns.begin(), patterns.end(), ascii)) {
+		const BOOL result = matchesAsciiPatterns(fileName, patterns);
+		kernel32::setLastError(incomingError);
+		return result;
+	}
+	const auto encode = [](LPCWSTR value, size_t units) {
+		return wibo::provider::encodeBytes(
+			std::string_view(reinterpret_cast<const char *>(value), units * sizeof(WCHAR)));
+	};
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"path-match-spec-w", encode(file, fileUnits), encode(pattern, patternUnits),
+								  std::to_string(incomingError)},
+								 response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	uint32_t result = 0, nativeError = 0;
+	if (!reader.header(status) || (status && !reader.done())) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (status) {
+		kernel32::setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED
+																	  : static_cast<DWORD>(status));
+		return FALSE;
+	}
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.done()) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	kernel32::setLastError(nativeError);
+	return static_cast<BOOL>(result);
+}
 
 BOOL WINAPI PathIsDirectoryW(LPCWSTR path) {
 	HOST_CONTEXT_GUARD();

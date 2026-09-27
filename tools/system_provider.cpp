@@ -16,6 +16,7 @@
 #include <oleauto.h>
 #include <setupapi.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <wbemcli.h>
 #include <winternl.h>
 
@@ -622,6 +623,230 @@ bool stringTypeExA(WCHAR **parameters) {
 	response.number(result ? 1 : 0);
 	response.number(nativeError);
 	response.bytes(output.data(), outputBytes);
+	return response.write();
+}
+
+bool pathMatchSpecW(WCHAR **parameters) {
+	const auto fail = [](DWORD error) {
+		Response response;
+		response.header(error);
+		return response.write();
+	};
+	constexpr size_t kMaxHexBytes = 64 * 1024 - 256;
+	const size_t fileHex = wcslen(parameters[0]);
+	const size_t patternHex = wcslen(parameters[1]);
+	if (fileHex > kMaxHexBytes || patternHex > kMaxHexBytes - fileHex)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	uint32_t incomingError = 0;
+	std::vector<WCHAR> file, pattern;
+	if (!parseUnsignedDecimal(parameters[2], UINT32_MAX, incomingError) || !decodeMappingString(parameters[0], file) ||
+		!decodeMappingString(parameters[1], pattern) || std::find(file.begin(), file.end(), WCHAR{0}) != file.end() ||
+		std::find(pattern.begin(), pattern.end(), WCHAR{0}) != pattern.end())
+		return fail(ERROR_INVALID_PARAMETER);
+	file.push_back(0);
+	pattern.push_back(0);
+	SetLastError(incomingError);
+	const BOOL result = PathMatchSpecW(file.data(), pattern.data());
+	const DWORD nativeError = GetLastError();
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(nativeError);
+	return response.write();
+}
+
+bool formatDateTimeSnapshot(WCHAR **parameters, bool date) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	constexpr size_t kRequestOverhead = 256;
+	constexpr size_t kMaxSnapshotUnits = (64 * 1024 - kRequestOverhead) / (2 * sizeof(WCHAR));
+	constexpr size_t kResponseOverhead = 6 * sizeof(uint32_t);
+	static_assert(sizeof(SYSTEMTIME) == 16);
+	static_assert(kMaxSnapshotUnits * sizeof(WCHAR) <= kMaxResponse - kResponseOverhead);
+	uint32_t locale = 0, flags = 0, incomingError = 0;
+	int capacity = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, locale) ||
+		!parseUnsignedDecimal(parameters[1], UINT32_MAX, flags) || !parseMappingCount(parameters[4], capacity) ||
+		!parseUnsignedDecimal(parameters[6], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	if (capacity < 0)
+		return fail(ERROR_INVALID_PARAMETER);
+	if (static_cast<size_t>(capacity) > kMaxSnapshotUnits)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	const bool hasTime = wcscmp(parameters[2], L"-") != 0;
+	SYSTEMTIME time{};
+	if (hasTime) {
+		std::string bytes;
+		if (wcslen(parameters[2]) != sizeof(time) * 2 || !decodeHex(parameters[2], bytes, true) ||
+			bytes.size() != sizeof(time))
+			return fail(ERROR_INVALID_PARAMETER);
+		std::memcpy(&time, bytes.data(), sizeof(time));
+	}
+	const bool hasFormat = wcscmp(parameters[3], L"-") != 0;
+	std::vector<WCHAR> format;
+	if (hasFormat) {
+		if (wcslen(parameters[3]) / (2 * sizeof(WCHAR)) > kMaxSnapshotUnits - static_cast<size_t>(capacity))
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		if (!decodeMappingString(parameters[3], format) ||
+			std::find(format.begin(), format.end(), WCHAR{0}) != format.end())
+			return fail(ERROR_INVALID_PARAMETER);
+		format.push_back(0);
+	}
+	const size_t outputBytes = static_cast<size_t>(capacity) * sizeof(WCHAR);
+	std::string initial;
+	if (capacity ? (wcslen(parameters[5]) != outputBytes * 2 || !decodeHex(parameters[5], initial, true) ||
+					initial.size() != outputBytes)
+				 : wcscmp(parameters[5], L"-") != 0)
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kGuardUnits = 8;
+	constexpr WCHAR kGuardValue = 0xa5a5;
+	std::vector<WCHAR> output(static_cast<size_t>(capacity) + kGuardUnits, kGuardValue);
+	if (outputBytes)
+		std::memcpy(output.data(), initial.data(), outputBytes);
+	SetLastError(incomingError);
+	const int result =
+		date ? GetDateFormatW(locale, flags, hasTime ? &time : nullptr, hasFormat ? format.data() : nullptr,
+							  capacity ? output.data() : nullptr, capacity)
+			 : GetTimeFormatW(locale, flags, hasTime ? &time : nullptr, hasFormat ? format.data() : nullptr,
+							  capacity ? output.data() : nullptr, capacity);
+	const DWORD nativeError = GetLastError();
+	if (result < 0 || (capacity && result > capacity) ||
+		!std::all_of(output.begin() + capacity, output.end(), [](WCHAR value) { return value == kGuardValue; }))
+		return fail(ERROR_NOT_SUPPORTED);
+	if (result && capacity && output[result - 1])
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(result));
+	response.number(nativeError);
+	response.bytes(output.data(), outputBytes);
+	return response.write();
+}
+
+bool localTimeToSystemSnapshot(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	static_assert(sizeof(TIME_ZONE_INFORMATION) == 172 && sizeof(SYSTEMTIME) == 16);
+	static_assert(6 * sizeof(uint32_t) + sizeof(SYSTEMTIME) <= kMaxResponse);
+	uint32_t incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[3], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	const auto decode = [](const WCHAR *text, void *destination, size_t size) {
+		std::string bytes;
+		if (wcslen(text) != size * 2 || !decodeHex(text, bytes, true) || bytes.size() != size)
+			return false;
+		std::memcpy(destination, bytes.data(), size);
+		return true;
+	};
+	TIME_ZONE_INFORMATION zone{};
+	const bool hasZone = wcscmp(parameters[0], L"-") != 0;
+	SYSTEMTIME local{};
+	struct {
+		WORD before[4];
+		SYSTEMTIME value;
+		WORD after[4];
+	} output;
+	std::memset(&output, 0xa5, sizeof(output));
+	if ((hasZone && !decode(parameters[0], &zone, sizeof(zone))) || !decode(parameters[1], &local, sizeof(local)) ||
+		!decode(parameters[2], &output.value, sizeof(output.value)))
+		return fail(ERROR_INVALID_PARAMETER);
+	SetLastError(incomingError);
+	const BOOL result = TzSpecificLocalTimeToSystemTime(hasZone ? &zone : nullptr, &local, &output.value);
+	const DWORD nativeError = GetLastError();
+	for (size_t index = 0; index < 4; ++index)
+		if (output.before[index] != 0xa5a5 || output.after[index] != 0xa5a5)
+			return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(nativeError);
+	response.bytes(&output.value, sizeof(output.value));
+	return response.write();
+}
+
+struct LocaleEnumeration {
+	std::vector<std::wstring> locales;
+	DWORD firstError = 0, expectedError = 0;
+	bool valid = true, preservesError = true;
+};
+thread_local LocaleEnumeration *g_localeEnumeration = nullptr;
+
+bool appendLocale(LPCWSTR text) {
+	auto &collection = *g_localeEnumeration;
+	const DWORD nativeError = GetLastError();
+	if (collection.locales.empty())
+		collection.firstError = nativeError;
+	else if (nativeError != collection.expectedError)
+		collection.preservesError = false;
+	constexpr size_t recordBytes = sizeof(uint32_t) + 8 * sizeof(WCHAR);
+	if (!text || wcsnlen(text, 9) != 8 || collection.locales.size() >= (kMaxResponse - 28) / recordBytes) {
+		collection.valid = false;
+		return false;
+	}
+	for (size_t i = 0; i < 8; ++i)
+		if (!((text[i] >= L'0' && text[i] <= L'9') || (text[i] >= L'a' && text[i] <= L'f') ||
+			  (text[i] >= L'A' && text[i] <= L'F'))) {
+			collection.valid = false;
+			return false;
+		}
+	collection.locales.emplace_back(text, 8);
+	collection.expectedError = 0x2468ace0 + static_cast<DWORD>(collection.locales.size());
+	SetLastError(collection.expectedError);
+	return true;
+}
+BOOL CALLBACK collectLocaleW(LPWSTR text) { return appendLocale(text); }
+BOOL CALLBACK collectLocaleA(LPSTR text) {
+	const DWORD nativeError = GetLastError();
+	WCHAR wide[9]{};
+	if (!text || strnlen(text, 9) != 8) {
+		g_localeEnumeration->valid = false;
+		return FALSE;
+	}
+	for (size_t i = 0; i < 8; ++i)
+		wide[i] = static_cast<unsigned char>(text[i]);
+	SetLastError(nativeError);
+	return appendLocale(wide);
+}
+
+bool enumerateSystemLocales(WCHAR **parameters) {
+	const auto fail = [](DWORD error) {
+		Response response;
+		response.header(error);
+		return response.write();
+	};
+	const bool wide = wcscmp(parameters[0], L"wide") == 0;
+	if (!wide && wcscmp(parameters[0], L"narrow") != 0)
+		return fail(ERROR_INVALID_PARAMETER);
+	uint32_t flags = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[1], UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	LocaleEnumeration collection;
+	auto *previous = g_localeEnumeration;
+	g_localeEnumeration = &collection;
+	SetLastError(incomingError);
+	const BOOL result = wide ? EnumSystemLocalesW(collectLocaleW, flags) : EnumSystemLocalesA(collectLocaleA, flags);
+	const DWORD nativeError = GetLastError();
+	g_localeEnumeration = previous;
+	if (!collection.valid)
+		return fail(ERROR_INVALID_DATA);
+	if (!collection.preservesError ||
+		(!collection.locales.empty() && (!result || nativeError != collection.expectedError)))
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(collection.locales.empty() ? nativeError : collection.firstError);
+	response.number(collection.firstError);
+	response.number(static_cast<uint32_t>(collection.locales.size()));
+	for (const auto &locale : collection.locales)
+		response.bytes(locale.data(), locale.size() * sizeof(WCHAR));
 	return response.write();
 }
 
@@ -1821,6 +2046,14 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = isValidLocaleName(argv[2], argv[3]);
 	else if (argc == 8 && wcscmp(argv[1], L"string-type-ex-a") == 0)
 		written = stringTypeExA(argv + 2);
+	else if (argc == 5 && wcscmp(argv[1], L"enum-system-locales") == 0)
+		written = enumerateSystemLocales(argv + 2);
+	else if (argc == 5 && wcscmp(argv[1], L"path-match-spec-w") == 0)
+		written = pathMatchSpecW(argv + 2);
+	else if (argc == 9 && wcscmp(argv[1], L"date-format-w") == 0)
+		written = formatDateTimeSnapshot(argv + 2, true);
+	else if (argc == 9 && wcscmp(argv[1], L"time-format-w") == 0)
+		written = formatDateTimeSnapshot(argv + 2, false);
 	else if (argc == 7 && wcscmp(argv[1], L"locale-info-ex") == 0)
 		written = localeInfoEx(argv + 2);
 	else if (argc == 6 && wcscmp(argv[1], L"resolve-locale-name") == 0)
@@ -1841,6 +2074,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = timeZoneInformation();
 	else if (argc == 2 && wcscmp(argv[1], L"dynamic-time-zone-information") == 0)
 		written = dynamicTimeZoneInformation();
+	else if (argc == 6 && wcscmp(argv[1], L"tz-local-to-system") == 0)
+		written = localTimeToSystemSnapshot(argv + 2);
 	else if (argc == 2 && wcscmp(argv[1], L"environment-defaults") == 0)
 		written = environmentDefaults();
 	else if (argc == 3 && wcscmp(argv[1], L"network-connectivity") == 0)

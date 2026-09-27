@@ -599,6 +599,13 @@ bool tryOpenConsoleDevice(DWORD dwDesiredAccess, DWORD dwShareMode, DWORD dwCrea
 
 namespace kernel32 {
 
+BOOL WINAPI AreFileApisANSI() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("AreFileApisANSI()\n");
+	// The file APIs currently expose only the ANSI mode.
+	return TRUE;
+}
+
 DWORD WINAPI GetFileAttributesA(LPCSTR lpFileName) {
 	HOST_CONTEXT_GUARD();
 	if (!lpFileName) {
@@ -1097,6 +1104,7 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 	bool deleteOnClose = (dwFlagsAndAttributes & FILE_FLAG_DELETE_ON_CLOSE) != 0;
 	bool overlapped = (dwFlagsAndAttributes & FILE_FLAG_OVERLAPPED) != 0;
 
+	files::FileOpenAdmission admission;
 	std::error_code statusEc;
 	std::filesystem::file_status status = std::filesystem::status(hostPath, statusEc);
 	bool pathExists = !statusEc && status.type() != std::filesystem::file_type::not_found;
@@ -1112,8 +1120,6 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		DEBUG_LOG("-> ERROR_ACCESS_DENIED (EISDIR)\n");
 		return INVALID_HANDLE_VALUE;
 	}
-
-	// TODO: verify share mode against existing opens
 
 	bool allowCreate = false;
 	bool truncateExisting = false;
@@ -1221,10 +1227,6 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 	if (dwCreationDisposition == CREATE_NEW) {
 		openFlags |= O_EXCL;
 	}
-	if (truncateExisting && !isDirectory) {
-		openFlags |= O_TRUNC;
-	}
-
 	if (isDirectory) {
 		openFlags |= O_RDONLY | O_DIRECTORY;
 		wantsRead = true;
@@ -1243,6 +1245,9 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		}
 	}
 
+	// Opening an existing stream may wait for another opener of that stream.
+	if (pathExists && !isDirectory && !std::filesystem::is_regular_file(status))
+		admission.releaseForStreamOpen();
 	int fd = open(hostPathStr.c_str(), openFlags, createMode);
 	if (fd < 0) {
 		setLastErrorFromErrno();
@@ -1270,6 +1275,12 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 	fsObject->canonicalPath = std::move(canonicalPath);
 	fsObject->shareAccess = shareMask;
 	fsObject->openFlags = dwFlagsAndAttributes;
+	const DWORD shareError =
+		admission.admit(*fsObject, normalized.grantedMask, shareMask, truncateExisting && !isDirectory);
+	if (shareError) {
+		setLastError(shareError);
+		return INVALID_HANDLE_VALUE;
+	}
 	fsObject->deletePending = deleteOnClose;
 
 	uint32_t handleFlags = 0;

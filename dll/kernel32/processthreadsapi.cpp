@@ -1198,9 +1198,9 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 				  (dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ? sizeof(STARTUPINFOEXA) : sizeof(STARTUPINFOA));
 	}
 
+	// Only the creation flag selects extended attributes; a larger legacy cb does not.
 	if (!lpStartupInfo || !lpProcessInformation ||
-		lpStartupInfo->cb !=
-			((dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ? sizeof(STARTUPINFOEXA) : sizeof(STARTUPINFOA))) {
+		((dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) && lpStartupInfo->cb != sizeof(STARTUPINFOEXA))) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}

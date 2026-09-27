@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <limits>
 
 namespace {
 template <typename Information> DWORD providerTimeZone(const char *operation, Information *information) {
@@ -115,6 +116,64 @@ BOOL WINAPI FileTimeToSystemTime(const FILETIME *lpFileTime, LPSYSTEMTIME lpSyst
 	lpSystemTime->wSecond = static_cast<WORD>(secondsOfDay % 60U);
 	lpSystemTime->wMilliseconds = static_cast<WORD>(hundredNs / HUNDRED_NS_PER_MILLISECOND);
 	return TRUE;
+}
+
+BOOL WINAPI TzSpecificLocalTimeToSystemTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *local,
+											LPSYSTEMTIME utc) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("TzSpecificLocalTimeToSystemTime(%p, %p, %p)\n", zone, local, utc);
+	const auto fail = [](DWORD error) {
+		setLastError(error);
+		return FALSE;
+	};
+	if (!local || !utc)
+		return fail(ERROR_NOT_SUPPORTED);
+	const auto validRange = [](const void *buffer, size_t bytes) {
+		return bytes <= std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(buffer);
+	};
+	if (!validRange(local, sizeof(*local)) || !validRange(utc, sizeof(*utc)) ||
+		(zone && !validRange(zone, sizeof(*zone))))
+		return fail(ERROR_INVALID_PARAMETER);
+	const auto overlaps = [](const void *left, size_t leftBytes, const void *right, size_t rightBytes) {
+		const auto leftAddress = reinterpret_cast<uintptr_t>(left);
+		const auto rightAddress = reinterpret_cast<uintptr_t>(right);
+		return leftAddress < rightAddress + rightBytes && rightAddress < leftAddress + leftBytes;
+	};
+	if ((local != utc && overlaps(local, sizeof(*local), utc, sizeof(*utc))) ||
+		(zone && overlaps(zone, sizeof(*zone), utc, sizeof(*utc))))
+		return fail(ERROR_NOT_SUPPORTED);
+	const DWORD incomingError = getLastError();
+	const auto encode = [](const void *value, size_t bytes) {
+		return wibo::provider::encodeBytes(std::string_view(reinterpret_cast<const char *>(value), bytes));
+	};
+	const std::string zoneBytes = zone ? encode(zone, sizeof(*zone)) : "-";
+	const std::string localBytes = encode(local, sizeof(*local));
+	const std::string initial = encode(utc, sizeof(*utc));
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"tz-local-to-system", zoneBytes, localBytes, initial, std::to_string(incomingError)},
+								 response))
+		return fail(ERROR_NOT_SUPPORTED);
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status) || (status && !reader.done()))
+		return fail(ERROR_INVALID_DATA);
+	if (status)
+		return fail(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+	uint32_t result = 0, nativeError = 0;
+	std::vector<uint8_t> snapshot;
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.bytes(snapshot) ||
+		!reader.done() || snapshot.size() != sizeof(SYSTEMTIME))
+		return fail(ERROR_INVALID_DATA);
+	SYSTEMTIME converted{};
+	std::memcpy(&converted, snapshot.data(), sizeof(converted));
+	if (result && (converted.wYear < 1601 || converted.wYear > 30827 || converted.wMonth < 1 || converted.wMonth > 12 ||
+				   converted.wDay < 1 || converted.wDay > daysInMonth(converted.wYear, converted.wMonth) ||
+				   converted.wDayOfWeek > 6 || converted.wHour > 23 || converted.wMinute > 59 ||
+				   converted.wSecond > 59 || converted.wMilliseconds > 999))
+		return fail(ERROR_INVALID_DATA);
+	std::memcpy(utc, &converted, sizeof(converted));
+	setLastError(nativeError);
+	return static_cast<BOOL>(result);
 }
 
 BOOL WINAPI SystemTimeToTzSpecificLocalTime(const TIME_ZONE_INFORMATION *zone, const SYSTEMTIME *utc,

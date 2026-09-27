@@ -8,6 +8,10 @@
 #include <future>
 #include <pthread.h>
 
+namespace files {
+struct FileShareLease;
+}
+
 namespace kernel32 {
 void initializeEnvironment();
 
@@ -26,6 +30,7 @@ struct FsObject : ObjectBase {
 	DWORD openFlags = 0;
 	bool deletePending = false;
 	bool closeOnDestroy = true;
+	std::shared_ptr<files::FileShareLease> shareLease;
 
 	~FsObject() override;
 	[[nodiscard]] bool valid() const { return fd >= 0; }

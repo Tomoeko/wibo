@@ -200,6 +200,114 @@ elif operation == 'compare-string-ex':
     elif fault == 'invalid-result-high':
         response = header() + number(4)
 
+elif operation == 'path-match-spec-w':
+    source, pattern, incoming_error = arguments
+    pair = (bytes.fromhex(source), bytes.fromhex(pattern))
+    # Fixed native results, including unmatched per-WCHAR surrogate casing.
+    results = {
+        ('\u00e9.txt', '\u00c9.TXT'): 1,
+        ('\u03c9.txt', '\u03a9.TXT'): 1,
+        ('\u03c2.txt', '\u03a3.TXT'): 0,
+        ('\u0131.txt', 'I.TXT'): 0,
+        ('\uff41.txt', '\uff21.TXT'): 1,
+        ('\u65e5.txt', '\u65e5.TXT'): 1,
+        ('\ud801\udc28.txt', '\ud801\udc28.TXT'): 1,
+        ('\ud801\udc28.txt', '\ud801\udc00.TXT'): 0,
+        ('\ud801\udc28', '?'): 0,
+        ('\ud801\udc28', '??'): 1,
+        ('\ud801.txt', '\ud801.TXT'): 1,
+    }
+    results = {(file.encode('utf-16-le', 'surrogatepass'), spec.encode('utf-16-le', 'surrogatepass')): result
+               for (file, spec), result in results.items()}
+    response = header() + number(results[pair]) + number(int(incoming_error))
+    fault = os.environ.get('WIBO_FIXTURE_PATH_MATCH_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'invalid-result':
+        response = header() + number(2) + number(int(incoming_error))
+    elif fault == 'truncated':
+        response = response[:8]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'wrong-size':
+        response = header() + number(results[pair])
+
+elif operation in ('date-format-w', 'time-format-w'):
+    locale, flags, time_hex, picture_hex, capacity, initial, incoming_error = arguments
+    locale, flags, capacity, incoming_error = map(int, (locale, flags, capacity, incoming_error))
+    value = None if time_hex == '-' else struct.unpack('<8H', bytes.fromhex(time_hex))
+    picture = None if picture_hex == '-' else bytes.fromhex(picture_hex).decode('utf-16-le')
+    reference = (2024, 2, 6, 29, 13, 5, 9, 456)
+    date = operation == 'date-format-w'
+    # Snapshot text and errors come from synthetic native reference cases.
+    texts = {
+        (0x007f, 0, reference, 'yyyy-MM-dd'): '2024-02-29',
+        (0x007f, 0, reference, 'HH:mm:ss'): '13:05:09',
+        (0x007f, 0, reference, ''): '',
+        (0x007f, 0, reference, "'fixed''value'"): "fixed'value",
+        (0x007f, 0, None, "'fixed'"): 'fixed',
+    }
+    if date:
+        texts.update({
+            (0x007f, 0x80000000, reference, None): '02/29/2024',
+            (0x0409, 0, reference, 'dddd, MMMM d, yyyy'): 'Thursday, February 29, 2024',
+            (0x0411, 0, reference, "yyyy'\u5e74'M'\u6708'd'\u65e5'"): '2024\u5e742\u670829\u65e5',
+            (0x0409, 0x80000001, reference, None): '2/29/2024',
+            (0x0409, 0x80000002, reference, None): 'Thursday, February 29, 2024',
+            (0x0409, 0x80000008, reference, None): 'February 2024',
+            (0x007f, 0, (2024, 2, 6, 29, 65535, 65535, 65535, 65535), 'yyyy-MM-dd'): '2024-02-29',
+            (0x0409, 0, (2024, 2, 65535, 29, 13, 5, 9, 456), 'dddd'): 'Thursday',
+        })
+    else:
+        texts.update({
+            (0x007f, 0x80000000, reference, None): '13:05:09',
+            (0x0409, 0, reference, 'hh:mm:ss tt'): '01:05:09 PM',
+            (0x0409, 2, reference, 'HH:mm:ss'): '13:05',
+            (0x0409, 1, reference, 'HH:mm:ss'): '13',
+            (0x0409, 4, reference, 'hh:mm:ss tt'): '01:05:09',
+            (0x0409, 8, reference, 'hh:mm:ss tt'): '13:05:09 PM',
+            (0x007f, 0, (65535, 65535, 65535, 65535, 13, 5, 9, 456), 'HH:mm:ss'): '13:05:09',
+        })
+    key = (locale, flags, value, picture)
+    errors = {
+        (0xffffffff, 0, reference, 'yyyy-MM-dd'): 87,
+        (0xffffffff, 0, reference, 'HH:mm:ss'): 87,
+        (0x007f, 0x80000000, reference, 'yyyy-MM-dd'): 1004,
+        (0x007f, 0x80000000, reference, 'HH:mm:ss'): 1004,
+        (0x0409, 3, reference, None): 1004,
+        (0x0409, 1, reference, 'yyyy-MM-dd'): 1004,
+        (0x007f, 0, (2024, 2, 6, 30, 13, 5, 9, 456), 'yyyy-MM-dd'): 87,
+        (0x007f, 0, (2024, 2, 6, 29, 24, 5, 9, 456), 'HH:mm:ss'): 87,
+        (0x007f, 0, (2024, 2, 6, 29, 13, 5, 9, 1000), 'HH:mm:ss'): 87,
+    }
+    output = bytearray() if not capacity else bytearray.fromhex(initial)
+    assert len(output) == capacity * 2
+    native_error, result = incoming_error, 0
+    if key in errors:
+        native_error = errors[key]
+    else:
+        text_value = texts[key]
+        result = len(text_value) + 1
+        if capacity:
+            written = (text_value[:capacity - 1] + '\0').encode('utf-16-le')
+            output[:len(written)] = written
+            if result > capacity:
+                result, native_error = 0, 122
+    response = header() + number(result) + number(native_error) + blob(output)
+    fault = os.environ.get('WIBO_FIXTURE_NLS_FORMAT_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'invalid-result':
+        response = header() + number(0xffffffff) + number(native_error) + blob(output)
+    elif fault == 'wrong-size':
+        response = header() + number(result) + number(native_error) + blob(output[:-2])
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'unterminated':
+        assert result > 0 and capacity
+        struct.pack_into('<H', output, (result - 1) * 2, 0xa5a5)
+        response = header() + number(result) + number(native_error) + blob(output)
+
 elif operation == 'is-valid-locale-name':
     encoded, incoming_error = arguments
     locale = bytes.fromhex(encoded).decode('utf-16-le').lower()

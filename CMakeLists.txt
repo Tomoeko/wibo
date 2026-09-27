@@ -67,7 +67,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lsetupapi -lversion -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lshlwapi -lsetupapi -lversion -o ${_provider_image}
         DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -329,6 +329,7 @@ add_executable(wibo
     dll/kernel32/wincon.cpp
     dll/kernel32/winnls.cpp
     dll/kernel32/nls_scalar.cpp
+    dll/kernel32/nls_format.cpp
     dll/kernel32/winnt.cpp
     dll/kernel32/wow64apiset.cpp
     dll/lmgr.cpp
@@ -708,6 +709,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
         wibo_add_fixture_bin(NAME test_process_default_std SOURCES test/test_process_default_std.c)
         set_tests_properties(wibo.test_process_default_std PROPERTIES TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_process_startup_size SOURCES test/test_process_startup_size.c)
+        set_tests_properties(wibo.test_process_startup_size PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_startup_info SOURCES test/test_process_startup_info.c)
         set_tests_properties(wibo.test_process_startup_info PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_initial_std SOURCES test/test_process_initial_std.c)
@@ -889,6 +892,43 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             set_tests_properties(wibo.test_known_folder_${fault} PROPERTIES
                 ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_FOLDER_RESPONSE=${fault}")
         endforeach()
+        function(wibo_add_provider_tests name binary variable provider)
+            foreach(mode IN LISTS ARGN)
+                if(mode STREQUAL "unavailable")
+                    set(_provider "")
+                else()
+                    set(_provider "${CMAKE_CURRENT_SOURCE_DIR}/test/${provider}")
+                endif()
+                add_test(NAME wibo.${name}_${mode}
+                    COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/${binary}.exe)
+                set_tests_properties(wibo.${name}_${mode} PROPERTIES TIMEOUT 15
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                    ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${_provider};WIBO_SYSTEM_PROVIDER_PERSISTENT=0;${variable}=${mode}")
+            endforeach()
+        endfunction()
+        wibo_add_fixture_bin(NAME test_nls_format SOURCES test/test_nls_format.c NO_TEST)
+        wibo_add_provider_tests(test_nls_format test_nls_format WIBO_FIXTURE_NLS_FORMAT_RESPONSE provider_fixture.py
+            success failed invalid-result wrong-size trailing unterminated unavailable)
+        wibo_add_fixture_bin(NAME test_path_match SOURCES test/test_path_match.c NO_TEST COMPILE_OPTIONS -lshlwapi)
+        wibo_add_provider_tests(test_path_match test_path_match WIBO_FIXTURE_PATH_MATCH_RESPONSE provider_fixture.py
+            success failed invalid-result truncated trailing wrong-size unavailable)
+        add_test(NAME wibo.test_path_match_ascii
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_path_match.exe ascii)
+        set_tests_properties(wibo.test_path_match_ascii PROPERTIES TIMEOUT 15 DEPENDS wibo.build_fixtures)
+        wibo_add_fixture_bin(NAME test_file_info SOURCES test/test_file_info.c COMPILE_OPTIONS -lshell32)
+        add_test(NAME wibo.test_file_info_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_info.exe unsupported)
+        set_tests_properties(wibo.test_file_info_unsupported PROPERTIES TIMEOUT 15 DEPENDS wibo.build_fixtures)
+        wibo_add_fixture_bin(NAME test_file_api_mode SOURCES test/test_file_api_mode.c)
+        wibo_add_fixture_bin(NAME test_locale_enumeration SOURCES test/test_locale_enumeration.c NO_TEST)
+        wibo_add_provider_tests(test_locale_enumeration test_locale_enumeration WIBO_FIXTURE_LOCALE_ENUMERATION_RESPONSE
+            locale_enumeration_provider_fixture.py good unavailable native-failure late-invalid embedded-null short-record
+            truncated trailing bad-result huge-count partial-failure failed-with-data bad-magic bad-version)
+        wibo_add_fixture_bin(NAME test_timezone_reverse SOURCES test/test_timezone_reverse.c NO_TEST)
+        wibo_add_provider_tests(test_timezone_reverse test_timezone_reverse WIBO_FIXTURE_TIMEZONE_REVERSE_RESPONSE
+            timezone_reverse_provider_fixture.py success failed invalid-result wrong-size trailing invalid-time unavailable)
+        wibo_add_fixture_bin(NAME test_file_sharing SOURCES test/test_file_sharing.c)
+        set_tests_properties(wibo.test_file_sharing PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_shlwapi SOURCES test/test_shlwapi.c COMPILE_OPTIONS -lshlwapi)
         wibo_add_fixture_bin(NAME test_path_canonicalize SOURCES test/test_path_canonicalize.c COMPILE_OPTIONS -lshlwapi)
         set_tests_properties(wibo.test_path_canonicalize PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
@@ -1666,11 +1706,36 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
 
         # Transport fixtures explicitly opt in to their native helper control variables.
         get_property(_wibo_tests DIRECTORY PROPERTY TESTS)
+        set(_wibo_provider_environment_names
+            WIBO_FIXTURE_ADAPTER_RESPONSE
+            WIBO_FIXTURE_ALPHA_RESPONSE
+            WIBO_FIXTURE_DEVICES_RESPONSE
+            WIBO_FIXTURE_LEAD_RESPONSE
+            WIBO_FIXTURE_LOCALE_ENUMERATION_RESPONSE
+            WIBO_FIXTURE_IP_TABLE_RESPONSE
+            WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE
+            WIBO_FIXTURE_MEMORY_RESPONSE
+            WIBO_FIXTURE_METRICS_RESPONSE
+            WIBO_FIXTURE_NETWORK_RESPONSE
+            WIBO_FIXTURE_NLS_FIND_RESPONSE
+            WIBO_FIXTURE_NLS_FORMAT_RESPONSE
+            WIBO_FIXTURE_NLS_SCALAR_RESPONSE
+            WIBO_FIXTURE_PATH_MATCH_RESPONSE
+            WIBO_FIXTURE_ROUTE_RESPONSE
+            WIBO_FIXTURE_STATUS_RESPONSE
+            WIBO_FIXTURE_SYSTEM_RESPONSE
+            WIBO_FIXTURE_TIMEZONE_REVERSE_RESPONSE
+            WIBO_FIXTURE_UPPER_RESPONSE
+            WIBO_FIXTURE_VOLUME_RESPONSE
+            WIBO_SYSTEM_PROVIDER
+            WIBO_SYSTEM_PROVIDER_PERSISTENT
+        )
+        list(JOIN _wibo_provider_environment_names "," _wibo_provider_environment_bridge)
         foreach(_wibo_test IN LISTS _wibo_tests)
             get_property(_wibo_test_environment TEST ${_wibo_test} PROPERTY ENVIRONMENT)
             if(_wibo_test_environment MATCHES "WIBO_SYSTEM_PROVIDER=")
                 set_property(TEST ${_wibo_test} APPEND PROPERTY ENVIRONMENT
-                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_ALPHA_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_LEAD_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_NLS_SCALAR_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_UPPER_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
+                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=${_wibo_provider_environment_bridge}")
             endif()
         endforeach()
         set_property(TEST wibo.test_load_cursor APPEND PROPERTY ENVIRONMENT
