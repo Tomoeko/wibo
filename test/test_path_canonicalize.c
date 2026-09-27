@@ -3,7 +3,50 @@
 #include <wchar.h>
 #include <windows.h>
 
+static void testFullPaths(void) {
+	const struct {
+		const char *input, *expected;
+	} cases[] = {{"Z:\\wibo-path\\folder", "Z:\\wibo-path\\folder"},
+				 {"Z:\\wibo-path\\folder\\.", "Z:\\wibo-path\\folder"},
+				 {"Z:\\wibo-path\\folder\\..", "Z:\\wibo-path"},
+				 {"Z:\\wibo-path\\folder\\.\\", "Z:\\wibo-path\\folder\\"},
+				 {"Z:\\wibo-path\\folder\\..\\", "Z:\\wibo-path\\"},
+				 {"Z:\\.", "Z:\\"},
+				 {"Z:\\..", "Z:\\"},
+				 {"Z:\\..\\..", "Z:\\"},
+				 {"Z:\\", "Z:\\"},
+				 {"Z:\\wibo-path\\folder\\", "Z:\\wibo-path\\folder\\"},
+				 {"Z:\\wibo-path\\folder/.", "Z:\\wibo-path\\folder"},
+				 {"Z:\\wibo-path\\folder/..", "Z:\\wibo-path"}};
+	for (unsigned i = 0; i != sizeof(cases) / sizeof(*cases); ++i) {
+		char output[MAX_PATH], *part = NULL;
+		const char *lastSlash = strrchr(cases[i].expected, '\\');
+		const BOOL hasPart = lastSlash && lastSlash[1];
+		DWORD length = GetFullPathNameA(cases[i].input, sizeof(output), output, &part);
+		TEST_CHECK_EQ(strlen(cases[i].expected), length);
+		TEST_CHECK_STR_EQ(cases[i].expected, output);
+		if (hasPart) {
+			TEST_CHECK(part != NULL);
+			TEST_CHECK_EQ(lastSlash + 1 - cases[i].expected, part - output);
+		} else
+			TEST_CHECK(part == NULL);
+
+		WCHAR inputW[MAX_PATH], expectedW[MAX_PATH], outputW[MAX_PATH], *partW = NULL;
+		TEST_CHECK(MultiByteToWideChar(CP_ACP, 0, cases[i].input, -1, inputW, MAX_PATH));
+		TEST_CHECK(MultiByteToWideChar(CP_ACP, 0, cases[i].expected, -1, expectedW, MAX_PATH));
+		length = GetFullPathNameW(inputW, MAX_PATH, outputW, &partW);
+		TEST_CHECK_EQ(wcslen(expectedW), length);
+		TEST_CHECK_MSG(wcscmp(expectedW, outputW) == 0, "Unexpected full path for case %u", i);
+		if (hasPart) {
+			TEST_CHECK(partW != NULL);
+			TEST_CHECK_EQ(lastSlash + 1 - cases[i].expected, partW - outputW);
+		} else
+			TEST_CHECK(partW == NULL);
+	}
+}
+
 int main(void) {
+	testFullPaths();
 	const struct {
 		const WCHAR *input, *expected;
 	} cases[] = {{L"", L"\\"},

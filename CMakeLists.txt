@@ -893,6 +893,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_waitable_timer PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_wait_multiple_race SOURCES test/test_wait_multiple_race.c)
         wibo_add_fixture_bin(NAME test_processes SOURCES test/test_processes.c)
+        wibo_add_fixture_bin(NAME test_process_current_directory SOURCES test/test_process_current_directory.c)
+        set_tests_properties(wibo.test_process_current_directory PROPERTIES TIMEOUT 20)
         set_tests_properties(wibo.test_processes PROPERTIES TIMEOUT 25)
         if(NOT APPLE)
             # pidfds support non-child waits but waitid cannot retrieve their exit status.

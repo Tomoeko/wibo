@@ -49,16 +49,16 @@ std::string &executablePath() {
 			std::string buffer(size, '\0');
 			if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
 				std::error_code ec;
-				auto canonical = std::filesystem::weakly_canonical(buffer.c_str(), ec);
+				auto absolute = std::filesystem::absolute(buffer.c_str(), ec);
+				if (ec)
+					return;
+				auto canonical = std::filesystem::weakly_canonical(absolute, ec);
 				if (!ec) {
 					path = canonical.string();
 				} else {
-					path.assign(buffer.c_str());
+					path = absolute.string();
 				}
 			}
-		}
-		if (path.empty()) {
-			path = "wibo";
 		}
 	});
 	return path;
@@ -109,11 +109,24 @@ namespace wibo::detail {
 
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() { return std::make_unique<DarwinProcessManager>(); }
 
-int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info) {
+int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info) {
 	auto &path = executablePath();
-	posix_spawnattr_t attr;
-	int rc = posix_spawnattr_init(&attr);
+	if (path.empty())
+		return ENOENT;
+	posix_spawn_file_actions_t actions;
+	int rc = posix_spawn_file_actions_init(&actions);
+	if (rc != 0)
+		return rc;
+	if (directoryFd >= 0)
+		rc = posix_spawn_file_actions_addfchdir_np(&actions, directoryFd);
 	if (rc != 0) {
+		posix_spawn_file_actions_destroy(&actions);
+		return rc;
+	}
+	posix_spawnattr_t attr;
+	rc = posix_spawnattr_init(&attr);
+	if (rc != 0) {
+		posix_spawn_file_actions_destroy(&actions);
 		return rc;
 	}
 	sigset_t mask;
@@ -124,9 +137,10 @@ int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info)
 	}
 	pid_t pid = -1;
 	if (rc == 0) {
-		rc = posix_spawn(&pid, path.c_str(), nullptr, &attr, argv, envp);
+		rc = posix_spawn(&pid, path.c_str(), &actions, &attr, argv, envp);
 	}
 	posix_spawnattr_destroy(&attr);
+	posix_spawn_file_actions_destroy(&actions);
 	if (rc != 0) {
 		return rc;
 	}

@@ -11,12 +11,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <pthread.h>
+#include <unistd.h>
 
 #ifdef __APPLE__
 extern char **environ;
@@ -253,7 +255,32 @@ std::optional<std::filesystem::path> resolveExecutable(const std::string &comman
 	return std::nullopt;
 }
 
-static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::ProcessObject> &pinOut) {
+SpawnDirectory::~SpawnDirectory() {
+	if (mFd >= 0)
+		close(mFd);
+}
+
+int SpawnDirectory::open(const char *directory) {
+	if (mFd >= 0) {
+		close(mFd);
+		mFd = -1;
+	}
+	if (!directory || !directory[0])
+		return ENOENT;
+	auto path = files::pathFromWindows(directory);
+#ifdef __APPLE__
+	constexpr int flags = O_SEARCH | O_DIRECTORY | O_CLOEXEC;
+#else
+	constexpr int flags = O_PATH | O_DIRECTORY | O_CLOEXEC;
+#endif
+	do {
+		mFd = ::open(path.c_str(), flags);
+	} while (mFd < 0 && errno == EINTR);
+	return mFd < 0 ? errno : 0;
+}
+
+static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::ProcessObject> &pinOut,
+						 int directoryFd = -1) {
 	std::vector<char *> argv;
 	argv.reserve(args.size() + 2);
 	argv.push_back(const_cast<char *>("wibo"));
@@ -290,7 +317,7 @@ static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::Pro
 	envp.push_back(nullptr);
 
 	detail::SpawnProcessInfo info;
-	int rc = detail::spawnProcess(argv.data(), envp.data(), info);
+	int rc = detail::spawnProcess(argv.data(), envp.data(), directoryFd, info);
 	if (rc != 0) {
 		return rc;
 	}
@@ -307,7 +334,7 @@ static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::Pro
 }
 
 int spawnWithCommandLine(const std::string &applicationName, const std::string &commandLine,
-						 Pin<kernel32::ProcessObject> &pinOut) {
+						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd) {
 	if (applicationName.empty() && commandLine.empty()) {
 		return ENOENT;
 	}
@@ -322,7 +349,7 @@ int spawnWithCommandLine(const std::string &applicationName, const std::string &
 		args.push_back(applicationName);
 	}
 
-	return spawnInternal(args, pinOut);
+	return spawnInternal(args, pinOut, directoryFd);
 }
 
 int spawnWithArgv(const std::string &applicationName, const std::vector<std::string> &argv,

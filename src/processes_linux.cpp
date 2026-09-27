@@ -10,6 +10,7 @@
 #include <charconv>
 #include <csignal>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -78,21 +79,63 @@ std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() {
 	return std::make_unique<LinuxProcessManager>();
 }
 
-int spawnProcess(char *const argv[], char *const envp[], SpawnProcessInfo &info) {
+int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info) {
+	int errorPipe[2];
+	if (pipe2(errorPipe, O_CLOEXEC) != 0)
+		return errno;
 	pid_t pid = static_cast<pid_t>(syscall(SYS_clone, CLONE_PIDFD, nullptr, &info.pidfd));
 	if (pid < 0) {
 		info.pidfd = -1;
 		int err = errno;
-		perror("clone");
+		close(errorPipe[0]);
+		close(errorPipe[1]);
 		return err;
 	}
 	if (pid == 0) {
-		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
-			perror("prctl(PR_SET_PDEATHSIG)");
+		close(errorPipe[0]);
+		(void)prctl(PR_SET_PDEATHSIG, SIGKILL);
+		if (directoryFd < 0 || fchdir(directoryFd) == 0)
+			execve("/proc/self/exe", argv, envp);
+		int err = errno;
+		const char *bytes = reinterpret_cast<const char *>(&err);
+		size_t remaining = sizeof(err);
+		while (remaining) {
+			ssize_t written = write(errorPipe[1], bytes, remaining);
+			if (written < 0 && errno == EINTR)
+				continue;
+			if (written <= 0)
+				break;
+			bytes += written;
+			remaining -= static_cast<size_t>(written);
 		}
-		execve("/proc/self/exe", argv, envp);
-		perror("execve");
 		_Exit(127);
+	}
+	close(errorPipe[1]);
+	int err = 0;
+	size_t received = 0;
+	while (received < sizeof(err)) {
+		ssize_t count = read(errorPipe[0], reinterpret_cast<char *>(&err) + received, sizeof(err) - received);
+		if (count < 0 && errno == EINTR)
+			continue;
+		if (count < 0) {
+			err = errno;
+			break;
+		}
+		if (count == 0) {
+			if (received)
+				err = EIO;
+			break;
+		}
+		received += static_cast<size_t>(count);
+	}
+	close(errorPipe[0]);
+	if (err) {
+		kill(pid, SIGKILL);
+		while (waitpid(pid, nullptr, __WALL) < 0 && errno == EINTR) {
+		}
+		close(info.pidfd);
+		info.pidfd = -1;
+		return err;
 	}
 	info.pid = pid;
 	return 0;

@@ -124,6 +124,10 @@ bool computeFullPath(const std::string &input, FullPathInfo &outInfo) {
 		kernel32::setLastError(wibo::winErrorFromErrno(ec.value()));
 		return false;
 	}
+	absPath = absPath.lexically_normal();
+	if (!endsWithSeparator && absPath != absPath.root_path() && absPath.filename().empty()) {
+		absPath = absPath.parent_path();
+	}
 
 	std::string windowsPath = files::pathToWindows(absPath);
 	if (endsWithSeparator && !windowsPath.empty() && windowsPath.back() != '\\') {

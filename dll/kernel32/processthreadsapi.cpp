@@ -1006,6 +1006,16 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 			}
 		}
 	}
+	wibo::SpawnDirectory directory;
+	if (lpCurrentDirectory) {
+		int directoryError = directory.open(lpCurrentDirectory);
+		if (directoryError) {
+			setLastError(directoryError == ENOENT || directoryError == ENOTDIR
+							 ? ERROR_DIRECTORY
+							 : wibo::winErrorFromErrno(directoryError));
+			return FALSE;
+		}
+	}
 	std::string application;
 	std::string commandLine = lpCommandLine ? lpCommandLine : "";
 	if (lpApplicationName) {
@@ -1026,9 +1036,9 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 	}
 
 	Pin<ProcessObject> obj;
-	int spawnResult = wibo::spawnWithCommandLine(*resolved, commandLine, obj);
+	int spawnResult = wibo::spawnWithCommandLine(*resolved, commandLine, obj, directory.nativeFd());
 	if (spawnResult != 0) {
-		setLastError((spawnResult == ENOENT) ? ERROR_FILE_NOT_FOUND : ERROR_ACCESS_DENIED);
+		setLastError(wibo::winErrorFromErrno(spawnResult));
 		return FALSE;
 	}
 
@@ -1044,7 +1054,6 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 	(void)bInheritHandles;
 	(void)dwCreationFlags;
 	(void)lpEnvironment;
-	(void)lpCurrentDirectory;
 	(void)lpStartupInfo;
 	return TRUE;
 }
@@ -1064,12 +1073,17 @@ BOOL WINAPI CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSE
 	}
 	std::string directoryUtf8;
 	if (lpCurrentDirectory) {
-		directoryUtf8 = wideStringToString(lpCurrentDirectory);
+		if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpCurrentDirectory),
+											 wstrlen(lpCurrentDirectory)),
+						 directoryUtf8)) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
 	}
 	DEBUG_LOG("CreateProcessW %s \"%s\" %p %p %d 0x%x %p %s %p %p\n",
 			  applicationUtf8.empty() ? "<null>" : applicationUtf8.c_str(),
 			  commandUtf8.empty() ? "<null>" : commandUtf8.c_str(), lpProcessAttributes, lpThreadAttributes,
-			  bInheritHandles, dwCreationFlags, lpEnvironment, directoryUtf8.empty() ? "<none>" : directoryUtf8.c_str(),
+			  bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory ? directoryUtf8.c_str() : "<none>",
 			  lpStartupInfo, lpProcessInformation);
 	std::vector<char> commandBuffer;
 	if (!commandUtf8.empty()) {
@@ -1078,7 +1092,7 @@ BOOL WINAPI CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSE
 	}
 	LPSTR commandPtr = commandBuffer.empty() ? nullptr : commandBuffer.data();
 	LPCSTR applicationPtr = applicationUtf8.empty() ? nullptr : applicationUtf8.c_str();
-	LPCSTR directoryPtr = directoryUtf8.empty() ? nullptr : directoryUtf8.c_str();
+	LPCSTR directoryPtr = lpCurrentDirectory ? directoryUtf8.c_str() : nullptr;
 	return CreateProcessA(applicationPtr, commandPtr, lpProcessAttributes, lpThreadAttributes, bInheritHandles,
 						  dwCreationFlags, lpEnvironment, directoryPtr, reinterpret_cast<LPSTARTUPINFOA>(lpStartupInfo),
 						  lpProcessInformation);
