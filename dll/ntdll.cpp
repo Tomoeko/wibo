@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits>
+#include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1179,6 +1180,47 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(PVOID dllHandle) {
 	BOOL disabled = wibo::disableThreadNotifications(static_cast<HMODULE>(reinterpret_cast<uintptr_t>(dllHandle)));
 	kernel32::setLastError(error);
 	return disabled ? STATUS_SUCCESS : statusDllNotFound;
+}
+
+NTSTATUS WINAPI LdrGetDllHandle(LPCWSTR loadPath, ULONG flags, const UNICODE_STRING *name, HMODULE *module) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LdrGetDllHandle(%p, %x, %p, %p)\n", loadPath, flags, name, module);
+	constexpr NTSTATUS statusDllNotFound = static_cast<NTSTATUS>(0xc0000135);
+	if (!name || !module)
+		return STATUS_INVALID_PARAMETER;
+	UNICODE_STRING counted;
+	std::memcpy(&counted, name, sizeof(counted));
+	if ((counted.Length & 1) || counted.Length > counted.MaximumLength || (!counted.Buffer && counted.Length))
+		return STATUS_INVALID_PARAMETER;
+	if (!counted.Length)
+		return statusDllNotFound;
+	std::u16string text(counted.Length / sizeof(WCHAR), u'\0');
+	std::memcpy(text.data(), fromGuestPtr(counted.Buffer), counted.Length);
+	if (text.find(u'\0') != std::u16string::npos)
+		return STATUS_NOT_SUPPORTED;
+	std::string converted;
+	if (!utf16ToUtf8(text, converted))
+		return STATUS_NOT_SUPPORTED;
+	// Loaded basenames need no search path. Directory-qualified relative names
+	// require a search policy beyond exact loaded-image lookup.
+	if (converted.find_first_of("\\/:") != std::string::npos) {
+		std::string_view syntax = converted;
+		if (syntax.starts_with("\\\\?\\") || syntax.starts_with("//?/"))
+			syntax.remove_prefix(4);
+		const bool driveLetter =
+			!syntax.empty() && ((syntax[0] >= 'A' && syntax[0] <= 'Z') || (syntax[0] >= 'a' && syntax[0] <= 'z'));
+		const bool driveRooted =
+			syntax.size() >= 3 && driveLetter && syntax[1] == ':' && (syntax[2] == '\\' || syntax[2] == '/');
+		if (!driveRooted || !files::pathFromWindows(converted.c_str()).is_absolute())
+			return STATUS_NOT_SUPPORTED;
+	}
+	const DWORD error = kernel32::getLastError();
+	const HMODULE found = wibo::findLoadedModuleHandle(converted.c_str());
+	kernel32::setLastError(error);
+	if (!found)
+		return statusDllNotFound;
+	std::memcpy(module, &found, sizeof(found));
+	return STATUS_SUCCESS;
 }
 
 NTSTATUS WINAPI LdrAddRefDll(ULONG Flags, HMODULE Module) {

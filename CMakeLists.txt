@@ -1386,6 +1386,31 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_core_module_precedence SOURCES test/test_core_module_precedence.c
             DEPENDS ${WIBO_TEST_BIN_DIR}/core_runtime_shadow.dll test/fixture_file_copy.h)
         set_tests_properties(wibo.test_core_module_precedence PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_builtin_module_selection NO_TEST
+            SOURCES test/test_builtin_module_selection.c
+            DEPENDS ${WIBO_TEST_BIN_DIR}/core_runtime_shadow.dll test/fixture_file_copy.h)
+        foreach(_builtin_case default unknown malformed selected selected_list)
+            if(_builtin_case STREQUAL "selected" OR _builtin_case STREQUAL "selected_list")
+                set(_builtin_mode builtin)
+            else()
+                set(_builtin_mode external)
+            endif()
+            add_test(NAME wibo.test_builtin_module_selection_${_builtin_case}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_builtin_module_selection.exe ${_builtin_mode})
+            set_tests_properties(wibo.test_builtin_module_selection_${_builtin_case} PROPERTIES
+                TIMEOUT 15 RUN_SERIAL TRUE
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+        endforeach()
+        set_tests_properties(wibo.test_builtin_module_selection_default PROPERTIES
+            ENVIRONMENT "WIBO_BUILTIN_MODULES=")
+        set_tests_properties(wibo.test_builtin_module_selection_unknown PROPERTIES
+            ENVIRONMENT "WIBO_BUILTIN_MODULES=unavailable.dll")
+        set_tests_properties(wibo.test_builtin_module_selection_malformed PROPERTIES
+            ENVIRONMENT "WIBO_BUILTIN_MODULES=C:\\version.dll")
+        set_tests_properties(wibo.test_builtin_module_selection_selected PROPERTIES
+            ENVIRONMENT "WIBO_BUILTIN_MODULES=  VeRsIoN.DLL  ")
+        set_tests_properties(wibo.test_builtin_module_selection_selected_list PROPERTIES
+            ENVIRONMENT "WIBO_BUILTIN_MODULES=unavailable.dll\\;version\\;shell32")
 
         # DLLs for fixture tests
         wibo_add_fixture_dll(NAME external_exports SOURCES test/external_exports.c)
@@ -1401,6 +1426,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_ldr_disable_callouts SOURCES test/test_ldr_disable_callouts.c
             DEPENDS ${WIBO_TEST_BIN_DIR}/thread_callouts.dll ${WIBO_TEST_BIN_DIR}/thread_notifications.dll)
         set_tests_properties(wibo.test_ldr_disable_callouts PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_ldr_get_dll_handle SOURCES test/test_ldr_get_dll_handle.c
+            DEPENDS ${WIBO_TEST_BIN_DIR}/external_exports.dll)
+        set_tests_properties(wibo.test_ldr_get_dll_handle PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_EXPECT_COUNTED_DLL_NAMES=1")
         wibo_add_fixture_dll(NAME thread_release SOURCES test/thread_release.c)
         wibo_add_fixture_dll(NAME thread_notifications_stress SOURCES test/thread_notifications_stress.c)
         wibo_add_fixture_dll(NAME tls_reloc SOURCES test/tls_reloc_dll.c)

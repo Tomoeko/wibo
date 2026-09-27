@@ -480,6 +480,59 @@ std::string normalizedBaseKey(const ParsedModuleName &parsed) {
 	return normalizeAlias(base);
 }
 
+std::string builtinPreferenceKey(std::string_view name) {
+	std::string key(name);
+	for (char &value : key)
+		if (value >= 'A' && value <= 'Z')
+			value += 'a' - 'A';
+	if (key.ends_with(".dll"))
+		key.resize(key.size() - 4);
+	return key;
+}
+
+const std::unordered_set<std::string> &configuredBuiltinNames() {
+	// Snapshot host startup preferences; guest environment changes cannot select modules.
+	static const auto names = [] {
+		std::unordered_set<std::string> selected;
+		const char *setting = std::getenv("WIBO_BUILTIN_MODULES");
+		if (!setting)
+			return selected;
+		std::string_view remaining(setting);
+		const auto isSpace = [](char value) {
+			return value == ' ' || value == '\t' || value == '\r' || value == '\n' || value == '\f' || value == '\v';
+		};
+		while (!remaining.empty()) {
+			const size_t separator = remaining.find(';');
+			auto token = remaining.substr(0, separator);
+			if (separator == std::string_view::npos)
+				remaining = {};
+			else
+				remaining.remove_prefix(separator + 1);
+			while (!token.empty() && isSpace(token.front()))
+				token.remove_prefix(1);
+			while (!token.empty() && isSpace(token.back()))
+				token.remove_suffix(1);
+			// Only literal ASCII basenames are accepted, without paths or wildcard patterns.
+			const bool valid = !token.empty() && std::all_of(token.begin(), token.end(), [](char value) {
+				return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+					   (value >= '0' && value <= '9') || value == '_' || value == '-' || value == '.';
+			});
+			if (valid)
+				selected.insert(builtinPreferenceKey(token));
+		}
+		return selected;
+	}();
+	return names;
+}
+
+bool hasConfiguredBuiltinPreference(const wibo::ModuleStub &module) {
+	const auto &selected = configuredBuiltinNames();
+	for (size_t index = 0; module.names[index]; ++index)
+		if (selected.contains(builtinPreferenceKey(module.names[index])))
+			return true;
+	return false;
+}
+
 struct ImageTlsDirectory {
 	GUEST_PTR StartAddressOfRawData;
 	GUEST_PTR EndAddressOfRawData;
@@ -824,7 +877,8 @@ void registerBuiltinModule(ModuleRegistry &reg, const wibo::ModuleStub *module) 
 	reg.builtinAliasLists[module] = {};
 	auto &aliasList = reg.builtinAliasLists[module];
 	// Core runtime aliases must retain the implementations that own guest state.
-	const bool pinModule = module == &lib_kernel32 || module == &lib_ntdll || module == &lib_lmgr;
+	const bool pinModule = module == &lib_kernel32 || module == &lib_ntdll || module == &lib_lmgr ||
+						   hasConfiguredBuiltinPreference(*module);
 	if (pinModule) {
 		reg.pinnedModules.insert(raw);
 	}
@@ -1627,6 +1681,34 @@ ModuleInfo *findLoadedModule(const char *name) {
 		info = findByAlias(*reg, normalizeAlias(name));
 	}
 	return info;
+}
+
+HMODULE findLoadedModuleHandle(const char *name) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (!name || !name[0])
+		return NO_HANDLE;
+	if (!std::strpbrk(name, "\\/:")) {
+		ModuleInfo *info = findLoadedModule(name);
+		return info ? info->handle : NO_HANDLE;
+	}
+
+	const auto parsed = parseModuleName(name);
+	auto reg = registry();
+	for (const auto &base : candidateModuleNames(parsed)) {
+		const auto qualified = parsed.directory.empty() ? base : parsed.directory + "\\" + base;
+		const auto mapped = files::pathFromWindows(qualified.c_str());
+		if (!mapped.is_absolute())
+			continue;
+		std::error_code ec;
+		auto path = std::filesystem::weakly_canonical(mapped, ec);
+		if (ec)
+			continue;
+		const auto key = normalizeAlias(files::pathToWindows(path));
+		const auto found = reg->modulesByKey.find(key);
+		if (found != reg->modulesByKey.end() && !found->second->resolvedPath.empty())
+			return found->second->handle;
+	}
+	return NO_HANDLE;
 }
 
 HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool unchanged) {

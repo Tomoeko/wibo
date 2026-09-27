@@ -146,6 +146,8 @@ void clearDllDirectoryOverride();
 std::optional<std::filesystem::path> dllDirectoryOverride();
 std::u16string dllDirectoryName();
 ModuleInfo *findLoadedModule(const char *name);
+// Return a loaded image handle without acquiring a reference or loading its file.
+HMODULE findLoadedModuleHandle(const char *name);
 HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool unchanged);
 void notifyDllThreadAttach();
 void notifyDllThreadDetach();
