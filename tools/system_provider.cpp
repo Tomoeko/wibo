@@ -692,37 +692,40 @@ bool cpInfoExW(const WCHAR *codePageText, const WCHAR *flagsText) {
 	return response.write();
 }
 
-bool localeInfoEx(WCHAR **parameters) {
+enum class LocaleSnapshotOperation { Information, ResolveName };
+
+bool localeBufferSnapshot(WCHAR **parameters, LocaleSnapshotOperation operation, LCTYPE type = 0) {
 	const auto fail = [](DWORD status) {
 		Response response;
 		response.header(status);
 		return response.write();
 	};
-	uint32_t type = 0, incomingError = 0;
+	uint32_t incomingError = 0;
 	int capacity = 0;
-	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, type) || !parseMappingCount(parameters[2], capacity) ||
-		!parseUnsignedDecimal(parameters[4], UINT32_MAX, incomingError))
+	if (!parseMappingCount(parameters[1], capacity) || !parseUnsignedDecimal(parameters[3], UINT32_MAX, incomingError))
 		return fail(ERROR_INVALID_PARAMETER);
+	if (operation == LocaleSnapshotOperation::ResolveName && capacity < 0)
+		return fail(ERROR_NOT_SUPPORTED);
 	constexpr size_t kRequestLimit = 64 * 1024;
 	constexpr size_t kRequestOverhead = 256;
 	constexpr size_t kMaxLocaleHex = 84 * sizeof(WCHAR) * 2;
-	const size_t nameLength = wcslen(parameters[1]);
-	const size_t seedLength = wcslen(parameters[3]);
+	const size_t nameLength = wcslen(parameters[0]);
+	const size_t seedLength = wcslen(parameters[2]);
 	if (nameLength > kMaxLocaleHex)
 		return fail(ERROR_INVALID_PARAMETER);
 	if (seedLength > kRequestLimit - kRequestOverhead - nameLength)
 		return fail(ERROR_NOT_ENOUGH_MEMORY);
-	const bool hasLocale = wcscmp(parameters[1], L"-") != 0;
+	const bool hasLocale = wcscmp(parameters[0], L"-") != 0;
 	std::vector<WCHAR> locale;
 	if (hasLocale) {
-		if (!decodeMappingString(parameters[1], locale))
+		if (!decodeMappingString(parameters[0], locale))
 			return fail(ERROR_INVALID_PARAMETER);
 		for (WCHAR value : locale)
 			if (!value)
 				return fail(ERROR_INVALID_PARAMETER);
 		locale.push_back(0);
 	}
-	const bool hasData = wcscmp(parameters[3], L"-") != 0;
+	const bool hasData = wcscmp(parameters[2], L"-") != 0;
 	if (!hasData && capacity > 0)
 		return fail(ERROR_NOT_SUPPORTED);
 	const size_t units = hasData && capacity > 0 ? static_cast<size_t>(capacity) : 0;
@@ -734,7 +737,7 @@ bool localeInfoEx(WCHAR **parameters) {
 		if (units > (kRequestLimit - kRequestOverhead - nameLength) / (2 * sizeof(WCHAR)))
 			return fail(ERROR_NOT_ENOUGH_MEMORY);
 		std::string initial;
-		if (seedLength != byteCapacity * 2 || !decodeHex(parameters[3], initial, true) ||
+		if (seedLength != byteCapacity * 2 || !decodeHex(parameters[2], initial, true) ||
 			initial.size() != byteCapacity)
 			return fail(ERROR_INVALID_PARAMETER);
 		// Retain a non-NULL pointer for zero and negative original capacities.
@@ -744,18 +747,38 @@ bool localeInfoEx(WCHAR **parameters) {
 	}
 	SetLastError(incomingError);
 	const int result =
-		GetLocaleInfoEx(hasLocale ? locale.data() : nullptr, type, hasData ? buffer.data() : nullptr, capacity);
+		operation == LocaleSnapshotOperation::ResolveName
+			? ResolveLocaleName(hasLocale ? locale.data() : nullptr, hasData ? buffer.data() : nullptr, capacity)
+			: GetLocaleInfoEx(hasLocale ? locale.data() : nullptr, type, hasData ? buffer.data() : nullptr, capacity);
 	const DWORD nativeError = GetLastError();
 	if (result < 0 || (result && (capacity < 0 || (capacity > 0 && result > capacity))) ||
 		(hasData &&
 		 !std::all_of(buffer.begin() + units, buffer.end(), [](WCHAR value) { return value == kGuardValue; })))
 		return fail(ERROR_NOT_SUPPORTED);
+	if (operation == LocaleSnapshotOperation::ResolveName && result) {
+		if (result > LOCALE_NAME_MAX_LENGTH)
+			return fail(ERROR_NOT_SUPPORTED);
+		if (hasData && capacity > 0)
+			for (int index = 0; index < result; ++index)
+				if ((buffer[index] == 0) != (index + 1 == result))
+					return fail(ERROR_NOT_SUPPORTED);
+	}
 	Response response;
 	response.header(ERROR_SUCCESS);
 	response.number(static_cast<uint32_t>(result));
 	response.number(nativeError);
 	response.bytes(hasData ? buffer.data() : nullptr, byteCapacity);
 	return response.write();
+}
+
+bool localeInfoEx(WCHAR **parameters) {
+	uint32_t type = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, type)) {
+		Response response;
+		response.header(ERROR_INVALID_PARAMETER);
+		return response.write();
+	}
+	return localeBufferSnapshot(parameters + 1, LocaleSnapshotOperation::Information, type);
 }
 
 bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
@@ -1471,6 +1494,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = cpInfoExW(argv[2], argv[3]);
 	else if (argc == 7 && wcscmp(argv[1], L"locale-info-ex") == 0)
 		written = localeInfoEx(argv + 2);
+	else if (argc == 6 && wcscmp(argv[1], L"resolve-locale-name") == 0)
+		written = localeBufferSnapshot(argv + 2, LocaleSnapshotOperation::ResolveName);
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)

@@ -134,6 +134,53 @@ bool readNlsResponseHeader(wibo::provider::Reader &reader) {
 	return false;
 }
 
+bool captureNlsOutput(LPWSTR data, int capacity, size_t nameHexSize, size_t &byteCapacity, std::string &seed) {
+	constexpr size_t kRequestOverhead = 256;
+	const size_t remainingHexBytes = kMaxNlsRequest - kRequestOverhead - nameHexSize;
+	byteCapacity = 0;
+	if (data && capacity > 0) {
+		if (static_cast<size_t>(capacity) > remainingHexBytes / (2 * sizeof(WCHAR))) {
+			kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return false;
+		}
+		byteCapacity = static_cast<size_t>(capacity) * sizeof(WCHAR);
+		if (byteCapacity > std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(data)) {
+			kernel32::setLastError(ERROR_INVALID_PARAMETER);
+			return false;
+		}
+	}
+	// Preserve untouched bytes and native failure writes, including nontext data.
+	seed =
+		data ? wibo::provider::encodeBytes(std::string_view(reinterpret_cast<const char *>(data), byteCapacity)) : "-";
+	return true;
+}
+
+bool readNlsOutput(wibo::provider::Reader &reader, int capacity, size_t byteCapacity, uint32_t &result,
+				   uint32_t &nativeError, std::vector<uint8_t> &output) {
+	if (!reader.number(result) || result > INT32_MAX || !reader.number(nativeError) || !reader.bytes(output) ||
+		!reader.done() || output.size() != byteCapacity ||
+		(result && (capacity < 0 || (capacity > 0 && result > static_cast<uint32_t>(capacity))))) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return false;
+	}
+	return true;
+}
+
+bool validResolvedLocale(uint32_t result, const std::vector<uint8_t> &output) {
+	if (!result)
+		return true;
+	if (result > kMaxLocaleNameUnits)
+		return false;
+	if (output.empty())
+		return true;
+	for (size_t index = 0; index < result; ++index) {
+		const bool terminated = output[index * 2] == 0 && output[index * 2 + 1] == 0;
+		if (terminated != (index + 1 == result))
+			return false;
+	}
+	return true;
+}
+
 int compareStrings(const std::string &a, const std::string &b, DWORD dwCmpFlags) {
 	for (size_t i = 0;; ++i) {
 		if (i == a.size()) {
@@ -569,24 +616,10 @@ int WINAPI GetLocaleInfoEx(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData,
 	if (!encodeNlsLocale(lpLocaleName, locale)) {
 		return 0;
 	}
-	constexpr size_t kRequestOverhead = 256;
-	const size_t remainingHexBytes = kMaxNlsRequest - kRequestOverhead - locale.size();
 	size_t byteCapacity = 0;
-	if (lpLCData && cchData > 0) {
-		if (static_cast<size_t>(cchData) > remainingHexBytes / (2 * sizeof(WCHAR))) {
-			setLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return 0;
-		}
-		byteCapacity = static_cast<size_t>(cchData) * sizeof(WCHAR);
-		if (byteCapacity > std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(lpLCData)) {
-			setLastError(ERROR_INVALID_PARAMETER);
-			return 0;
-		}
-	}
-	// Preserve untouched bytes and native failure writes, including numeric and binary data.
-	const std::string seed =
-		lpLCData ? wibo::provider::encodeBytes(std::string_view(reinterpret_cast<const char *>(lpLCData), byteCapacity))
-				 : "-";
+	std::string seed;
+	if (!captureNlsOutput(lpLCData, cchData, locale.size(), byteCapacity, seed))
+		return 0;
 	std::vector<uint8_t> response;
 	if (!wibo::provider::request({"locale-info-ex", std::to_string(LCType), locale, std::to_string(cchData), seed,
 								  std::to_string(incomingError)},
@@ -600,15 +633,55 @@ int WINAPI GetLocaleInfoEx(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData,
 	}
 	uint32_t result = 0, nativeError = 0;
 	std::vector<uint8_t> output;
-	if (!reader.number(result) || result > INT32_MAX || !reader.number(nativeError) || !reader.bytes(output) ||
-		!reader.done() || output.size() != byteCapacity ||
-		(result && (cchData < 0 || (cchData > 0 && result > static_cast<uint32_t>(cchData))))) {
-		setLastError(ERROR_INVALID_DATA);
+	if (!readNlsOutput(reader, cchData, byteCapacity, result, nativeError, output))
 		return 0;
-	}
 	if (byteCapacity) {
 		std::memcpy(lpLCData, output.data(), byteCapacity);
 	}
+	setLastError(nativeError);
+	return static_cast<int>(result);
+}
+
+int WINAPI ResolveLocaleName(LPCWSTR lpNameToResolve, LPWSTR lpLocaleName, int cchLocaleName) {
+	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
+	DEBUG_LOG("ResolveLocaleName(%p, %p, %d)\n", lpNameToResolve, lpLocaleName, cchLocaleName);
+	if (cchLocaleName < 0 || (!lpLocaleName && cchLocaleName > 0)) {
+		// Negative extents and NULL write buffers are not supported by this transport.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	std::string name;
+	if (!encodeNlsLocale(lpNameToResolve, name))
+		return 0;
+	size_t byteCapacity = 0;
+	std::string seed;
+	if (!captureNlsOutput(lpLocaleName, cchLocaleName, name.size(), byteCapacity, seed))
+		return 0;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request(
+			{"resolve-locale-name", name, std::to_string(cchLocaleName), seed, std::to_string(incomingError)},
+			response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return 0;
+	uint32_t result = 0, nativeError = 0;
+	std::vector<uint8_t> output;
+	if (!readNlsOutput(reader, cchLocaleName, byteCapacity, result, nativeError, output))
+		return 0;
+	if (!validResolvedLocale(result, output)) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (byteCapacity)
+		std::memcpy(lpLocaleName, output.data(), byteCapacity);
 	setLastError(nativeError);
 	return static_cast<int>(result);
 }

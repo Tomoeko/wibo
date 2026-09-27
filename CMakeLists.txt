@@ -881,6 +881,22 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_file_version_info_ex
             SOURCES test/test_file_version_info_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
         wibo_add_fixture_bin(NAME test_locale_info_ex SOURCES test/test_locale_info_ex.c NO_TEST)
+        wibo_add_fixture_bin(NAME test_resolve_locale SOURCES test/test_resolve_locale.c NO_TEST)
+        foreach(mode success null-name invariant success-cleared short-mutated false-zero failed
+            truncated trailing wrong-size overflow-result unterminated early-null query-data query-overflow failed-with-data)
+            add_test(NAME wibo.test_resolve_locale_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_resolve_locale.exe)
+            set_tests_properties(wibo.test_resolve_locale_${mode} PROPERTIES TIMEOUT 15
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/resolve_locale_provider_fixture.py;WIBO_FIXTURE_RESOLVE_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_resolve_locale_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_resolve_locale.exe)
+        set_tests_properties(wibo.test_resolve_locale_unavailable PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_RESOLVE_RESPONSE=unavailable")
+        add_test(NAME wibo.test_resolve_locale_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_resolve_locale.exe)
+        set_tests_properties(wibo.test_resolve_locale_local PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/resolve_locale_provider_fixture.py;WIBO_FIXTURE_RESOLVE_LOCAL=1")
         wibo_add_fixture_bin(NAME test_file_information_ex SOURCES test/test_file_information_ex.c)
         set_tests_properties(wibo.test_file_information_ex PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_EXPECT_FILE_INFORMATION_LIMITS=1")
