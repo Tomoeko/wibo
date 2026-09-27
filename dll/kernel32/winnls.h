@@ -38,6 +38,7 @@ static_assert(offsetof(CPINFOEXW, CodePageName) == 24);
 
 typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCA)(LPSTR);
 typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCW)(LPWSTR);
+typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCEX)(LPWSTR, DWORD, LONG_PTR);
 
 struct NLSVERSIONINFO;
 using LPNLSVERSIONINFO = NLSVERSIONINFO *;
@@ -79,6 +80,8 @@ int WINAPI GetLocaleInfoEx(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData,
 int WINAPI ResolveLocaleName(LPCWSTR lpNameToResolve, LPWSTR lpLocaleName, int cchLocaleName);
 BOOL WINAPI EnumSystemLocalesA(LOCALE_ENUMPROCA lpLocaleEnumProc, DWORD dwFlags);
 BOOL WINAPI EnumSystemLocalesW(LOCALE_ENUMPROCW lpLocaleEnumProc, DWORD dwFlags);
+BOOL WINAPI EnumSystemLocalesEx(LOCALE_ENUMPROCEX lpLocaleEnumProcEx, DWORD dwFlags, LONG_PTR lParam,
+								LPVOID lpReserved);
 LCID WINAPI GetUserDefaultLCID();
 BOOL WINAPI IsDBCSLeadByte(BYTE TestChar);
 BOOL WINAPI IsDBCSLeadByteEx(UINT CodePage, BYTE TestChar);

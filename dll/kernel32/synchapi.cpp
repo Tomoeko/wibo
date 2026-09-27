@@ -310,6 +310,75 @@ std::u16string makeU16String(LPCWSTR name) {
 	return {reinterpret_cast<const char16_t *>(name), len};
 }
 
+constexpr DWORD kCreateMutexInitialOwner = 1;
+constexpr DWORD kMaximumAllowed = 0x02000000;
+constexpr DWORD kMutexQueryState = 1;
+constexpr size_t kMaxMutexNameUnits = 260;
+
+bool mapMutexAccess(DWORD requested, DWORD &mapped) {
+	mapped = requested & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | kMaximumAllowed);
+	if (requested & GENERIC_READ)
+		mapped |= STANDARD_RIGHTS_READ | kMutexQueryState;
+	if (requested & GENERIC_WRITE)
+		mapped |= STANDARD_RIGHTS_WRITE;
+	if (requested & GENERIC_EXECUTE)
+		mapped |= STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE;
+	if (requested & (GENERIC_ALL | kMaximumAllowed))
+		mapped |= MUTEX_ALL_ACCESS;
+	if (mapped & ~MUTEX_ALL_ACCESS) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	return true;
+}
+
+bool readMutexName(LPCWSTR source, std::u16string &name) {
+	if (!source)
+		return true;
+	const size_t length = wstrnlen(source, kMaxMutexNameUnits);
+	if (length == kMaxMutexNameUnits) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	name.assign(reinterpret_cast<const char16_t *>(source), length);
+	if (name.find(u'\\') != std::u16string::npos) {
+		// Session, global and private object namespaces require a shared namespace backend.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	return true;
+}
+
+HANDLE createMutex(LPSECURITY_ATTRIBUTES attributes, const std::u16string &name, DWORD flags, DWORD requestedAccess,
+				   bool requireDefaultSecurity) {
+	DWORD access = 0;
+	if (!mapMutexAccess(requestedAccess, access))
+		return NO_HANDLE;
+	if (requireDefaultSecurity && attributes && attributes->lpSecurityDescriptor) {
+		// Explicit security descriptors need object security and access checks.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	}
+	const DWORD handleFlags = attributes && attributes->bInheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	auto [mutex, created] = wibo::g_namespace.getOrCreate(name, [&]() {
+		auto *object = new kernel32::MutexObject();
+		if (flags & kCreateMutexInitialOwner) {
+			object->owner = pthread_self();
+			object->ownerValid = true;
+			object->recursionCount = 1;
+			object->signaled = false;
+		}
+		return object;
+	});
+	if (!mutex) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return NO_HANDLE;
+	}
+	HANDLE handle = wibo::handles().alloc(std::move(mutex), access, handleFlags);
+	kernel32::setLastError(created ? ERROR_SUCCESS : ERROR_ALREADY_EXISTS);
+	return handle;
+}
+
 void makeWideNameFromAnsi(LPCSTR ansiName, std::vector<uint16_t> &outWide) {
 	outWide.clear();
 	if (!ansiName) {
@@ -497,35 +566,48 @@ void WINAPI Sleep(DWORD dwMilliseconds) {
 		cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds), [] { return false; });
 }
 
+HANDLE WINAPI CreateMutexExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR sourceName, DWORD flags, DWORD access) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateMutexExW(%p, %p, 0x%x, 0x%x)\n", attributes, sourceName, flags, access);
+	std::u16string name;
+	if (!readMutexName(sourceName, name))
+		return NO_HANDLE;
+	return createMutex(attributes, name, flags, access, true);
+}
+
+HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES attributes, LPCSTR sourceName, DWORD flags, DWORD access) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateMutexExA(%p, %p, 0x%x, 0x%x)\n", attributes, sourceName, flags, access);
+	std::u16string name;
+	if (sourceName) {
+		const size_t length = strnlen(sourceName, kMaxMutexNameUnits);
+		if (length == kMaxMutexNameUnits) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return NO_HANDLE;
+		}
+		name.reserve(length);
+		for (size_t index = 0; index < length; ++index) {
+			const unsigned char character = static_cast<unsigned char>(sourceName[index]);
+			if (character >= 0x80) {
+				// Non-ASCII names require genuine conversion using the process ANSI code page.
+				setLastError(ERROR_NOT_SUPPORTED);
+				return NO_HANDLE;
+			}
+			name.push_back(static_cast<char16_t>(character));
+		}
+		if (name.find(u'\\') != std::u16string::npos) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return NO_HANDLE;
+		}
+	}
+	return createMutex(attributes, name, flags, access, true);
+}
+
 HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("CreateMutexW(%p, %d, %s)\n", lpMutexAttributes, static_cast<int>(bInitialOwner),
-			  wideStringToString(lpName).c_str());
-	std::u16string name = makeU16String(lpName);
-	const uint32_t grantedAccess = MUTEX_ALL_ACCESS;
-	uint32_t handleFlags = 0;
-	if (lpMutexAttributes && lpMutexAttributes->bInheritHandle) {
-		handleFlags |= HANDLE_FLAG_INHERIT;
-	}
-	auto [mu, created] = wibo::g_namespace.getOrCreate(name, [&]() {
-		auto *mu = new MutexObject();
-		if (bInitialOwner) {
-			std::lock_guard lk(mu->m);
-			mu->owner = pthread_self();
-			mu->ownerValid = true;
-			mu->recursionCount = 1;
-			mu->signaled = false;
-		}
-		return mu;
-	});
-	if (!mu) {
-		// Name exists but isn't a mutex
-		setLastError(ERROR_INVALID_HANDLE);
-		return NO_HANDLE;
-	}
-	HANDLE h = wibo::handles().alloc(std::move(mu), grantedAccess, handleFlags);
-	setLastError(created ? ERROR_SUCCESS : ERROR_ALREADY_EXISTS);
-	return h;
+	DEBUG_LOG("CreateMutexW(%p, %d, %p)\n", lpMutexAttributes, static_cast<int>(bInitialOwner), lpName);
+	return createMutex(lpMutexAttributes, makeU16String(lpName), bInitialOwner ? kCreateMutexInitialOwner : 0,
+					   MUTEX_ALL_ACCESS, false);
 }
 
 HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCSTR lpName) {
@@ -758,7 +840,7 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bA
 			return WAIT_FAILED;
 		}
 		if ((object->type == ObjectType::Timer || object->type == ObjectType::Thread ||
-			 object->type == ObjectType::ProcessThread) &&
+			 object->type == ObjectType::ProcessThread || object->type == ObjectType::Mutex) &&
 			!(metadata.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;
@@ -857,6 +939,10 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 		return WAIT_OBJECT_0;
 	}
 	case ObjectType::Mutex: {
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
 		auto mu = std::move(obj).downcast<MutexObject>();
 		pthread_t self = pthread_self();
 		std::unique_lock lk(mu->m);
@@ -959,7 +1045,7 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 		}
 		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread ||
 			 pin->type == ObjectType::ProcessThread || pin->type == ObjectType::Process ||
-			 pin->type == ObjectType::MemoryResource) &&
+			 pin->type == ObjectType::MemoryResource || pin->type == ObjectType::Mutex) &&
 			!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;

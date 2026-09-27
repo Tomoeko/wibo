@@ -239,6 +239,69 @@ template <typename Character, typename Callback> BOOL enumerateLocales(DWORD fla
 	return TRUE;
 }
 
+struct NamedLocale {
+	std::u16string name;
+	DWORD flags;
+};
+
+BOOL enumerateNamedLocales(LOCALE_ENUMPROCEX callback, DWORD flags, LONG_PTR parameter) {
+	const DWORD incomingError = kernel32::getLastError();
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"enum-system-locales-ex", std::to_string(flags), std::to_string(incomingError)},
+								 response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return FALSE;
+	uint32_t result = 0, nativeError = 0, firstError = 0, count = 0;
+	constexpr size_t headerBytes = 28, minimumRecordBytes = 8;
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.number(firstError) ||
+		!reader.number(count) || count > (response.size() - headerBytes) / minimumRecordBytes || (!result && count)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	std::vector<NamedLocale> locales;
+	locales.reserve(count);
+	for (uint32_t index = 0; index < count; ++index) {
+		NamedLocale locale{};
+		std::string validated;
+		if (!reader.text(locale.name) || locale.name.size() >= kMaxLocaleNameUnits ||
+			locale.name.find(u'\0') != std::u16string::npos || !reader.number(locale.flags) ||
+			!wibo::provider::encodeUtf8(locale.name, validated) || (flags && !(locale.flags & flags))) {
+			kernel32::setLastError(ERROR_INVALID_DATA);
+			return FALSE;
+		}
+		locales.push_back(std::move(locale));
+	}
+	if (!reader.done()) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (locales.empty()) {
+		kernel32::setLastError(nativeError);
+		return static_cast<BOOL>(result);
+	}
+	std::unique_ptr<WCHAR, decltype(&wibo::heap::guestFree)> buffer(
+		static_cast<WCHAR *>(wibo::heap::guestMalloc(kMaxLocaleNameUnits * sizeof(WCHAR))), wibo::heap::guestFree);
+	if (!buffer) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	kernel32::setLastError(firstError);
+	for (const auto &locale : locales) {
+		std::memcpy(buffer.get(), locale.name.data(), locale.name.size() * sizeof(WCHAR));
+		buffer.get()[locale.name.size()] = 0;
+		if (!call_LOCALE_ENUMPROCEX(callback, buffer.get(), locale.flags, parameter))
+			break;
+	}
+	const DWORD callbackError = kernel32::getLastError();
+	buffer.reset();
+	kernel32::setLastError(callbackError);
+	return TRUE;
+}
+
 bool supportedFindFlags(DWORD flags) {
 	const DWORD mode = flags & kFindModes;
 	return mode && !(mode & (mode - 1)) && !(flags & ~(kFindModes | kFindFilters));
@@ -976,6 +1039,18 @@ BOOL WINAPI EnumSystemLocalesW(LOCALE_ENUMPROCW lpLocaleEnumProc, DWORD dwFlags)
 	}
 	return enumerateLocales<WCHAR>(dwFlags, true,
 								   [&](LPWSTR locale) { return call_LOCALE_ENUMPROCW(lpLocaleEnumProc, locale); });
+}
+
+BOOL WINAPI EnumSystemLocalesEx(LOCALE_ENUMPROCEX lpLocaleEnumProcEx, DWORD dwFlags, LONG_PTR lParam,
+								LPVOID lpReserved) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("EnumSystemLocalesEx(%p, 0x%x, %llx, %p)\n", lpLocaleEnumProcEx, dwFlags,
+			  static_cast<unsigned long long>(static_cast<ULONG_PTR>(lParam)), lpReserved);
+	if (!lpLocaleEnumProcEx || lpReserved) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	return enumerateNamedLocales(lpLocaleEnumProcEx, dwFlags, lParam);
 }
 
 LCID WINAPI GetUserDefaultLCID() {

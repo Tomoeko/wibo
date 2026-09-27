@@ -554,6 +554,12 @@ std::string pathToWindows(const std::filesystem::path &path) {
 	return str;
 }
 
+static int snapshotStreamDescriptor(FileObject &file) {
+	std::lock_guard lock(file.m);
+	// A retained file object keeps its descriptor open after a handle is closed.
+	return file.fd;
+}
+
 IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::optional<off_t> &offset,
 			  bool updateFilePointer) {
 	IOResult result{};
@@ -569,12 +575,13 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 	assert(offset.has_value() || updateFilePointer);
 
 	if (file->isPipe) {
-		std::lock_guard lk(file->m);
+		std::lock_guard streamLock(file->streamIoMutex);
+		const int fd = snapshotStreamDescriptor(*file);
 		size_t chunk = bytesToRead > SSIZE_MAX ? SSIZE_MAX : bytesToRead;
 		uint8_t *in = static_cast<uint8_t *>(buffer);
 		ssize_t rc;
 		while (true) {
-			rc = ::read(file->fd, in, chunk);
+			rc = ::read(fd, in, chunk);
 			if (rc == -1 && errno == EINTR) {
 				continue;
 			}
@@ -662,7 +669,31 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 	// Sanity check: if no offset is given, we must update the file pointer
 	assert(offset.has_value() || updateFilePointer);
 
-	if (file->appendOnly || file->isPipe) {
+	if (file->isPipe) {
+		std::lock_guard streamLock(file->streamIoMutex);
+		const int fd = snapshotStreamDescriptor(*file);
+		size_t total = 0;
+		size_t remaining = bytesToWrite;
+		const uint8_t *in = static_cast<const uint8_t *>(buffer);
+		while (remaining > 0) {
+			size_t chunk = remaining > SSIZE_MAX ? SSIZE_MAX : remaining;
+			ssize_t rc = ::write(fd, in + total, chunk);
+			if (rc == -1) {
+				if (errno == EINTR)
+					continue;
+				result.unixError = errno ? errno : EIO;
+				break;
+			}
+			if (rc == 0)
+				break;
+			total += static_cast<size_t>(rc);
+			remaining -= static_cast<size_t>(rc);
+		}
+		result.bytesTransferred = total;
+		return result;
+	}
+
+	if (file->appendOnly) {
 		std::lock_guard lk(file->m);
 		CursorOperation operation(file->cursor);
 		if (operation.error()) {
@@ -670,21 +701,19 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 			return result;
 		}
 		off_t originalPosition = 0;
-		if (!file->isPipe) {
-			originalPosition = lseek(file->fd, 0, SEEK_CUR);
-			if (originalPosition == -1) {
-				result.unixError = errno ? errno : EIO;
-				return result;
-			}
-			struct stat info{};
-			if (fstat(file->fd, &info) != 0) {
-				result.unixError = errno;
-				return result;
-			}
-			result.windowsError = checkRangeAccess(file, info.st_size, bytesToWrite, true);
-			if (result.windowsError) {
-				return result;
-			}
+		originalPosition = lseek(file->fd, 0, SEEK_CUR);
+		if (originalPosition == -1) {
+			result.unixError = errno ? errno : EIO;
+			return result;
+		}
+		struct stat info{};
+		if (fstat(file->fd, &info) != 0) {
+			result.unixError = errno;
+			return result;
+		}
+		result.windowsError = checkRangeAccess(file, info.st_size, bytesToWrite, true);
+		if (result.windowsError) {
+			return result;
 		}
 		size_t total = 0;
 		size_t remaining = bytesToWrite;
@@ -706,8 +735,7 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 			remaining -= static_cast<size_t>(rc);
 		}
 		result.bytesTransferred = total;
-		if (!updateFilePointer && !file->isPipe && lseek(file->fd, originalPosition, SEEK_SET) == -1 &&
-			result.unixError == 0) {
+		if (!updateFilePointer && lseek(file->fd, originalPosition, SEEK_SET) == -1 && result.unixError == 0) {
 			result.unixError = errno ? errno : EIO;
 		}
 		const int unlockError = operation.finish();

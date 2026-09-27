@@ -1016,6 +1016,8 @@ bool localTimeToSystemSnapshot(WCHAR **parameters) {
 
 struct LocaleEnumeration {
 	std::vector<std::wstring> locales;
+	std::vector<DWORD> localeFlags;
+	size_t responseBytes = 28;
 	DWORD firstError = 0, expectedError = 0;
 	bool valid = true, preservesError = true;
 };
@@ -1058,6 +1060,72 @@ BOOL CALLBACK collectLocaleA(LPSTR text) {
 	return appendLocale(wide);
 }
 
+BOOL CALLBACK collectLocaleEx(LPWSTR text, DWORD flags, LPARAM parameter) {
+	(void)parameter;
+	auto &collection = *g_localeEnumeration;
+	const DWORD nativeError = GetLastError();
+	if (collection.locales.empty())
+		collection.firstError = nativeError;
+	else if (nativeError != collection.expectedError)
+		collection.preservesError = false;
+	constexpr size_t maximumNameUnits = LOCALE_NAME_MAX_LENGTH;
+	const size_t length = text ? wcsnlen(text, maximumNameUnits) : maximumNameUnits;
+	const size_t recordBytes = 2 * sizeof(uint32_t) + length * sizeof(WCHAR);
+	if (length >= maximumNameUnits || recordBytes > kMaxResponse - collection.responseBytes) {
+		collection.valid = false;
+		return FALSE;
+	}
+	collection.locales.emplace_back(text, length);
+	collection.localeFlags.push_back(flags);
+	collection.responseBytes += recordBytes;
+	collection.expectedError = 0x2468ace0 + static_cast<DWORD>(collection.locales.size());
+	SetLastError(collection.expectedError);
+	return TRUE;
+}
+
+bool writeLocaleEnumeration(const LocaleEnumeration &collection, BOOL result, DWORD nativeError, bool extended) {
+	Response response;
+	if (!collection.valid) {
+		response.header(ERROR_INVALID_DATA);
+		return response.write();
+	}
+	if (!collection.preservesError ||
+		(!collection.locales.empty() && (!result || nativeError != collection.expectedError))) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(collection.locales.empty() ? nativeError : collection.firstError);
+	response.number(collection.firstError);
+	response.number(static_cast<uint32_t>(collection.locales.size()));
+	for (size_t index = 0; index < collection.locales.size(); ++index) {
+		const auto &locale = collection.locales[index];
+		response.bytes(locale.data(), locale.size() * sizeof(WCHAR));
+		if (extended)
+			response.number(collection.localeFlags[index]);
+	}
+	return response.write();
+}
+
+bool enumerateSystemLocalesEx(WCHAR **parameters) {
+	uint32_t flags = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(parameters[1], UINT32_MAX, incomingError)) {
+		Response response;
+		response.header(ERROR_INVALID_PARAMETER);
+		return response.write();
+	}
+	LocaleEnumeration collection;
+	auto *previous = g_localeEnumeration;
+	g_localeEnumeration = &collection;
+	SetLastError(incomingError);
+	const BOOL result = EnumSystemLocalesEx(collectLocaleEx, flags, 0, nullptr);
+	const DWORD nativeError = GetLastError();
+	g_localeEnumeration = previous;
+	return writeLocaleEnumeration(collection, result, nativeError, true);
+}
+
 bool enumerateSystemLocales(WCHAR **parameters) {
 	const auto fail = [](DWORD error) {
 		Response response;
@@ -1078,20 +1146,7 @@ bool enumerateSystemLocales(WCHAR **parameters) {
 	const BOOL result = wide ? EnumSystemLocalesW(collectLocaleW, flags) : EnumSystemLocalesA(collectLocaleA, flags);
 	const DWORD nativeError = GetLastError();
 	g_localeEnumeration = previous;
-	if (!collection.valid)
-		return fail(ERROR_INVALID_DATA);
-	if (!collection.preservesError ||
-		(!collection.locales.empty() && (!result || nativeError != collection.expectedError)))
-		return fail(ERROR_NOT_SUPPORTED);
-	Response response;
-	response.header(ERROR_SUCCESS);
-	response.number(result ? 1 : 0);
-	response.number(collection.locales.empty() ? nativeError : collection.firstError);
-	response.number(collection.firstError);
-	response.number(static_cast<uint32_t>(collection.locales.size()));
-	for (const auto &locale : collection.locales)
-		response.bytes(locale.data(), locale.size() * sizeof(WCHAR));
-	return response.write();
+	return writeLocaleEnumeration(collection, result, nativeError, false);
 }
 
 bool upperCharacterBuffer(WCHAR **parameters) {
@@ -2637,6 +2692,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = stringTypeExA(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"enum-system-locales") == 0)
 		written = enumerateSystemLocales(argv + 2);
+	else if (argc == 4 && wcscmp(argv[1], L"enum-system-locales-ex") == 0)
+		written = enumerateSystemLocalesEx(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"path-match-spec-w") == 0)
 		written = pathMatchSpecW(argv + 2);
 	else if (argc == 9 && wcscmp(argv[1], L"date-format-w") == 0)

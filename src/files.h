@@ -63,6 +63,7 @@ DWORD truncateAtPositionLocked(FileObject &file);
 std::filesystem::path pathFromWindows(const char *inStr);
 SystemSearchDirectories systemSearchDirectories();
 std::string pathToWindows(const std::filesystem::path &path);
+// The caller must retain the file object for the complete I/O operation.
 IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::optional<off_t> &offset,
 			  bool updateFilePointer);
 IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const std::optional<off_t> &offset,

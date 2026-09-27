@@ -769,6 +769,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_console_control SOURCES test/test_console_control.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_control PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_process_blocked_stream_inherit SOURCES test/test_process_blocked_stream_inherit.c)
+        set_tests_properties(wibo.test_process_blocked_stream_inherit PROPERTIES TIMEOUT 40)
         wibo_add_fixture_bin(NAME test_unhandled_filter_registration SOURCES test/test_unhandled_filter_registration.c)
         set_tests_properties(wibo.test_unhandled_filter_registration PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_reg_enum_keys SOURCES test/test_reg_enum_keys.c
@@ -1054,6 +1056,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_provider_tests(test_locale_enumeration test_locale_enumeration WIBO_FIXTURE_LOCALE_ENUMERATION_RESPONSE
             locale_enumeration_provider_fixture.py good unavailable native-failure late-invalid embedded-null short-record
             truncated trailing bad-result huge-count partial-failure failed-with-data bad-magic bad-version)
+        wibo_add_fixture_bin(NAME test_locale_enumeration_ex SOURCES test/test_locale_enumeration_ex.c NO_TEST)
+        wibo_add_provider_tests(test_locale_enumeration_ex test_locale_enumeration_ex WIBO_FIXTURE_LOCALE_ENUMERATION_EX_RESPONSE
+            locale_enumeration_ex_provider_fixture.py good unavailable native-failure late-invalid embedded-null too-long
+            unpaired wrong-filter truncated trailing bad-result huge-count partial-failure failed-with-data bad-magic bad-version)
         wibo_add_fixture_bin(NAME test_timezone_reverse SOURCES test/test_timezone_reverse.c NO_TEST)
         wibo_add_provider_tests(test_timezone_reverse test_timezone_reverse WIBO_FIXTURE_TIMEZONE_REVERSE_RESPONSE
             timezone_reverse_provider_fixture.py success failed invalid-result wrong-size trailing invalid-time unavailable)
@@ -1619,6 +1625,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_sysdir SOURCES test/test_sysdir.c)
         wibo_add_fixture_bin(NAME test_stringapiset SOURCES test/test_stringapiset.c)
         wibo_add_fixture_bin(NAME test_srw_lock SOURCES test/test_srw_lock.c)
+        wibo_add_fixture_bin(NAME test_mutex_ex SOURCES test/test_mutex_ex.c)
+        set_tests_properties(wibo.test_mutex_ex PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_mutex_ex_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_mutex_ex.exe --unsupported)
+        set_tests_properties(wibo.test_mutex_ex_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_init_once SOURCES test/test_init_once.c)
         wibo_add_fixture_bin(NAME test_wait_on_address SOURCES test/test_wait_on_address.c COMPILE_OPTIONS -lsynchronization)
         wibo_add_fixture_bin(NAME test_env_strings SOURCES test/test_env_strings.c)

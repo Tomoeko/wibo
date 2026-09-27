@@ -68,6 +68,8 @@ class FileCursor {
 };
 
 struct FileObject : FsObject {
+	// Blocking stream I/O must not hold the mutex used by descriptor inheritance.
+	std::mutex streamIoMutex;
 	std::vector<FileRangeLock> rangeLocks;
 	FileCursor cursor;
 	// Additional inherited standard descriptors belong to the same file object.
