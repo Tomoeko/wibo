@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 namespace {
 constexpr std::array<ULONGLONG CONTEXT64::*, 16> kIntegerRegisters = {
@@ -99,14 +100,15 @@ ULONGLONG establisherFrame(const UnwindInfo &info, ULONGLONG offset, CONTEXT64 &
 	return established ? integerRegister(context, info.frameRegister) - info.frameOffset * 16U : context.Rsp;
 }
 
-bool describedEpilogue(const UnwindInfo &info, const RUNTIME_FUNCTION &entry, ULONGLONG relativePc) {
+std::optional<ULONGLONG> describedEpilogue(const UnwindInfo &info, const RUNTIME_FUNCTION &entry,
+										   ULONGLONG relativePc) {
 	if (!info.count || (info.code(0)[1] & 15) != 6)
-		return false;
+		return std::nullopt;
 	const unsigned size = info.code(0)[0];
 	if (!size || size > entry.EndAddress - entry.BeginAddress)
 		invalidUnwind("invalid epilogue size");
-	if ((info.code(0)[1] >> 4) & 1)
-		return relativePc >= entry.EndAddress - size && relativePc < entry.EndAddress;
+	if (((info.code(0)[1] >> 4) & 1) && relativePc >= entry.EndAddress - size && relativePc < entry.EndAddress)
+		return relativePc - (entry.EndAddress - size);
 	for (unsigned index = 1; index < info.count && (info.code(index)[1] & 15) == 6; ++index) {
 		const auto *code = info.code(index);
 		const unsigned distance = code[0] + (code[1] >> 4) * 256U;
@@ -116,9 +118,64 @@ bool describedEpilogue(const UnwindInfo &info, const RUNTIME_FUNCTION &entry, UL
 			invalidUnwind("epilogue is outside the function");
 		const auto start = entry.EndAddress - distance;
 		if (relativePc >= start && relativePc - start < size)
-			return true;
+			return relativePc - start;
 	}
-	return false;
+	return std::nullopt;
+}
+
+RUNTIME_FUNCTION primaryEntry(ULONGLONG base, RUNTIME_FUNCTION entry) {
+	for (unsigned depth = 0; depth < 64; ++depth) {
+		UnwindInfo info(base, entry);
+		if (!(info.flags & kChained))
+			return entry;
+		entry = readValue<RUNTIME_FUNCTION>(info.trailer());
+	}
+	invalidUnwind("too many chained records");
+}
+
+void unwindDescribedEpilogue(ULONGLONG base, RUNTIME_FUNCTION entry, ULONGLONG offset, CONTEXT64 &context,
+							 KNONVOLATILE_CONTEXT_POINTERS *pointers) {
+	for (unsigned depth = 0; depth < 64; ++depth) {
+		UnwindInfo info(base, entry);
+		unsigned index = 0;
+		for (; index < info.count; index += info.slots(index)) {
+			const auto op = info.code(index)[1] & 15;
+			if (op == 0 || op == 10)
+				break;
+		}
+		if (index == info.count && (info.flags & kChained)) {
+			entry = readValue<RUNTIME_FUNCTION>(info.trailer());
+			continue;
+		}
+		// Version 2 scopes begin after allocation cleanup. Remaining pushes mirror epilogue pops.
+		unsigned position = 0;
+		while (index < info.count && (info.code(index)[1] & 15) == 0) {
+			const unsigned reg = info.code(index)[1] >> 4;
+			if (position >= offset) {
+				restoreInteger(context, pointers, reg, context.Rsp);
+				context.Rsp += 8;
+			}
+			position += reg >= 8 ? 2 : 1;
+			++index;
+		}
+		if (index < info.count && info.code(index)[1] == 2) {
+			// A one-slot allocation can represent the flags push removed by a volatile pop.
+			if (position >= offset)
+				context.Rsp += 8;
+			++index;
+		}
+		if (index < info.count) {
+			if ((info.code(index)[1] & 15) != 10 || (info.code(index)[1] >> 4) > 1 || index + 1 != info.count)
+				invalidUnwind("unsupported epilogue unwind operations");
+			context.Rip = readValue<ULONGLONG>(context.Rsp);
+			context.Rsp = readValue<ULONGLONG>(context.Rsp + 24);
+		} else {
+			context.Rip = readValue<ULONGLONG>(context.Rsp);
+			context.Rsp += 8;
+		}
+		return;
+	}
+	invalidUnwind("too many chained records");
 }
 
 bool unwindEpilogue(ULONGLONG base, ULONGLONG pc, const RUNTIME_FUNCTION &entry, const UnwindInfo &info,
@@ -178,6 +235,16 @@ bool unwindEpilogue(ULONGLONG base, ULONGLONG pc, const RUNTIME_FUNCTION &entry,
 		const auto displacement = length == 5 ? readValue<int32_t>(pc + 1) : static_cast<int8_t>(byte(1));
 		const ULONGLONG target = pc + length + displacement;
 		terminal = target < base + entry.BeginAddress || target >= end;
+		if (terminal) {
+			ULONGLONG targetBase = 0;
+			const auto *targetEntry = ntdll::RtlLookupFunctionEntry(target, &targetBase, nullptr);
+			if (targetEntry && targetBase == base) {
+				const auto primary = primaryEntry(base, entry);
+				const auto targetPrimary = primaryEntry(base, *targetEntry);
+				terminal = primary.BeginAddress != targetPrimary.BeginAddress || target == base + primary.BeginAddress;
+			}
+		} else
+			terminal = target == base + entry.BeginAddress && !(info.flags & kChained);
 	}
 	unsigned prefix = available(2) && (byte(0) & 0xf0) == 0x40 ? 1 : 0;
 	if (available(prefix + 2) && byte(prefix) == 0xff && (byte(prefix + 1) & 0x38) == 0x20) {
@@ -209,12 +276,14 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 	UnwindInfo initial(imageBase, entry);
 	ULONGLONG offset = controlPc - imageBase - entry.BeginAddress;
 	*frame = establisherFrame(initial, offset, *context);
-	if (offset >= initial.prologue &&
-		(initial.version == 1 || describedEpilogue(initial, entry, controlPc - imageBase))) {
-		if (unwindEpilogue(imageBase, controlPc, entry, initial, *context, pointers))
+	if (offset >= initial.prologue) {
+		if (initial.version == 1) {
+			if (unwindEpilogue(imageBase, controlPc, entry, initial, *context, pointers))
+				return nullptr;
+		} else if (const auto epilogueOffset = describedEpilogue(initial, entry, controlPc - imageBase)) {
+			unwindDescribedEpilogue(imageBase, entry, *epilogueOffset, *context, pointers);
 			return nullptr;
-		if (initial.version == 2)
-			invalidUnwind("unsupported described epilogue");
+		}
 	}
 	std::array<DWORD, 64> visited{};
 	unsigned depth = 0;

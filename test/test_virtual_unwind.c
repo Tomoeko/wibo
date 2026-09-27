@@ -150,8 +150,8 @@ static void test_epilogues(void) {
 }
 
 static void test_version_two(void) {
-	const BYTE endInfo[] = {2, 5, 4, 0, 7, 0x16, 0, 6, 5, 0x32, 1, 0xc0};
-	const BYTE offsetInfo[] = {2, 5, 4, 0, 7, 6, 64, 6, 5, 0x32, 1, 0xc0};
+	const BYTE endInfo[] = {2, 5, 4, 0, 3, 0x16, 0, 6, 5, 0x32, 1, 0xc0};
+	const BYTE offsetInfo[] = {2, 5, 4, 0, 3, 6, 60, 6, 5, 0x32, 1, 0xc0};
 	const BYTE code[] = {0x48, 0x83, 0xc4, 0x20, 0x41, 0x5c, 0xc3};
 	for (unsigned mode = 0; mode < 2; ++mode) {
 		for (unsigned phase = 0; phase < 4; ++phase) {
@@ -191,6 +191,83 @@ static void test_far_saves_and_machine_frame(void) {
 		TEST_CHECK(step(32, 0) == NULL);
 		TEST_CHECK_U64_EQ(returnAddress, context.Rip);
 		TEST_CHECK_U64_EQ((ULONG_PTR)&stack[20], context.Rsp);
+	}
+}
+
+static void test_combined_epilogue_scopes(void) {
+	const BYTE info[] = {2, 2, 3, 0, 3, 0x16, 64, 6, 2, 0xc0, 0, 0};
+	const BYTE code[] = {0x41, 0x5c, 0xc3};
+	const unsigned positions[] = {64, 66, 125, 127};
+	for (unsigned phase = 0; phase < 4; ++phase) {
+		prepare(info, sizeof(info));
+		memcpy(image + 64, code, sizeof(code));
+		memcpy(image + 125, code, sizeof(code));
+		stack[0] = 0x11223344;
+		stack[1] = returnAddress;
+		context.Rsp = (ULONG_PTR)&stack[phase & 1];
+		context.R12 = stack[0];
+		TEST_CHECK(step(positions[phase] - 16, 0) == NULL);
+		expect_return(1);
+		TEST_CHECK_U64_EQ(stack[0], context.R12);
+	}
+}
+
+static void test_chained_body_jump(void) {
+	typedef LONG(WINAPI * add_fn)(PVOID *, PRUNTIME_FUNCTION, DWORD, DWORD, ULONG_PTR, ULONG_PTR);
+	typedef VOID(WINAPI * delete_fn)(PVOID);
+	HMODULE module = GetModuleHandleW(L"ntdll.dll");
+	add_fn add = (add_fn)(ULONG_PTR)GetProcAddress(module, "RtlAddGrowableFunctionTable");
+	delete_fn remove = (delete_fn)(ULONG_PTR)GetProcAddress(module, "RtlDeleteGrowableFunctionTable");
+	TEST_CHECK(add && remove);
+	RUNTIME_FUNCTION entries[] = {{16, 64, 256}, {128, 192, 288}};
+	entry = entries[1];
+	const BYTE chained[] = {1 | (UNW_FLAG_CHAININFO << 3), 0, 0, 0};
+	prepare(chained, sizeof(chained));
+	memcpy(image + 292, &entries[0], sizeof(entries[0]));
+	const BYTE primary[] = {1, 4, 1, 0, 4, 0x32, 0, 0};
+	memcpy(image + 256, primary, sizeof(primary));
+	const BYTE jump[] = {0xe9, 0x7b, 0xff, 0xff, 0xff};
+	memcpy(image + 160, jump, sizeof(jump));
+	stack[4] = returnAddress;
+	PVOID table;
+	TEST_CHECK_EQ(0, add(&table, entries, 2, 2, (ULONG_PTR)image, (ULONG_PTR)image + 4096));
+	TEST_CHECK(step(32, 0) == NULL);
+	expect_return(4);
+	remove(table);
+	entry = (RUNTIME_FUNCTION){16, 128, 256};
+}
+
+static void test_machine_frame_epilogue(void) {
+	const BYTE info[] = {2, 1, 3, 0, 1, 6, 2, 6, 1, 0x0a, 0, 0};
+	prepare(info, sizeof(info));
+	image[126] = 0x48;
+	image[127] = 0xcf;
+	stack[0] = returnAddress;
+	stack[3] = (ULONG_PTR)&stack[20];
+	TEST_CHECK(step(110, 0) == NULL);
+	TEST_CHECK_U64_EQ(returnAddress, context.Rip);
+	TEST_CHECK_U64_EQ((ULONG_PTR)&stack[20], context.Rsp);
+	// Some comparison runtimes lack version 2 machine-frame epilogue support.
+	if (!getenv("WIBO_TEST_DESCRIBED_MACHINE_FRAME"))
+		return;
+	const BYTE combined[] = {2, 5, 6, 0, 5, 6, 64, 6, 5, 0xc0, 3, 0x30, 2, 2, 1, 0x1a};
+	const BYTE code[] = {0x41, 0x5c, 0x5b, 0x59, 0x48, 0xcf};
+	const unsigned positions[] = {0, 2, 3, 4};
+	for (unsigned phase = 0; phase < 4; ++phase) {
+		prepare(combined, sizeof(combined));
+		memcpy(image + 64, code, sizeof(code));
+		stack[0] = 0x11223344;
+		stack[1] = 0x55667788;
+		stack[3] = returnAddress;
+		stack[6] = (ULONG_PTR)&stack[20];
+		context.R12 = stack[0];
+		context.Rbx = stack[1];
+		context.Rsp = (ULONG_PTR)&stack[phase];
+		TEST_CHECK(step(48 + positions[phase], 0) == NULL);
+		TEST_CHECK_U64_EQ(returnAddress, context.Rip);
+		TEST_CHECK_U64_EQ((ULONG_PTR)&stack[20], context.Rsp);
+		TEST_CHECK_U64_EQ(stack[0], context.R12);
+		TEST_CHECK_U64_EQ(stack[1], context.Rbx);
 	}
 }
 
@@ -247,6 +324,9 @@ int main(void) {
 	test_epilogues();
 	test_version_two();
 	test_far_saves_and_machine_frame();
+	test_combined_epilogue_scopes();
+	test_chained_body_jump();
+	test_machine_frame_epilogue();
 	test_tail_jumps();
 	test_frame_epilogue();
 	TEST_CHECK(VirtualFree(image, 0, MEM_RELEASE));
