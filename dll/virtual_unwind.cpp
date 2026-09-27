@@ -317,8 +317,9 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 					context->Rsp += reg * 8 + 8;
 					break;
 				case 3:
-					if (!info.frameRegister || reg)
+					if (!info.frameRegister)
 						invalidUnwind("invalid frame register operation");
+					// The operation-info nibble is reserved; the header selects the frame register.
 					context->Rsp = integerRegister(*context, info.frameRegister) - info.frameOffset * 16U;
 					break;
 				case 4:

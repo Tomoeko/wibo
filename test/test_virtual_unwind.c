@@ -99,6 +99,18 @@ static void test_saved_registers_and_frame(void) {
 	expect_return(5);
 	TEST_CHECK_U64_EQ((ULONG_PTR)&stack[0], frame);
 	TEST_CHECK_U64_EQ(0x3333, context.Rbp);
+
+	const BYTE reservedFrame[] = {1, 8, 3, 0x25, 8, 0xf3, 5, 0x32, 1, 0x50, 0, 0};
+	prepare(reservedFrame, sizeof(reservedFrame));
+	context.Rbp = (ULONG_PTR)&stack[4];
+	context.Rsp = (ULONG_PTR)&stack[0];
+	stack[4] = 0x4444;
+	stack[5] = returnAddress;
+	TEST_CHECK(step(32, 0) == NULL);
+	expect_return(5);
+	TEST_CHECK_U64_EQ((ULONG_PTR)&stack[0], frame);
+	TEST_CHECK_U64_EQ(0x4444, context.Rbp);
+	TEST_CHECK(pointers.IntegerContext[5] == &stack[4]);
 }
 
 static void test_handlers_and_chains(void) {
