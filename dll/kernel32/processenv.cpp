@@ -20,6 +20,7 @@
 #include <string_view>
 #include <strings.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #ifdef __APPLE__
@@ -30,6 +31,7 @@ namespace {
 
 GUEST_PTR g_commandLineA = GUEST_NULL;
 GUEST_PTR g_commandLineW = GUEST_NULL;
+constexpr DWORD kNoUnicodeTranslation = 1113;
 
 std::string convertEnvValueForWindows(const std::string &name, const char *rawValue) {
 	if (!rawValue) {
@@ -289,25 +291,42 @@ GUEST_PTR WINAPI GetEnvironmentStringsA() {
 
 GUEST_PTR WINAPI GetEnvironmentStringsW() {
 	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
 	DEBUG_LOG("GetEnvironmentStringsW()\n");
 
-	size_t bufSizeW = 0;
-	auto strings = prepareEnvStrings(bufSizeW);
+	size_t byteSize = 0;
+	auto strings = prepareEnvStrings(byteSize);
+	std::vector<std::u16string> wideStrings;
+	wideStrings.reserve(strings.size());
+	size_t totalUnits = 1;
+	constexpr size_t maximumUnits = std::numeric_limits<size_t>::max() / sizeof(WCHAR);
+	for (const auto &string : strings) {
+		auto wide = utf8ToUtf16(string);
+		if (!wide) {
+			setLastError(kNoUnicodeTranslation);
+			return GUEST_NULL;
+		}
+		if (totalUnits == maximumUnits || wide->size() > maximumUnits - totalUnits - 1) {
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return GUEST_NULL;
+		}
+		totalUnits += wide->size() + 1;
+		wideStrings.push_back(std::move(*wide));
+	}
+	totalUnits = std::max(totalUnits, size_t(2));
 
-	uint16_t *buffer = static_cast<uint16_t *>(wibo::heap::guestMalloc(bufSizeW * sizeof(uint16_t)));
+	WCHAR *buffer = static_cast<WCHAR *>(wibo::heap::guestMalloc(totalUnits * sizeof(WCHAR), true));
 	if (!buffer) {
 		setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return GUEST_NULL;
 	}
-	uint16_t *ptr = buffer;
-	for (const auto &s : strings) {
-		for (char c : s) {
-			*ptr++ = static_cast<uint16_t>(static_cast<unsigned char>(c));
-		}
+	WCHAR *ptr = buffer;
+	for (const auto &string : wideStrings) {
+		ptr = std::copy(string.begin(), string.end(), ptr);
 		*ptr++ = 0;
 	}
 	*ptr = 0;
-
+	setLastError(incomingError);
 	return toGuestPtr(buffer);
 }
 
@@ -362,20 +381,34 @@ DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName, LPSTR lpBuffer, DWORD nSize)
 
 DWORD WINAPI GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSize) {
 	HOST_CONTEXT_GUARD();
-	std::string name = lpName ? wideStringToString(lpName) : std::string();
-	DEBUG_LOG("GetEnvironmentVariableW(%s, %p, %u)\n", name.c_str(), lpBuffer, nSize);
-	if (name.empty()) {
+	const DWORD incomingError = getLastError();
+	if (!lpName || !*lpName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
 	}
+	std::string name;
+	if (!utf16ToUtf8(std::u16string(lpName, lpName + wstrlen(lpName)), name)) {
+		setLastError(kNoUnicodeTranslation);
+		return 0;
+	}
+	DEBUG_LOG("GetEnvironmentVariableW(%s, %p, %u)\n", name.c_str(), lpBuffer, nSize);
 	auto value = getEnvValueForWindows(name);
 	if (!value) {
 		setLastError(ERROR_ENVVAR_NOT_FOUND);
 		return 0;
 	}
-	auto wideValue = stringToWideString(value->c_str());
-	DWORD required = static_cast<DWORD>(wideValue.size());
+	auto wideValue = utf8ToUtf16(*value);
+	if (!wideValue) {
+		setLastError(kNoUnicodeTranslation);
+		return 0;
+	}
+	if (wideValue->size() >= std::numeric_limits<DWORD>::max()) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	DWORD required = static_cast<DWORD>(wideValue->size() + 1);
 	if (nSize == 0) {
+		setLastError(incomingError);
 		return required;
 	}
 	if (!lpBuffer) {
@@ -383,9 +416,12 @@ DWORD WINAPI GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSiz
 		return 0;
 	}
 	if (nSize < required) {
+		setLastError(incomingError);
 		return required;
 	}
-	std::copy(wideValue.begin(), wideValue.end(), lpBuffer);
+	std::copy(wideValue->begin(), wideValue->end(), lpBuffer);
+	lpBuffer[required - 1] = 0;
+	setLastError(incomingError);
 	return required - 1;
 }
 
@@ -516,15 +552,23 @@ BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {
 
 BOOL WINAPI SetEnvironmentVariableW(LPCWSTR lpName, LPCWSTR lpValue) {
 	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
 	DEBUG_LOG("SetEnvironmentVariableW -> ");
 	if (!lpName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		DEBUG_LOG("ERROR_INVALID_PARAMETER\n");
 		return FALSE;
 	}
-	std::string name = wideStringToString(lpName);
-	std::string value = lpValue ? wideStringToString(lpValue) : std::string();
-	return SetEnvironmentVariableA(name.c_str(), lpValue ? value.c_str() : nullptr);
+	std::string name, value;
+	if (!utf16ToUtf8(std::u16string(lpName, lpName + wstrlen(lpName)), name) ||
+		(lpValue && !utf16ToUtf8(std::u16string(lpValue, lpValue + wstrlen(lpValue)), value))) {
+		setLastError(kNoUnicodeTranslation);
+		return FALSE;
+	}
+	BOOL result = SetEnvironmentVariableA(name.c_str(), lpValue ? value.c_str() : nullptr);
+	if (result)
+		setLastError(incomingError);
+	return result;
 }
 
 } // namespace kernel32
