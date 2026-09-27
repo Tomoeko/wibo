@@ -517,8 +517,10 @@ int main(int argc, char **argv) {
 	kernel32::initializeEnvironment();
 
 	// Resolve the guest program path
+	const auto pathNamespace =
+		programIndex != -1 ? wibo::ExecutablePathNamespace::Host : wibo::ExecutablePathNamespace::Windows;
 	std::filesystem::path resolvedGuestPath =
-		wibo::resolveExecutable(programName, true).value_or(std::filesystem::path{});
+		wibo::resolveExecutable(programName, true, pathNamespace).value_or(std::filesystem::path{});
 	if (resolvedGuestPath.empty()) {
 		fprintf(stderr, "Failed to resolve path to guest program %s\n", programName.c_str());
 		return 1;

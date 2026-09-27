@@ -3,6 +3,7 @@
 #include "errors.h"
 #include "handles.h"
 #include "kernel32/fileapi.h"
+#include "kernel32/winbase.h"
 #include "strutil.h"
 
 #include <algorithm>
@@ -383,6 +384,27 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 	}
 
 	return newPath;
+}
+
+SystemSearchDirectories systemSearchDirectories() {
+	const auto readDirectory = [](auto query) -> std::filesystem::path {
+		std::vector<char> buffer(260);
+		UINT length = query(buffer.data(), static_cast<UINT>(buffer.size()));
+		if (length >= buffer.size()) {
+			buffer.resize(length);
+			length = query(buffer.data(), static_cast<UINT>(buffer.size()));
+		}
+		if (!length || length >= buffer.size())
+			return {};
+		return pathFromWindows(buffer.data());
+	};
+	SystemSearchDirectories directories;
+	directories.system = readDirectory(kernel32::GetSystemDirectoryA);
+	directories.windows = readDirectory(kernel32::GetWindowsDirectoryA);
+	if (!directories.windows.empty())
+		directories.legacySystem =
+			findCaseInsensitiveFile(directories.windows, "System").value_or(directories.windows / "System");
+	return directories;
 }
 
 std::string pathToWindows(const std::filesystem::path &path) {

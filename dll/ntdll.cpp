@@ -1171,6 +1171,16 @@ NTSTATUS WINAPI NtQueryInformationProcess(HANDLE ProcessHandle, PROCESSINFOCLASS
 	}
 }
 
+NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(PVOID dllHandle) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LdrDisableThreadCalloutsForDll(%p)\n", dllHandle);
+	constexpr NTSTATUS statusDllNotFound = static_cast<NTSTATUS>(0xc0000135);
+	DWORD error = kernel32::getLastError();
+	BOOL disabled = wibo::disableThreadNotifications(static_cast<HMODULE>(reinterpret_cast<uintptr_t>(dllHandle)));
+	kernel32::setLastError(error);
+	return disabled ? STATUS_SUCCESS : statusDllNotFound;
+}
+
 NTSTATUS WINAPI LdrAddRefDll(ULONG Flags, HMODULE Module) {
 	DEBUG_LOG("STUB: LdrAddRefDll(%x, %p)\n", Flags, Module);
 	(void)Flags;

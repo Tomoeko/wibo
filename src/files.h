@@ -26,6 +26,12 @@ struct StandardHandles {
 	bool explicitStartup = true;
 };
 
+struct SystemSearchDirectories {
+	std::filesystem::path system;
+	std::filesystem::path legacySystem;
+	std::filesystem::path windows;
+};
+
 DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusive, bool blocking);
 DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length);
 DWORD checkRangeAccess(FileObject *file, off_t start, size_t length, bool writing);
@@ -38,6 +44,7 @@ DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t
 						 uint64_t maximumPosition = INT64_MAX);
 DWORD truncateAtPositionLocked(FileObject &file);
 std::filesystem::path pathFromWindows(const char *inStr);
+SystemSearchDirectories systemSearchDirectories();
 std::string pathToWindows(const std::filesystem::path &path);
 IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::optional<off_t> &offset,
 			  bool updateFilePointer);

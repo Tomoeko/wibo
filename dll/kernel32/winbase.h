@@ -104,6 +104,7 @@ DWORD WINAPI FormatMessageW(DWORD flags, LPCVOID source, DWORD messageId, DWORD 
 							LPCVOID arguments);
 PVOID WINAPI EncodePointer(PVOID Ptr);
 PVOID WINAPI DecodePointer(PVOID Ptr);
+DWORD WINAPI GetDllDirectoryA(DWORD nBufferLength, LPSTR lpBuffer);
 BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName);
 BOOL WINAPI SetDllDirectoryW(LPCWSTR lpPathName);
 

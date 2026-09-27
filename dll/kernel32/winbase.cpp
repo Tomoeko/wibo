@@ -1033,36 +1033,62 @@ PVOID WINAPI DecodePointer(PVOID Ptr) {
 	return Ptr;
 }
 
+DWORD WINAPI GetDllDirectoryA(DWORD nBufferLength, LPSTR lpBuffer) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetDllDirectoryA(%u, %p)\n", nBufferLength, lpBuffer);
+	const auto specifiedName = wibo::dllDirectoryName();
+	std::string name;
+	name.reserve(specifiedName.size());
+	// The current ANSI code page is ISO-8859-1; other characters use its default byte.
+	for (size_t index = 0; index < specifiedName.size(); ++index) {
+		char16_t character = specifiedName[index];
+		name.push_back(character <= 0xff ? static_cast<char>(character) : '?');
+		if (character >= 0xd800 && character <= 0xdbff && index + 1 < specifiedName.size() &&
+			specifiedName[index + 1] >= 0xdc00 && specifiedName[index + 1] <= 0xdfff)
+			++index;
+	}
+	if (name.size() >= std::numeric_limits<DWORD>::max()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	if (lpBuffer && nBufferLength > name.size()) {
+		std::memcpy(lpBuffer, name.c_str(), name.size() + 1);
+		return static_cast<DWORD>(name.size());
+	}
+	if (lpBuffer && nBufferLength)
+		lpBuffer[0] = 0;
+	return static_cast<DWORD>(name.size() + 1);
+}
+
+static BOOL setDllDirectory(std::u16string specifiedName) {
+	std::string utf8;
+	if (!utf16ToUtf8(specifiedName, utf8)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	auto hostPath = specifiedName.empty() ? std::filesystem::path{} : files::pathFromWindows(utf8.c_str());
+	wibo::setDllDirectoryOverride(hostPath, std::move(specifiedName));
+	return TRUE;
+}
+
 BOOL WINAPI SetDllDirectoryA(LPCSTR lpPathName) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("SetDllDirectoryA(%s)\n", lpPathName);
+	DEBUG_LOG("SetDllDirectoryA(%s)\n", lpPathName ? lpPathName : "(null)");
 	if (!lpPathName) {
 		wibo::clearDllDirectoryOverride();
 		return TRUE;
 	}
-	if (lpPathName[0] == '\0') {
-		wibo::setDllDirectoryOverride({});
-		return TRUE;
-	}
-
-	std::filesystem::path hostPath = files::pathFromWindows(lpPathName);
-	if (hostPath.empty() || !std::filesystem::exists(hostPath)) {
-		setLastError(ERROR_PATH_NOT_FOUND);
-		return FALSE;
-	}
-
-	wibo::setDllDirectoryOverride(std::filesystem::absolute(hostPath));
-	return TRUE;
+	return setDllDirectory(stringToUtf16(lpPathName));
 }
 
 BOOL WINAPI SetDllDirectoryW(LPCWSTR lpPathName) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetDllDirectoryW(%p)\n", lpPathName);
 	if (!lpPathName) {
-		return SetDllDirectoryA(nullptr);
+		wibo::clearDllDirectoryOverride();
+		return TRUE;
 	}
-	const auto path = wideStringToString(lpPathName);
-	return SetDllDirectoryA(path.c_str());
+	return setDllDirectory(std::u16string(reinterpret_cast<const char16_t *>(lpPathName), wstrlen(lpPathName)));
 }
 
 BOOL WINAPI FindActCtxSectionStringA(DWORD dwFlags, const GUID *lpExtensionGuid, ULONG ulSectionId,

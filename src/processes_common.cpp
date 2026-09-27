@@ -200,6 +200,10 @@ static std::vector<std::filesystem::path> buildSearchDirectories() {
 		dirs.push_back(wibo::guestExecutablePath.parent_path());
 	}
 	dirs.push_back(std::filesystem::current_path());
+	const auto system = files::systemSearchDirectories();
+	for (const auto &directory : {system.system, system.legacySystem, system.windows})
+		if (!directory.empty())
+			dirs.push_back(directory);
 	const auto addFromEnv = [&](const char *envVar) {
 		if (const char *envPath = std::getenv(envVar)) {
 			auto parsed = parseHostPath(envPath);
@@ -218,7 +222,8 @@ static std::vector<std::filesystem::path> buildSearchDirectories() {
 	return dirs;
 }
 
-std::optional<std::filesystem::path> resolveExecutable(const std::string &command, bool searchPath) {
+std::optional<std::filesystem::path> resolveExecutable(const std::string &command, bool searchPath,
+													   ExecutablePathNamespace pathNamespace) {
 	if (command.empty()) {
 		return std::nullopt;
 	}
@@ -229,6 +234,16 @@ std::optional<std::filesystem::path> resolveExecutable(const std::string &comman
 		for (const auto &ext : pathextValues()) {
 			candidates.push_back(command + ext);
 		}
+	}
+
+	if (pathNamespace == ExecutablePathNamespace::Host && std::filesystem::path(command).is_absolute() &&
+		!command.starts_with("//?/")) {
+		for (const auto &name : candidates) {
+			std::error_code ec;
+			if (std::filesystem::is_regular_file(name, ec) && !ec)
+				return files::canonicalPath(name);
+		}
+		return std::nullopt;
 	}
 
 	auto tryResolveDirect = [&](const std::string &name) -> std::optional<std::filesystem::path> {

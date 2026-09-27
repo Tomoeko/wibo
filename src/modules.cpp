@@ -296,6 +296,7 @@ struct ModuleRegistry {
 	std::unordered_map<std::string, wibo::ModulePtr> modulesByKey;
 	std::unordered_map<std::string, wibo::ModuleInfo *> modulesByAlias;
 	std::optional<std::filesystem::path> dllDirectory;
+	std::u16string dllDirectorySpecifiedName;
 	bool initialized = false;
 	std::unordered_map<const wibo::ModuleStub *, std::vector<std::string>> builtinAliasLists;
 	std::unordered_map<std::string, wibo::ModuleInfo *> builtinAliasMap;
@@ -615,18 +616,6 @@ std::optional<std::filesystem::path> combineAndFind(const std::filesystem::path 
 	return files::findCaseInsensitiveFile(directory, filename);
 }
 
-std::optional<std::string> systemDirectoryName() {
-	std::vector<char> buffer(260);
-	UINT length = kernel32::GetSystemDirectoryA(buffer.data(), static_cast<UINT>(buffer.size()));
-	if (length >= buffer.size()) {
-		buffer.resize(length);
-		length = kernel32::GetSystemDirectoryA(buffer.data(), static_cast<UINT>(buffer.size()));
-	}
-	if (!length || length >= buffer.size())
-		return std::nullopt;
-	return std::string(buffer.data(), length);
-}
-
 std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg, DWORD flags,
 															const std::filesystem::path &topDirectory = {}) {
 	std::vector<std::filesystem::path> dirs;
@@ -661,10 +650,8 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 			addDirectory(applicationDirectory);
 		if ((flags & wibo::ModuleSearch::UserDirectories) && reg.dllDirectory)
 			addDirectory(*reg.dllDirectory);
-		if (flags & wibo::ModuleSearch::SystemDirectory) {
-			if (auto system = systemDirectoryName())
-				addDirectory(files::pathFromWindows(system->c_str()));
-		}
+		if (flags & wibo::ModuleSearch::SystemDirectory)
+			addDirectory(files::systemSearchDirectories().system);
 		return dirs;
 	}
 	addDirectory((flags & wibo::ModuleSearch::AlteredPath) && !topDirectory.empty() ? topDirectory
@@ -675,21 +662,10 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 	}
 
 	if (flags & wibo::ModuleSearch::AlteredPath) {
-		if (auto system = systemDirectoryName())
-			addDirectory(files::pathFromWindows(system->c_str()));
-		std::vector<char> windowsDirectory(260);
-		UINT length =
-			kernel32::GetWindowsDirectoryA(windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
-		if (length >= windowsDirectory.size()) {
-			windowsDirectory.resize(length);
-			length =
-				kernel32::GetWindowsDirectoryA(windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
-		}
-		if (length && length < windowsDirectory.size()) {
-			auto windows = files::pathFromWindows(windowsDirectory.data());
-			addDirectory(windows / "System");
-			addDirectory(windows);
-		}
+		const auto system = files::systemSearchDirectories();
+		addDirectory(system.system);
+		addDirectory(system.legacySystem);
+		addDirectory(system.windows);
 	}
 	if (!reg.dllDirectory.has_value()) {
 		addDirectory(std::filesystem::current_path());
@@ -847,7 +823,8 @@ void registerBuiltinModule(ModuleRegistry &reg, const wibo::ModuleStub *module) 
 
 	reg.builtinAliasLists[module] = {};
 	auto &aliasList = reg.builtinAliasLists[module];
-	const bool pinModule = (module == &lib_lmgr);
+	// Core runtime aliases must retain the implementations that own guest state.
+	const bool pinModule = module == &lib_kernel32 || module == &lib_ntdll || module == &lib_lmgr;
 	if (pinModule) {
 		reg.pinnedModules.insert(raw);
 	}
@@ -1343,6 +1320,7 @@ void shutdownModuleRegistry() {
 		reg->modulesByKey.clear();
 		reg->modulesByAlias.clear();
 		reg->dllDirectory.reset();
+		reg->dllDirectorySpecifiedName.clear();
 		reg->initialized = false;
 		g_threadNotificationSnapshot.reset();
 	}
@@ -1373,20 +1351,27 @@ ModuleInfo *moduleInfoFromHandle(HMODULE module) {
 	return nullptr;
 }
 
-void setDllDirectoryOverride(const std::filesystem::path &path) {
+void setDllDirectoryOverride(const std::filesystem::path &path, std::u16string specifiedName) {
 	auto canonical = path.empty() ? path : files::canonicalPath(path);
 	auto reg = registry();
 	reg->dllDirectory = canonical;
+	reg->dllDirectorySpecifiedName = std::move(specifiedName);
 }
 
 void clearDllDirectoryOverride() {
 	auto reg = registry();
 	reg->dllDirectory.reset();
+	reg->dllDirectorySpecifiedName.clear();
 }
 
 std::optional<std::filesystem::path> dllDirectoryOverride() {
 	auto reg = registry();
 	return reg->dllDirectory;
+}
+
+std::u16string dllDirectoryName() {
+	auto reg = registry();
+	return reg->dllDirectorySpecifiedName;
 }
 
 ModuleInfo *moduleInfoFromAddress(void *addr) {
@@ -1610,8 +1595,11 @@ void notifyDllThreadDetach() {
 	kernel32::setLastError(ERROR_SUCCESS);
 }
 
-BOOL disableThreadNotifications(ModuleInfo *info) {
+BOOL disableThreadNotifications(HMODULE module) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (!module)
+		return FALSE;
+	ModuleInfo *info = moduleInfoFromHandle(module);
 	if (!info) {
 		return FALSE;
 	}

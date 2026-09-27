@@ -51,12 +51,7 @@ BOOL WINAPI DisableThreadLibraryCalls(HMODULE hLibModule) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	wibo::ModuleInfo *info = wibo::moduleInfoFromHandle(hLibModule);
-	if (!info) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return FALSE;
-	}
-	if (!wibo::disableThreadNotifications(info)) {
+	if (!wibo::disableThreadNotifications(hLibModule)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}

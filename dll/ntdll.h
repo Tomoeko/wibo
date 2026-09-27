@@ -122,5 +122,6 @@ NTSTATUS WINAPI NtQueryInformationProcess(HANDLE ProcessHandle, PROCESSINFOCLASS
 										  PVOID ProcessInformation, ULONG ProcessInformationLength,
 										  PULONG ReturnLength);
 NTSTATUS WINAPI LdrAddRefDll(ULONG Flags, HMODULE Module);
+NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(PVOID dllHandle);
 
 } // namespace ntdll

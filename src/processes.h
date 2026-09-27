@@ -87,7 +87,11 @@ class SpawnDirectory {
 	int mFd = -1;
 };
 
-std::optional<std::filesystem::path> resolveExecutable(const std::string &command, bool searchPath);
+enum class ExecutablePathNamespace { Windows, Host };
+
+std::optional<std::filesystem::path>
+resolveExecutable(const std::string &command, bool searchPath,
+				  ExecutablePathNamespace pathNamespace = ExecutablePathNamespace::Windows);
 int spawnWithCommandLine(const std::string &applicationName, const std::string &commandLine,
 						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd = -1,
 						 const SpawnOptions *options = nullptr, DWORD *bootstrapError = nullptr);
