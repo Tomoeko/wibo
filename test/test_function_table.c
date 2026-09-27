@@ -7,12 +7,15 @@ typedef VOID(WINAPI *delete_table_fn)(PVOID);
 typedef PRUNTIME_FUNCTION(WINAPI *lookup_fn)(DWORD64, PDWORD64, PUNWIND_HISTORY_TABLE);
 
 static lookup_fn lookup;
+static BOOL registered;
 static void expect_entry(BYTE *code, DWORD offset, PRUNTIME_FUNCTION expected) {
-	DWORD64 base = 0;
+	DWORD64 base = 0x12345678;
 	SetLastError(0x71);
 	TEST_CHECK(lookup((DWORD64)(ULONG_PTR)code + offset, &base, NULL) == expected);
 	if (expected)
 		TEST_CHECK_U64_EQ((ULONG_PTR)code, base);
+	else
+		TEST_CHECK_U64_EQ(registered && offset < 128 ? 0x12345678 : 0, base);
 	TEST_CHECK_EQ(0x71, GetLastError());
 }
 
@@ -32,6 +35,7 @@ int main(void) {
 	SetLastError(0x71);
 	TEST_CHECK_EQ(0, add(&table, entries, 0, 3, (ULONG_PTR)code, (ULONG_PTR)code + 128));
 	TEST_CHECK(table != NULL);
+	registered = TRUE;
 	TEST_CHECK_EQ(0x71, GetLastError());
 	expect_entry(code, 16, NULL);
 	grow(table, 1);
@@ -46,10 +50,12 @@ int main(void) {
 	expect_entry(code, 96, NULL);
 	expect_entry(code, 128, NULL);
 	remove(table);
+	registered = FALSE;
 	expect_entry(code, 16, NULL);
 	expect_entry(code, 80, NULL);
 	table = NULL;
 	TEST_CHECK_EQ(0, add(&table, entries, 3, 3, (ULONG_PTR)code, (ULONG_PTR)code + 128));
+	registered = TRUE;
 	expect_entry(code, 63, &entries[1]);
 	remove(table);
 	TEST_CHECK(VirtualFree(code, 0, MEM_RELEASE));

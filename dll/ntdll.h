@@ -52,11 +52,16 @@ struct RUNTIME_FUNCTION {
 	DWORD EndAddress;
 	DWORD UnwindData;
 };
+typedef RUNTIME_FUNCTION *(_CC_CDECL *PGET_RUNTIME_FUNCTION_CALLBACK)(ULONGLONG controlPc, PVOID context);
 #endif
 
 namespace ntdll {
 
 #ifdef WIBO_GUEST_64
+BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
+											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
+											  LPCWSTR outOfProcessCallbackDll);
+BOOLEAN CDECL RtlDeleteFunctionTable(RUNTIME_FUNCTION *functionTable);
 NTSTATUS WINAPI RtlAddGrowableFunctionTable(GUEST_PTR *dynamicTable, RUNTIME_FUNCTION *functionTable, DWORD entryCount,
 											DWORD maximumEntryCount, ULONG_PTR rangeBase, ULONG_PTR rangeEnd);
 VOID WINAPI RtlGrowFunctionTable(PVOID dynamicTable, DWORD newEntryCount);

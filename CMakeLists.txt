@@ -310,6 +310,7 @@ add_executable(wibo
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
     dll/kernel32/thread_control.cpp
+    dll/kernel32/unwindapi.cpp
     dll/kernel32/system_times.cpp
     dll/kernel32/profileapi.cpp
     dll/kernel32/stringapiset.cpp
@@ -578,6 +579,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/sysinfoapi.h
     dll/kernel32/timezoneapi.h
 	dll/kernel32/toolhelp.h
+    dll/kernel32/unwindapi.h
     dll/kernel32/winbase.h
     dll/kernel32/winprofile.h
     dll/kernel32/wincon.h
@@ -685,6 +687,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endif()
         if(WIBO_GUEST_64)
             wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
+            wibo_add_fixture_bin(NAME test_function_table_callback SOURCES test/test_function_table_callback.c)
+            set_tests_properties(wibo.test_function_table_callback PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_function_table_callback_threads SOURCES test/test_function_table_callback_threads.c)
+            set_tests_properties(wibo.test_function_table_callback_threads PROPERTIES TIMEOUT 20)
             wibo_add_fixture_bin(NAME test_virtual_unwind SOURCES test/test_virtual_unwind.c)
             set_tests_properties(wibo.test_virtual_unwind PROPERTIES TIMEOUT 15
                 ENVIRONMENT "WIBO_TEST_DESCRIBED_MACHINE_FRAME=1")
