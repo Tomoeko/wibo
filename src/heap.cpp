@@ -1199,14 +1199,20 @@ VmStatus virtualFree(void *baseAddress, std::size_t regionSize, DWORD freeType) 
 			return VmStatus::InvalidParameter;
 		}
 		std::size_t length = it->second.size;
-		g_virtualAllocations.erase(it);
-		// Replace with PROT_NONE + MAP_NORESERVE to release physical memory
+#ifdef WIBO_GUEST_64
+		if (munmap(reinterpret_cast<void *>(base), length) != 0) {
+			return vmStatusFromErrno(errno);
+		}
+#else
+		// Keep the collision-managed low-address arena reserved for later reuse.
 		void *res = mmap(reinterpret_cast<void *>(base), length, PROT_NONE,
 						 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
 		if (res == MAP_FAILED) {
 			return vmStatusFromErrno(errno);
 		}
 		setVirtualAllocationName(res, length, "wibo reserved");
+#endif
+		g_virtualAllocations.erase(it);
 		eraseGuestMappingLocked(base);
 		return VmStatus::Success;
 	}
