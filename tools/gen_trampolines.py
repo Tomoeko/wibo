@@ -1174,6 +1174,16 @@ def emit_header_mapping(
     return "\n".join(lines)
 
 
+def write_if_changed(path: Path, content: str) -> None:
+    try:
+        if path.read_text() == content:
+            return
+    except FileNotFoundError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dll", required=True, help="DLL name, e.g. kernel32")
@@ -1238,10 +1248,8 @@ def main() -> int:
     asm = "\n".join(lines) + "\n"
     hdr = emit_header_mapping(args.dll, funcs, typedefs, variables, arch, guest_arch, args.headers)
 
-    args.out_asm.parent.mkdir(parents=True, exist_ok=True)
-    args.out_hdr.parent.mkdir(parents=True, exist_ok=True)
-    args.out_asm.write_text(asm)
-    args.out_hdr.write_text(hdr)
+    write_if_changed(args.out_asm, asm)
+    write_if_changed(args.out_hdr, hdr)
     return 0
 
 

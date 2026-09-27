@@ -78,6 +78,49 @@ class CodegenDiagnosticsTests(unittest.TestCase):
             self.assertTrue((directory / "fixture.S").exists())
             self.assertIn("Probe", (directory / "fixture_trampolines.h").read_text())
 
+    def test_generation_preserves_unchanged_output_timestamps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = self.generate(directory, PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            assembly = directory / "fixture.S"
+            header = directory / "fixture_trampolines.h"
+            outputs = [assembly, header]
+            original = {output: output.read_bytes() for output in outputs}
+            for output in outputs:
+                os.utime(output, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+            timestamps = {output: output.stat().st_mtime_ns for output in outputs}
+
+            result = self.generate(directory, PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for output in outputs:
+                self.assertEqual(output.read_bytes(), original[output])
+                self.assertEqual(output.stat().st_mtime_ns, timestamps[output])
+
+            header.unlink()
+            result = self.generate(directory, PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(header.read_bytes(), original[header])
+            self.assertEqual(assembly.stat().st_mtime_ns, timestamps[assembly])
+
+            os.utime(header, ns=(timestamps[header], timestamps[header]))
+            result = self.generate(directory, PROTOTYPE.replace("Probe", "ReplacementProbe"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ReplacementProbe", header.read_text())
+            self.assertNotEqual(header.read_bytes(), original[header])
+            self.assertNotEqual(header.stat().st_mtime_ns, timestamps[header])
+            self.assertEqual(assembly.read_bytes(), original[assembly])
+            self.assertEqual(assembly.stat().st_mtime_ns, timestamps[assembly])
+
+            header_timestamp = header.stat().st_mtime_ns
+            assembly.write_text("stale assembly\n")
+            os.utime(assembly, ns=(timestamps[assembly], timestamps[assembly]))
+            result = self.generate(directory, PROTOTYPE.replace("Probe", "ReplacementProbe"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(assembly.read_bytes(), original[assembly])
+            self.assertNotEqual(assembly.stat().st_mtime_ns, timestamps[assembly])
+            self.assertEqual(header.stat().st_mtime_ns, header_timestamp)
+
 
 if __name__ == "__main__":
     unittest.main()
