@@ -293,6 +293,7 @@ add_executable(wibo
     dll/kernel32.cpp
     dll/kernel32/debugapi.cpp
     dll/kernel32/errhandlingapi.cpp
+    dll/kernel32/jobapi.cpp
     dll/kernel32/formatmessage.cpp
     dll/kernel32/fibersapi.cpp
     dll/kernel32/directory_changes.cpp
@@ -548,6 +549,7 @@ wibo_codegen_module(NAME ntdll HEADERS dll/ntdll.h)
 wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/debugapi.h
     dll/kernel32/errhandlingapi.h
+    dll/kernel32/jobapi.h
     dll/kernel32/fibersapi.h
     dll/kernel32/fileapi.h
     dll/kernel32/handleapi.h
@@ -773,6 +775,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             ENVIRONMENT "WIBO_EXPECT_WER_UNSUPPORTED=1")
         wibo_add_fixture_bin(NAME test_open_thread_token SOURCES test/test_open_thread_token.c COMPILE_OPTIONS -ladvapi32)
         set_tests_properties(wibo.test_open_thread_token PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_process_job_membership SOURCES test/test_process_job_membership.c)
+        set_tests_properties(wibo.test_process_job_membership PROPERTIES ENVIRONMENT "WIBO_EXPECT_NO_JOB=1")
         wibo_add_fixture_bin(NAME test_psapi SOURCES test/test_psapi.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)
