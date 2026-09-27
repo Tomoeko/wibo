@@ -6,17 +6,19 @@ typedef VOID(WINAPI *grow_table_fn)(PVOID, DWORD);
 typedef VOID(WINAPI *delete_table_fn)(PVOID);
 typedef PRUNTIME_FUNCTION(WINAPI *lookup_fn)(DWORD64, PDWORD64, PUNWIND_HISTORY_TABLE);
 
-static lookup_fn lookup;
+static lookup_fn lookups[2];
 static BOOL registered;
 static void expect_entry(BYTE *code, DWORD offset, PRUNTIME_FUNCTION expected) {
-	DWORD64 base = 0x12345678;
-	SetLastError(0x71);
-	TEST_CHECK(lookup((DWORD64)(ULONG_PTR)code + offset, &base, NULL) == expected);
-	if (expected)
-		TEST_CHECK_U64_EQ((ULONG_PTR)code, base);
-	else
-		TEST_CHECK_U64_EQ(registered && offset < 128 ? 0x12345678 : 0, base);
-	TEST_CHECK_EQ(0x71, GetLastError());
+	for (unsigned index = 0; index < sizeof(lookups) / sizeof(lookups[0]); ++index) {
+		DWORD64 base = 0x12345678;
+		SetLastError(0x71);
+		TEST_CHECK(lookups[index]((DWORD64)(ULONG_PTR)code + offset, &base, NULL) == expected);
+		if (expected)
+			TEST_CHECK_U64_EQ((ULONG_PTR)code, base);
+		else
+			TEST_CHECK_U64_EQ(registered && offset < 128 ? 0x12345678 : 0, base);
+		TEST_CHECK_EQ(0x71, GetLastError());
+	}
 }
 
 int main(void) {
@@ -25,8 +27,11 @@ int main(void) {
 	add_table_fn add = (add_table_fn)(ULONG_PTR)GetProcAddress(module, "RtlAddGrowableFunctionTable");
 	grow_table_fn grow = (grow_table_fn)(ULONG_PTR)GetProcAddress(module, "RtlGrowFunctionTable");
 	delete_table_fn remove = (delete_table_fn)(ULONG_PTR)GetProcAddress(module, "RtlDeleteGrowableFunctionTable");
-	lookup = (lookup_fn)(ULONG_PTR)GetProcAddress(module, "RtlLookupFunctionEntry");
-	TEST_CHECK(add && grow && remove && lookup);
+	lookups[0] = (lookup_fn)(ULONG_PTR)GetProcAddress(module, "RtlLookupFunctionEntry");
+	HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+	TEST_CHECK(kernel != NULL);
+	lookups[1] = (lookup_fn)(ULONG_PTR)GetProcAddress(kernel, "RtlLookupFunctionEntry");
+	TEST_CHECK(add && grow && remove && lookups[0] && lookups[1]);
 	BYTE *code = VirtualAlloc(NULL, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 	TEST_CHECK(code != NULL);
 	code[256] = 1; // Version 1 unwind info with no stack operations.
@@ -59,11 +64,22 @@ int main(void) {
 	expect_entry(code, 63, &entries[1]);
 	remove(table);
 	TEST_CHECK(VirtualFree(code, 0, MEM_RELEASE));
-	DWORD64 imageBase = 0;
-	PRUNTIME_FUNCTION entry = lookup((DWORD64)(ULONG_PTR)&main, &imageBase, NULL);
-	TEST_CHECK(entry != NULL);
-	TEST_CHECK_U64_EQ((ULONG_PTR)GetModuleHandleW(NULL), imageBase);
-	TEST_CHECK((DWORD64)(ULONG_PTR)&main >= imageBase + entry->BeginAddress);
-	TEST_CHECK((DWORD64)(ULONG_PTR)&main < imageBase + entry->EndAddress);
+	const DWORD64 expectedBase = (ULONG_PTR)GetModuleHandleW(NULL);
+	PRUNTIME_FUNCTION staticEntry = NULL;
+	for (unsigned index = 0; index < sizeof(lookups) / sizeof(lookups[0]); ++index) {
+		DWORD64 imageBase = 0x12345678;
+		UNWIND_HISTORY_TABLE history = {0};
+		SetLastError(0x71);
+		PRUNTIME_FUNCTION entry = lookups[index]((DWORD64)(ULONG_PTR)&main, &imageBase, &history);
+		TEST_CHECK_EQ(0x71, GetLastError());
+		TEST_CHECK(entry != NULL);
+		TEST_CHECK_U64_EQ(expectedBase, imageBase);
+		TEST_CHECK((DWORD64)(ULONG_PTR)&main >= imageBase + entry->BeginAddress);
+		TEST_CHECK((DWORD64)(ULONG_PTR)&main < imageBase + entry->EndAddress);
+		if (index == 0)
+			staticEntry = entry;
+		else
+			TEST_CHECK(entry == staticEntry);
+	}
 	return 0;
 }

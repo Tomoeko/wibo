@@ -2,6 +2,10 @@
 
 namespace kernel32 {
 #ifdef WIBO_GUEST_64
+RUNTIME_FUNCTION *WINAPI RtlLookupFunctionEntry(ULONGLONG controlPc, ULONGLONG *imageBase, PVOID historyTable) {
+	return ntdll::RtlLookupFunctionEntry(controlPc, imageBase, historyTable);
+}
+
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll) {
