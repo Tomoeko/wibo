@@ -88,8 +88,8 @@ struct ModuleTlsInfo {
 };
 
 struct ModuleInfo {
-	// Windows-style handle to the module. For the main module, this is the image base.
-	// For other modules, this is a pointer to the ModuleInfo structure.
+	// Mapped process images and external DLLs use their image base as the handle.
+	// Built-in modules use opaque registry handles.
 	HMODULE handle;
 	// Original name used to load the module
 	std::string originalName;
@@ -145,8 +145,7 @@ Executable *executableFromModule(HMODULE module);
 ModuleInfo *moduleInfoFromAddress(void *addr);
 
 /**
- * HMODULE will be `nullptr` or `mainModule->imageBase` if it's the main module,
- * otherwise it will be a pointer to a `wibo::ModuleInfo`.
+ * A null handle or the process image base identifies the main module.
  */
 inline bool isMainModule(HMODULE hModule) {
 	return hModule == NO_HANDLE || (mainModule && mainModule->executable &&

@@ -240,6 +240,28 @@ elif operation == 'ip-address-table':
         response = header() + number(0xffffffff)
     elif fault == 'failed':
         response = header(5)
+elif operation == 'device-info-set-a':
+    identity, enumerator, flags_text = arguments
+    class_guid = bytes.fromhex(identity) if identity != '-' else None
+    name = bytes.fromhex(enumerator) if enumerator != '-' else None
+    flags = int(flags_text)
+    entries = [(bytes(range(16)), 9), (bytes(range(16, 32)), 10)]
+    if class_guid is not None and not flags & 4:
+        entries = [entry for entry in entries if entry[0] == class_guid]
+    if name == b'WIBO_SYNTHETIC_ABSENT':
+        entries = []
+    response = header() + number(len(entries)) + b''.join(blob(guid) + number(instance) for guid, instance in entries)
+    fault = os.environ.get('WIBO_FIXTURE_DEVICES_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'bad-guid':
+        response = header() + number(1) + blob(bytes(15)) + number(9)
+    elif fault == 'bad-count':
+        response = header() + number(0xffffffff)
+    elif fault == 'failed':
+        response = header(5)
 elif operation == 'memory-resource-state':
     state_file = os.environ.get('WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE')
     state = '0,0'

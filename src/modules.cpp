@@ -65,6 +65,7 @@ extern const wibo::ModuleStub lib_ucrtbase;
 #endif
 extern const wibo::ModuleStub lib_ntdll;
 extern const wibo::ModuleStub lib_rpcrt4;
+extern const wibo::ModuleStub lib_setupapi;
 extern const wibo::ModuleStub lib_ole32;
 extern const wibo::ModuleStub lib_oleaut32;
 extern const wibo::ModuleStub lib_psapi;
@@ -320,6 +321,7 @@ LockedRegistry registry() {
 	std::unique_lock guard(reg.mutex);
 	if (!reg.initialized) {
 		reg.initialized = true;
+		// clang-format off
 		const wibo::ModuleStub *builtins[] = {
 			&lib_advapi32,
 			&lib_bcrypt,
@@ -333,6 +335,7 @@ LockedRegistry registry() {
 			&lib_oleaut32,
 			&lib_psapi,
 			&lib_rpcrt4,
+			&lib_setupapi,
 			&lib_shlwapi,
 			&lib_shell32,
 			&lib_user32,
@@ -371,6 +374,7 @@ LockedRegistry registry() {
 #endif
 			nullptr,
 		};
+		// clang-format on
 		for (const wibo::ModuleStub **module = builtins; *module; ++module) {
 			registerBuiltinModule(reg, *module);
 		}
@@ -1415,7 +1419,7 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 		fclose(file);
 
 		ModulePtr info = std::make_unique<ModuleInfo>();
-		HANDLE handle = g_nextStubHandle++;
+		HMODULE handle = static_cast<HMODULE>(toGuestPtr(executable->imageBase));
 		g_modules[handle] = info;
 		info->handle = handle;
 		info->moduleStub = nullptr;

@@ -67,7 +67,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -o ${_provider_image}
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lsetupapi -o ${_provider_image}
         DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
@@ -343,6 +343,7 @@ add_executable(wibo
     dll/ole32.cpp
     dll/oleaut32.cpp
     dll/psapi.cpp
+    dll/setupapi.cpp
     dll/rpcrt4.cpp
     dll/iphlpapi.cpp
     dll/shlwapi.cpp
@@ -552,6 +553,7 @@ wibo_codegen_module(NAME wmi_proxy HEADERS dll/wmi_proxy.h)
 wibo_codegen_module(NAME ole32 HEADERS dll/ole32.h)
 wibo_codegen_module(NAME oleaut32 HEADERS dll/oleaut32.h)
 wibo_codegen_module(NAME psapi HEADERS dll/psapi.h)
+wibo_codegen_module(NAME setupapi HEADERS dll/setupapi.h)
 wibo_codegen_module(NAME user32 HEADERS dll/user32.h)
 wibo_codegen_module(NAME ntdll HEADERS dll/ntdll.h)
 wibo_codegen_module(NAME kernel32 HEADERS
@@ -804,6 +806,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_memory_resource.exe unavailable)
         set_tests_properties(wibo.test_memory_resource_unavailable PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=")
+        wibo_add_fixture_bin(NAME test_setup_devices SOURCES test/test_setup_devices.c COMPILE_OPTIONS -lsetupapi)
+        set_tests_properties(wibo.test_setup_devices PROPERTIES TIMEOUT 20
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        wibo_add_fixture_bin(NAME test_module_image_handle SOURCES test/test_module_image_handle.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_psapi SOURCES test/test_psapi.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)

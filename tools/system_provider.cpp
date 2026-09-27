@@ -14,6 +14,7 @@
 #include <netioapi.h>
 #include <netlistmgr.h>
 #include <oleauto.h>
+#include <setupapi.h>
 #include <shlobj.h>
 #include <wbemcli.h>
 #include <winternl.h>
@@ -482,6 +483,63 @@ bool decodeHex(const WCHAR *source, std::string &result, bool allowZero = false)
 		result.push_back(static_cast<char>(value));
 	}
 	return true;
+}
+
+bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
+	std::string classBytes, enumerator;
+	GUID classGuid{};
+	const bool hasClass = wcscmp(identity, L"-") != 0;
+	const bool hasEnumerator = wcscmp(enumeratorText, L"-") != 0;
+	if (hasClass) {
+		if (!decodeHex(identity, classBytes, true) || classBytes.size() != sizeof(classGuid))
+			return false;
+		std::memcpy(&classGuid, classBytes.data(), sizeof(classGuid));
+	}
+	if (hasEnumerator && !decodeHex(enumeratorText, enumerator))
+		return false;
+	WCHAR *end = nullptr;
+	const auto flags = wcstoull(flagsText, &end, 10);
+	if (!*flagsText || *end || flags > UINT32_MAX)
+		return false;
+	const HDEVINFO set =
+		SetupDiGetClassDevsA(hasClass ? &classGuid : nullptr, hasEnumerator ? enumerator.c_str() : nullptr, nullptr,
+							 static_cast<DWORD>(flags));
+	DWORD error = set == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+	struct Entry {
+		GUID classGuid;
+		DWORD deviceInstance;
+	};
+	std::vector<Entry> entries;
+	if (!error) {
+		constexpr size_t kMaxEntries = (kMaxResponse - 4 * sizeof(uint32_t)) / (sizeof(GUID) + 2 * sizeof(uint32_t));
+		for (DWORD index = 0;; ++index) {
+			SP_DEVINFO_DATA device{};
+			device.cbSize = sizeof(device);
+			if (!SetupDiEnumDeviceInfo(set, index, &device)) {
+				error = GetLastError();
+				if (error == ERROR_NO_MORE_ITEMS)
+					error = ERROR_SUCCESS;
+				break;
+			}
+			if (entries.size() == kMaxEntries) {
+				error = ERROR_NOT_ENOUGH_MEMORY;
+				break;
+			}
+			entries.push_back({device.ClassGuid, device.DevInst});
+		}
+	}
+	if (set != INVALID_HANDLE_VALUE && !SetupDiDestroyDeviceInfoList(set) && !error)
+		error = GetLastError();
+	Response response;
+	response.header(error);
+	if (!error) {
+		response.number(static_cast<uint32_t>(entries.size()));
+		for (const auto &entry : entries) {
+			response.bytes(&entry.classGuid, sizeof(entry.classGuid));
+			response.number(entry.deviceInstance);
+		}
+	}
+	return response.write();
 }
 
 bool knownFolderPath(const WCHAR *identity, const WCHAR *flagsText, const WCHAR *user) {
@@ -1017,6 +1075,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = systemMetrics(argv[2], argv[3]);
 	else if (argc == 4 && wcscmp(argv[1], L"system-query") == 0)
 		written = systemQuery(argv[2], argv[3]);
+	else if (argc == 5 && wcscmp(argv[1], L"device-info-set-a") == 0)
+		written = deviceInfoSetA(argv[2], argv[3], argv[4]);
 	else if (argc == 5 && wcscmp(argv[1], L"volume-query") == 0)
 		written = volumeQuery(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"status-error") == 0)
