@@ -11,6 +11,8 @@ void CDECL RtlRestoreContext(CONTEXT64 *context, EXCEPTION_RECORD *record)
 	WIBO_ANNOTATE("GUEST_ENTRY:wiboRestoreGuestContext64");
 void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue)
 	WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRtlUnwind64");
+void WINAPI RtlUnwindEx(PVOID targetFrame, PVOID targetIp, EXCEPTION_RECORD *record, PVOID returnValue,
+						CONTEXT64 *context, PVOID historyTable) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRtlUnwindEx64");
 #else
 void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue);
 #endif

@@ -6,12 +6,11 @@
 .text
 #include "software_exception_frame_x64.inc"
 
-ASM_GLOBAL(wiboDispatchRtlUnwind64, @function)
-	.cfi_startproc
+.macro dispatch_target_unwind prepare
 	capture_software_context WIBO_TARGET_UNWIND_FRAME_SIZE
 	lea rdi, [rsp+WIBO_SOFTWARE_FRAME_CAPTURE]
 	lea rsi, [rsp+WIBO_TARGET_UNWIND_FRAME_OUTPUT]
-	call SYMBOL_NAME(wiboPrepareTargetUnwind64)
+	call \prepare
 	test eax, eax
 	jne 1f
 	# The driver returned. The restore entry snapshots the selected state and
@@ -25,6 +24,17 @@ ASM_GLOBAL(wiboDispatchRtlUnwind64, @function)
 	.cfi_restore_state
 	lea rdi, [rsp+WIBO_TARGET_UNWIND_FRAME_OUTPUT]
 	call SYMBOL_NAME(wiboUnsupportedTargetUnwind64)
+.endm
+
+ASM_GLOBAL(wiboDispatchRtlUnwind64, @function)
+	.cfi_startproc
+	dispatch_target_unwind SYMBOL_NAME(wiboPrepareTargetUnwind64)
 	.cfi_endproc
 ASM_END(wiboDispatchRtlUnwind64)
+
+ASM_GLOBAL(wiboDispatchRtlUnwindEx64, @function)
+	.cfi_startproc
+	dispatch_target_unwind SYMBOL_NAME(wiboPrepareTargetUnwindEx64)
+	.cfi_endproc
+ASM_END(wiboDispatchRtlUnwindEx64)
 #endif

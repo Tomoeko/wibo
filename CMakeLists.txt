@@ -721,6 +721,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             wibo_add_fixture_bin(NAME test_target_unwind
                 SOURCES test/test_target_unwind.c test/test_target_unwind.S)
             set_tests_properties(wibo.test_target_unwind PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_target_unwind_ex
+                SOURCES test/test_target_unwind_ex.c test/test_target_unwind_ex.S
+                DEPENDS test/test_target_unwind.S)
+            set_tests_properties(wibo.test_target_unwind_ex PROPERTIES TIMEOUT 15)
             wibo_add_fixture_bin(NAME test_software_unwind_restore
                 SOURCES test/test_software_unwind_restore.c test/test_software_unwind_restore.S)
             set_tests_properties(wibo.test_software_unwind_restore PROPERTIES TIMEOUT 15)
@@ -1096,6 +1100,13 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_compare_string_ex_unsupported PROPERTIES TIMEOUT 15
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_COMPARE_UNSUPPORTED=1")
+        wibo_add_fixture_bin(NAME test_nls_find_string_ex SOURCES test/test_nls_find_string_ex.c NO_TEST)
+        wibo_add_fixture_bin(NAME test_nls_find_transport SOURCES test/test_nls_find_transport.c NO_TEST)
+        add_test(NAME wibo.test_nls_find_transport
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_nls_find_transport.exe)
+        set_tests_properties(wibo.test_nls_find_transport PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/nls_find_provider_fixture.py")
         wibo_add_fixture_bin(NAME test_cp_info_ex_w SOURCES test/test_cp_info_ex_w.c NO_TEST)
         foreach(mode success failed failed-zero truncated trailing wrong-size unterminated-name mismatched-code-page zero-char-size invalid-result success-error)
             add_test(NAME wibo.test_cp_info_ex_w_${mode}

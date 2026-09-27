@@ -30,7 +30,10 @@ extern "C" {
 // restoration records remain outside this initial supported subset.
 [[noreturn]] void GUEST_STDCALL wiboDispatchRtlUnwind64(PVOID targetFrame, PVOID targetIp, EXCEPTION_RECORD *record,
 														PVOID returnValue);
+[[noreturn]] void GUEST_STDCALL wiboDispatchRtlUnwindEx64(PVOID targetFrame, PVOID targetIp, EXCEPTION_RECORD *record,
+														  PVOID returnValue, CONTEXT64 *context, PVOID historyTable);
 DWORD wiboPrepareTargetUnwind64(const SoftwareExceptionCapture64 *entry, TargetUnwindPreparation64 *output);
+DWORD wiboPrepareTargetUnwindEx64(const SoftwareExceptionCapture64 *entry, TargetUnwindPreparation64 *output);
 [[noreturn]] void wiboUnsupportedTargetUnwind64(const TargetUnwindPreparation64 *output);
 }
 #endif

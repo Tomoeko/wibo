@@ -47,7 +47,7 @@ bool guestExecutableAddress(ULONGLONG address) {
 
 // Lookup callbacks and the unwinder finish their native ownership scopes
 // before this step returns. No registry lock survives a personality call.
-bool prepareFrame(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType) {
+bool prepareFrame(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType, PVOID historyTable = nullptr) {
 	auto &context = activation.walkingContext;
 	const ULONGLONG previousRsp = context.Rsp;
 	if ((previousRsp & 7) || !readableStack(previousRsp, sizeof(ULONGLONG), activation)) {
@@ -63,7 +63,8 @@ bool prepareFrame(SoftwareExceptionFrameActivation64 &activation, DWORD handlerT
 	dispatcher = {};
 	dispatcher.ControlPc = context.Rip;
 	dispatcher.ContextRecord = &context;
-	dispatcher.FunctionEntry = ntdll::RtlLookupFunctionEntry(context.Rip, &dispatcher.ImageBase, nullptr);
+	dispatcher.HistoryTable = historyTable;
+	dispatcher.FunctionEntry = ntdll::RtlLookupFunctionEntry(context.Rip, &dispatcher.ImageBase, historyTable);
 	if (dispatcher.FunctionEntry) {
 		activation.function = *dispatcher.FunctionEntry;
 		if (activation.function.BeginAddress >= activation.function.EndAddress || context.Rip < dispatcher.ImageBase ||
@@ -120,8 +121,9 @@ static_assert(std::is_trivially_copyable_v<SoftwareExceptionFrameActivation64>);
 static_assert(std::is_trivially_destructible_v<SoftwareExceptionFrameActivation64>);
 
 namespace wibo {
-bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType) {
-	return prepareFrame(activation, handlerType);
+bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType,
+									 PVOID historyTable) {
+	return prepareFrame(activation, handlerType, historyTable);
 }
 
 LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,

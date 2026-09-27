@@ -44,7 +44,8 @@ struct alignas(16) SoftwareExceptionFrameActivation64 {
 static_assert(sizeof(SoftwareExceptionFrameActivation64) == 2640);
 
 namespace wibo {
-bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType);
+bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType,
+									 PVOID historyTable = nullptr);
 LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,
 										   CONTEXT64 *context, SoftwareDispatcherContext64 *dispatcher,
 										   SoftwareExceptionActivation64 *activation);

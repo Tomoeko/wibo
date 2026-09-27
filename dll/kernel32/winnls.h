@@ -60,6 +60,9 @@ int WINAPI CompareStringW(LCID Locale, DWORD dwCmpFlags, LPCWCH lpString1, int c
 						  int cchCount2);
 int WINAPI CompareStringEx(LPCWSTR lpLocaleName, DWORD dwCmpFlags, LPCWCH lpString1, int cchCount1, LPCWCH lpString2,
 						   int cchCount2, LPNLSVERSIONINFO lpVersionInformation, LPVOID lpReserved, LONG_PTR lParam);
+int WINAPI FindNLSStringEx(LPCWSTR lpLocaleName, DWORD dwFindNLSStringFlags, LPCWSTR lpStringSource, int cchSource,
+						   LPCWSTR lpStringValue, int cchValue, int *pcchFound, LPNLSVERSIONINFO lpVersionInformation,
+						   LPVOID lpReserved, LONG_PTR sortHandle);
 BOOL WINAPI IsValidCodePage(UINT CodePage);
 BOOL WINAPI IsValidLocale(LCID Locale, DWORD dwFlags);
 int WINAPI GetLocaleInfoA(LCID Locale, LCTYPE LCType, LPSTR lpLCData, int cchData);

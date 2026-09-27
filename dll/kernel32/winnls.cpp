@@ -31,6 +31,8 @@ constexpr DWORD kMapHash = 0x00040000;
 constexpr DWORD kMapSortHandle = 0x20000000;
 constexpr size_t kMaxLocaleNameUnits = 85;
 constexpr size_t kMaxNlsRequest = 64 * 1024;
+constexpr DWORD kFindModes = 0x00f00000;
+constexpr DWORD kFindFilters = kNormIgnoreCase | 0x08000000;
 constexpr DWORD kMuiLanguageId = 0x4;
 constexpr DWORD kMuiLanguageName = 0x8;
 constexpr size_t kMaxUiLanguageUnits = (wibo::provider::kMaxResponse - 32) / sizeof(WCHAR);
@@ -132,6 +134,11 @@ bool readNlsResponseHeader(wibo::provider::Reader &reader) {
 	}
 	kernel32::setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
 	return false;
+}
+
+bool supportedFindFlags(DWORD flags) {
+	const DWORD mode = flags & kFindModes;
+	return mode && !(mode & (mode - 1)) && !(flags & ~(kFindModes | kFindFilters));
 }
 
 bool captureNlsOutput(LPWSTR data, int capacity, size_t nameHexSize, size_t &byteCapacity, std::string &seed) {
@@ -628,6 +635,68 @@ int WINAPI CompareStringEx(LPCWSTR lpLocaleName, DWORD dwCmpFlags, LPCWCH lpStri
 		return 0;
 	}
 	return static_cast<int>(result);
+}
+
+int WINAPI FindNLSStringEx(LPCWSTR lpLocaleName, DWORD dwFindNLSStringFlags, LPCWSTR lpStringSource, int cchSource,
+						   LPCWSTR lpStringValue, int cchValue, int *pcchFound, LPNLSVERSIONINFO lpVersionInformation,
+						   LPVOID lpReserved, LONG_PTR sortHandle) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FindNLSStringEx(%p, 0x%x, %p, %d, %p, %d, %p, %p, %p, 0x%llx)\n", lpLocaleName, dwFindNLSStringFlags,
+			  lpStringSource, cchSource, lpStringValue, cchValue, pcchFound, lpVersionInformation, lpReserved,
+			  static_cast<unsigned long long>(sortHandle));
+	const DWORD incomingError = getLastError();
+	if (lpVersionInformation || lpReserved || sortHandle || !supportedFindFlags(dwFindNLSStringFlags)) {
+		// The transport supports explicit search modes and the verified casing options.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return -1;
+	}
+	if (!lpStringSource || !lpStringValue || !cchSource || cchSource < -1 || !cchValue || cchValue < -1) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return -1;
+	}
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return -1;
+	}
+	std::string locale;
+	if (!encodeNlsLocale(lpLocaleName, locale))
+		return -1;
+	size_t remainingHexBytes = kMaxNlsRequest - locale.size() - 256;
+	size_t sourceUnits = 0;
+	size_t valueUnits = 0;
+	if (!countNlsStringUnits(lpStringSource, cchSource, remainingHexBytes, sourceUnits) ||
+		!countNlsStringUnits(lpStringValue, cchValue, remainingHexBytes, valueUnits))
+		return -1;
+	const size_t sourceLength = cchSource == -1 ? sourceUnits - 1 : sourceUnits;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"find-nls-string-ex", std::to_string(dwFindNLSStringFlags), locale,
+								  std::to_string(cchSource), encodeWideBytes(lpStringSource, sourceUnits),
+								  std::to_string(cchValue), encodeWideBytes(lpStringValue, valueUnits),
+								  pcchFound ? "1" : "0", std::to_string(incomingError)},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return -1;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return -1;
+	uint32_t index = 0;
+	uint32_t nativeError = 0;
+	uint32_t foundPresent = 0;
+	uint32_t foundLength = 0;
+	if (!reader.number(index) || !reader.number(nativeError) || !reader.number(foundPresent) ||
+		!reader.number(foundLength) || !reader.done() || foundPresent > 1 ||
+		(index != UINT32_MAX && index > sourceLength) || (!foundPresent && foundLength) ||
+		(foundPresent && (!pcchFound || index == UINT32_MAX || foundLength > sourceLength - index)) ||
+		(pcchFound && index != UINT32_MAX && !foundPresent)) {
+		setLastError(ERROR_INVALID_DATA);
+		return -1;
+	}
+	// Output-only storage is written only after the complete native result is validated.
+	if (foundPresent)
+		std::memcpy(pcchFound, &foundLength, sizeof(foundLength));
+	setLastError(nativeError);
+	return index == UINT32_MAX ? -1 : static_cast<int>(index);
 }
 
 BOOL WINAPI IsValidCodePage(UINT CodePage) {

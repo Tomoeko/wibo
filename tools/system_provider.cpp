@@ -664,6 +664,68 @@ bool compareStringEx(WCHAR **parameters) {
 	return response.write();
 }
 
+bool findNlsStringEx(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t flags, foundRequested, incomingError;
+	int sourceCount, valueCount;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) || !parseMappingCount(parameters[2], sourceCount) ||
+		!parseMappingCount(parameters[4], valueCount) || !parseUnsignedDecimal(parameters[6], 1, foundRequested) ||
+		!parseUnsignedDecimal(parameters[7], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr DWORD kFindModes = FIND_FROMSTART | FIND_FROMEND | FIND_STARTSWITH | FIND_ENDSWITH;
+	constexpr DWORD kFindFilters = NORM_IGNORECASE | NORM_LINGUISTIC_CASING;
+	const DWORD mode = flags & kFindModes;
+	if (!mode || (mode & (mode - 1)) || (flags & ~(kFindModes | kFindFilters)))
+		return fail(ERROR_NOT_SUPPORTED);
+	if (!sourceCount || sourceCount < -1 || !valueCount || valueCount < -1)
+		return fail(ERROR_INVALID_PARAMETER);
+	const bool hasLocale = wcscmp(parameters[1], L"-") != 0;
+	size_t totalUnits = hasLocale;
+	const WCHAR *encodedStrings[] = {hasLocale ? parameters[1] : L"", parameters[3], parameters[5]};
+	for (const WCHAR *text : encodedStrings) {
+		const size_t length = wcslen(text);
+		if (length % 4)
+			return fail(ERROR_INVALID_PARAMETER);
+		if (length / 4 > kMaxResponse / sizeof(WCHAR) - totalUnits)
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		totalUnits += length / 4;
+	}
+	std::vector<WCHAR> locale, source, value;
+	if ((hasLocale && !decodeMappingString(parameters[1], locale)) || !decodeMappingString(parameters[3], source) ||
+		!decodeMappingString(parameters[5], value) || !validCountedString(source, sourceCount) ||
+		!validCountedString(value, valueCount) || locale.size() >= LOCALE_NAME_MAX_LENGTH)
+		return fail(ERROR_INVALID_PARAMETER);
+	for (WCHAR character : locale)
+		if (!character)
+			return fail(ERROR_INVALID_PARAMETER);
+	if (hasLocale)
+		locale.push_back(0);
+	const size_t sourceLength = sourceCount == -1 ? source.size() - 1 : source.size();
+	// The sentinel cannot be a valid length in the bounded native input buffers.
+	int found = INT32_MIN;
+	SetLastError(incomingError);
+	const int index = FindNLSStringEx(hasLocale ? locale.data() : nullptr, flags, source.data(), sourceCount,
+									  value.data(), valueCount, foundRequested ? &found : nullptr, nullptr, nullptr, 0);
+	const DWORD nativeError = GetLastError();
+	const bool foundPresent = found != INT32_MIN;
+	if (index < -1 || (index >= 0 && static_cast<size_t>(index) > sourceLength) ||
+		(foundPresent && (!foundRequested || index < 0 || found < 0 ||
+						  static_cast<size_t>(found) > sourceLength - static_cast<size_t>(index))) ||
+		(foundRequested && index >= 0 && !foundPresent))
+		return fail(ERROR_INVALID_DATA);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(index));
+	response.number(nativeError);
+	response.number(foundPresent);
+	response.number(foundPresent ? static_cast<uint32_t>(found) : 0);
+	return response.write();
+}
+
 bool cpInfoExW(const WCHAR *codePageText, const WCHAR *flagsText) {
 	static_assert(sizeof(CPINFOEXW) == 544 && alignof(CPINFOEXW) == 4);
 	static_assert(offsetof(CPINFOEXW, MaxCharSize) == 0 && offsetof(CPINFOEXW, DefaultChar) == 4 &&
@@ -1594,6 +1656,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = lcMapStringEx(argv + 2);
 	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)
 		written = compareStringEx(argv + 2);
+	else if (argc == 10 && wcscmp(argv[1], L"find-nls-string-ex") == 0)
+		written = findNlsStringEx(argv + 2);
 	else if (argc == 4 && wcscmp(argv[1], L"cp-info-ex-w") == 0)
 		written = cpInfoExW(argv[2], argv[3]);
 	else if (argc == 7 && wcscmp(argv[1], L"locale-info-ex") == 0)
