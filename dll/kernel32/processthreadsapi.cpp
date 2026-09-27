@@ -761,7 +761,8 @@ DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinit
 
 [[noreturn]] void exitInternal(DWORD exitCode) {
 	DEBUG_LOG("exitInternal(%u)\n", exitCode);
-	wibo::handles().clear();
+	// The operating system closes native descriptors during process termination.
+	// Do not run synchronous handle callbacks or wait for workers on this abrupt path.
 	// On macOS this also clears Rosetta's reserved Win64 GS/TSD slot. Leaving a
 	// guest TEB installed while the host process exits can strand the translated
 	// process in an uninterruptible exiting state.
