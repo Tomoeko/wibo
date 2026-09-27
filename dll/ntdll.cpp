@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "context.h"
+#include "context_x64.h"
 #include "errors.h"
 #include "files.h"
 #include "handles.h"

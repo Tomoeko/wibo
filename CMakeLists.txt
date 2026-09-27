@@ -334,6 +334,7 @@ add_executable(wibo
     dll/ntdll.cpp
     dll/function_table.cpp
     dll/virtual_unwind.cpp
+    dll/context_x64.S
     dll/status_error.cpp
     dll/device_control.cpp
     dll/native_file_set.cpp
@@ -696,6 +697,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             wibo_add_fixture_bin(NAME test_function_table_callback_threads SOURCES test/test_function_table_callback_threads.c)
             set_tests_properties(wibo.test_function_table_callback_threads PROPERTIES TIMEOUT 20)
             wibo_add_fixture_bin(NAME test_virtual_unwind SOURCES test/test_virtual_unwind.c)
+            wibo_add_fixture_bin(NAME test_context_capture SOURCES test/test_context_capture.c test/test_context_capture_x64.S
+                COMPILE_OPTIONS -DWIBO_CONTEXT_CAPTURE_ONLY=1)
+            set_tests_properties(wibo.test_context_capture PROPERTIES TIMEOUT 15)
+            add_executable(test_context_capture_helpers
+                test/test_context_capture.c test/test_context_capture_x64.S dll/context_x64.S)
+            set_source_files_properties(test/test_context_capture.c PROPERTIES LANGUAGE CXX COMPILE_FLAGS "-x c++")
+            target_compile_definitions(test_context_capture_helpers PRIVATE WIBO_GUEST_64=1 WIBO_CONTEXT_HOST_FIXTURE=1)
+            target_include_directories(test_context_capture_helpers PRIVATE src dll)
+            add_test(NAME wibo.test_context_capture_helpers COMMAND test_context_capture_helpers)
+            set_tests_properties(wibo.test_context_capture_helpers PROPERTIES TIMEOUT 15)
             set_tests_properties(wibo.test_virtual_unwind PROPERTIES TIMEOUT 15
                 ENVIRONMENT "WIBO_TEST_DESCRIBED_MACHINE_FRAME=1")
             if(APPLE)
@@ -1059,6 +1070,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_release.rc)
 
         add_custom_target(wibo_test_fixtures DEPENDS ${WIBO_TEST_FIXTURES})
+        if(TARGET test_context_capture_helpers)
+            add_dependencies(wibo_test_fixtures test_context_capture_helpers)
+            set_tests_properties(wibo.test_context_capture_helpers PROPERTIES DEPENDS wibo.build_fixtures)
+        endif()
         if(TARGET test_darwin_teb_context)
             add_dependencies(wibo_test_fixtures test_darwin_teb_context)
             set_tests_properties(wibo.test_darwin_teb_context PROPERTIES DEPENDS wibo.build_fixtures)

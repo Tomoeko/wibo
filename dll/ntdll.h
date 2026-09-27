@@ -58,6 +58,7 @@ typedef RUNTIME_FUNCTION *(_CC_CDECL *PGET_RUNTIME_FUNCTION_CALLBACK)(ULONGLONG 
 namespace ntdll {
 
 #ifdef WIBO_GUEST_64
+void WINAPI RtlCaptureContext(CONTEXT64 *context) WIBO_ANNOTATE("GUEST_ENTRY:wiboCaptureContext64");
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll);
