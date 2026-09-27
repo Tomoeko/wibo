@@ -22,7 +22,10 @@
 namespace {
 
 constexpr uint32_t RT_VERSION = 16;
-constexpr size_t kMaxVersionPathUnits = (64 * 1024 - 128) / 4;
+constexpr size_t kMaxVersionRequest = 64 * 1024;
+constexpr size_t kMaxVersionPathUnits = (kMaxVersionRequest - 128) / 4;
+// Aligned VS_VERSION_INFO header/key followed by VS_FIXEDFILEINFO.
+constexpr DWORD kMinVersionBuffer = 92;
 
 bool encodeVersionFileName(LPCWSTR filename, std::string &encoded) {
 	encoded = "-";
@@ -425,6 +428,60 @@ DWORD WINAPI GetFileVersionInfoSizeExW(DWORD dwFlags, LPCWSTR lpwstrFilename, LP
 	// LastError is part of this native result, including successful calls.
 	kernel32::setLastError(nativeError);
 	return size;
+}
+
+BOOL WINAPI GetFileVersionInfoExW(DWORD dwFlags, LPCWSTR lpwstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData) {
+	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = kernel32::getLastError();
+	DEBUG_LOG("GetFileVersionInfoExW(0x%x, %p, %u, %u, %p)\n", dwFlags, lpwstrFilename, dwHandle, dwLen, lpData);
+	if (lpData && dwLen < kMinVersionBuffer) {
+		// Tiny buffers cannot transport native version-header inspection safely.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	std::string filename;
+	if (!encodeVersionFileName(lpwstrFilename, filename))
+		return FALSE;
+	constexpr size_t kRequestOverhead = 256;
+	if (filename.size() > kMaxVersionRequest - kRequestOverhead ||
+		(lpData && dwLen > (kMaxVersionRequest - kRequestOverhead - filename.size()) / 2)) {
+		kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	const std::string input =
+		lpData ? wibo::provider::encodeBytes(std::string_view(static_cast<const char *>(lpData), dwLen)) : "-";
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"file-version-info-ex-w", std::to_string(dwFlags), filename, std::to_string(dwHandle),
+								  std::to_string(dwLen), input, std::to_string(incomingError)},
+								 response)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (status != ERROR_SUCCESS) {
+		DWORD error = status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status);
+		if (!reader.done())
+			error = ERROR_INVALID_DATA;
+		kernel32::setLastError(error);
+		return FALSE;
+	}
+	uint32_t result = 0, nativeError = 0;
+	std::vector<uint8_t> output;
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.bytes(output) ||
+		!reader.done() || output.size() != (lpData ? dwLen : 0) || (result && !lpData)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (lpData)
+		std::memcpy(lpData, output.data(), output.size());
+	// A completed native call may modify the buffer even when it returns FALSE.
+	kernel32::setLastError(nativeError);
+	return result ? TRUE : FALSE;
 }
 
 UINT WINAPI GetFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData) {

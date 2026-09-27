@@ -9,6 +9,7 @@ UINT WINAPI GetFileVersionInfoA(LPCSTR lptstrFilename, DWORD dwHandle, DWORD dwL
 UINT WINAPI VerQueryValueA(LPCVOID pBlock, LPCSTR lpSubBlock, GUEST_PTR *lplpBuffer, PUINT puLen);
 UINT WINAPI GetFileVersionInfoSizeW(LPCWSTR lptstrFilename, LPDWORD lpdwHandle);
 DWORD WINAPI GetFileVersionInfoSizeExW(DWORD dwFlags, LPCWSTR lpwstrFilename, LPDWORD lpdwHandle);
+BOOL WINAPI GetFileVersionInfoExW(DWORD dwFlags, LPCWSTR lpwstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData);
 UINT WINAPI GetFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData);
 UINT WINAPI VerQueryValueW(LPCVOID pBlock, LPCWSTR lpSubBlock, GUEST_PTR *lplpBuffer, PUINT puLen);
 

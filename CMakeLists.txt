@@ -865,6 +865,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             COMPILE_OPTIONS -nostdlib -Wl,--entry,0)
         wibo_add_fixture_bin(NAME test_file_version_info_size_ex
             SOURCES test/test_file_version_info_size_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
+        wibo_add_fixture_bin(NAME test_file_version_info_ex
+            SOURCES test/test_file_version_info_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
         foreach(mode success success-preserved no-handle zero-result zero-error unwritten-handle null-filename empty-filename failed truncated trailing invalid-presence nonzero-handle absent-value unexpected-handle)
             add_test(NAME wibo.test_file_version_info_size_ex_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_size_ex.exe)
@@ -887,6 +889,23 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_file_version_info_size_ex_local PROPERTIES TIMEOUT 15
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_EXPECT_VERSION_SIZE_LOCAL=1")
+        foreach(mode success success-preserved false-zero false-mutated null-data null-data-success null-data-with-blob failed failed-with-data truncated trailing invalid-result short-blob long-blob)
+            add_test(NAME wibo.test_file_version_info_ex_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_ex.exe)
+            set_tests_properties(wibo.test_file_version_info_ex_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/version_info_provider_fixture.py;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_FIXTURE_VERSION_INFO_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_file_version_info_ex_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_ex.exe)
+        set_tests_properties(wibo.test_file_version_info_ex_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_FIXTURE_VERSION_INFO_RESPONSE=unavailable")
+        add_test(NAME wibo.test_file_version_info_ex_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_version_info_ex.exe)
+        set_tests_properties(wibo.test_file_version_info_ex_local PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/version_info_provider_fixture.py;WIBO_SYSTEM_PROVIDER_HOST_ROOT=Z:;WIBO_EXPECT_VERSION_INFO_LOCAL=1")
         wibo_add_fixture_bin(NAME test_threading SOURCES test/test_threading.c)
         wibo_add_fixture_bin(NAME test_process_write_buffers SOURCES test/test_process_write_buffers.c)
         set_tests_properties(wibo.test_process_write_buffers PROPERTIES TIMEOUT 30)

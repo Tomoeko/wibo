@@ -19,6 +19,7 @@
 #include <wbemcli.h>
 #include <winternl.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -781,6 +782,66 @@ bool fileVersionInfoSizeExW(const WCHAR *flagsText, const WCHAR *filenameText, c
 	return response.write();
 }
 
+bool fileVersionInfoExW(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t flags = 0, handle = 0, capacity = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, handle) ||
+		!parseUnsignedDecimal(parameters[3], UINT32_MAX, capacity) ||
+		!parseUnsignedDecimal(parameters[5], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kRequestLimit = 64 * 1024;
+	constexpr size_t kRequestOverhead = 256;
+	const size_t nameLength = wcslen(parameters[1]);
+	const size_t seedLength = wcslen(parameters[4]);
+	if (nameLength > kRequestLimit - kRequestOverhead || seedLength > kRequestLimit - kRequestOverhead - nameLength)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	const bool hasFilename = wcscmp(parameters[1], L"-") != 0;
+	std::vector<WCHAR> filename;
+	if (hasFilename) {
+		if (!decodeMappingString(parameters[1], filename))
+			return fail(ERROR_INVALID_PARAMETER);
+		for (WCHAR value : filename)
+			if (!value)
+				return fail(ERROR_INVALID_PARAMETER);
+		filename.push_back(0);
+	}
+	const bool hasData = wcscmp(parameters[4], L"-") != 0;
+	constexpr size_t kGuardBytes = 16;
+	constexpr BYTE kGuardValue = 0xa5;
+	constexpr size_t kMinVersionBuffer = 92;
+	std::string initial;
+	std::vector<BYTE> buffer;
+	if (hasData) {
+		if (capacity < kMinVersionBuffer)
+			return fail(ERROR_NOT_SUPPORTED);
+		if (capacity > kRequestLimit / 2 || capacity > kMaxResponse - 24)
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		if (seedLength != uint64_t(capacity) * 2 || !decodeHex(parameters[4], initial, true) ||
+			initial.size() != capacity)
+			return fail(ERROR_INVALID_PARAMETER);
+		buffer.assign(initial.begin(), initial.end());
+		buffer.resize(capacity + kGuardBytes, kGuardValue);
+	}
+	SetLastError(incomingError);
+	const BOOL result = GetFileVersionInfoExW(flags, hasFilename ? filename.data() : nullptr, handle, capacity,
+											  hasData ? buffer.data() : nullptr);
+	const DWORD nativeError = GetLastError();
+	if ((result && !hasData) || (hasData && !std::all_of(buffer.begin() + capacity, buffer.end(),
+														 [](BYTE value) { return value == kGuardValue; })))
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(nativeError);
+	response.bytes(hasData ? buffer.data() : nullptr, hasData ? capacity : 0);
+	return response.write();
+}
+
 bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
 	std::string classBytes, enumerator;
 	GUID classGuid{};
@@ -1346,6 +1407,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)
 		written = fileVersionInfoSizeExW(argv[2], argv[3], argv[4], argv[5]);
+	else if (argc == 8 && wcscmp(argv[1], L"file-version-info-ex-w") == 0)
+		written = fileVersionInfoExW(argv + 2);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)
