@@ -41,5 +41,6 @@ void WINAPI InitializeSListHead(PSLIST_HEADER ListHead);
 // Node storage must remain readable during concurrent operations. Read retry
 // after reclamation and legacy x64 Header8 encoding remain unsupported.
 PSLIST_ENTRY WINAPI InterlockedPopEntrySList(PSLIST_HEADER ListHead);
+PSLIST_ENTRY WINAPI InterlockedFlushSList(PSLIST_HEADER ListHead);
 
 } // namespace kernel32

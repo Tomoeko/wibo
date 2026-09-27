@@ -141,4 +141,42 @@ PSLIST_ENTRY WINAPI InterlockedPopEntrySList(PSLIST_HEADER ListHead) {
 #endif
 }
 
+PSLIST_ENTRY WINAPI InterlockedFlushSList(PSLIST_HEADER ListHead) {
+	HOST_CONTEXT_GUARD();
+	VERBOSE_LOG("InterlockedFlushSList(%p)\n", ListHead);
+#ifdef WIBO_GUEST_64
+	if (!hostSupportsSListCompareExchange()) {
+		std::fputs("Unsupported 128-bit compare-and-swap capability\n", stderr);
+		exitInternal(ERROR_NOT_SUPPORTED);
+	}
+	auto expected = loadSList(ListHead);
+	for (;;) {
+		if (!(expected.Region & 1)) {
+			std::fputs("Unsupported sequenced-list header encoding\n", stderr);
+			exitInternal(ERROR_NOT_SUPPORTED);
+		}
+		auto *first = fromGuestPtr<SLIST_ENTRY>(expected.Region & ~ULONGLONG{0xf});
+		if (!first)
+			return nullptr;
+		SLIST_HEADER desired{};
+		desired.Alignment = (expected.Alignment & ~ULONGLONG{0xffff}) + 0x10000;
+		desired.Region = expected.Region & 0xf;
+		if (compareExchangeSList(ListHead, expected, desired))
+			return first;
+	}
+#else
+	ULONGLONG expected = __atomic_load_n(&ListHead->Alignment, __ATOMIC_ACQUIRE);
+	for (;;) {
+		auto *first = fromGuestPtr<SLIST_ENTRY>(static_cast<GUEST_PTR>(expected));
+		if (!first)
+			return nullptr;
+		const auto sequence = static_cast<WORD>((expected >> 48) + 1);
+		const ULONGLONG desired = static_cast<ULONGLONG>(sequence) << 48;
+		if (__atomic_compare_exchange_n(&ListHead->Alignment, &expected, desired, false, __ATOMIC_SEQ_CST,
+										__ATOMIC_ACQUIRE))
+			return first;
+	}
+#endif
+}
+
 } // namespace kernel32
