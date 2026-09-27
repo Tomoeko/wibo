@@ -149,26 +149,36 @@ std::filesystem::path pathFromWindows(const char *inStr) {
 	// a path that matches case insensitively
 	std::filesystem::path path = driveRoot.empty() ? std::filesystem::path(str).lexically_normal()
 												   : (driveRoot / std::filesystem::path(str)).lexically_normal();
-	if (std::filesystem::exists(path)) {
+	std::error_code ec;
+	if (std::filesystem::exists(path, ec)) {
 		return path;
 	}
+	if (ec)
+		return path;
 
 	std::filesystem::path newPath = ".";
 	bool followingExisting = true;
 	for (const auto &component : path) {
 		std::filesystem::path newPath2 = newPath / component;
-		if (followingExisting && !std::filesystem::exists(newPath2) &&
-			(component != ".." && component != "." && component != "")) {
-			followingExisting = false;
-			std::error_code ec;
-			std::filesystem::directory_iterator iter{newPath, ec};
-			if (!ec) {
-				for (std::filesystem::path entry : iter) {
+		if (followingExisting) {
+			const bool exists = std::filesystem::exists(newPath2, ec);
+			if (ec)
+				return path;
+			if (!exists && component != ".." && component != "." && component != "") {
+				followingExisting = false;
+				std::filesystem::directory_iterator iter{newPath, ec}, end;
+				if (ec)
+					return path;
+				while (iter != end) {
+					const auto &entry = iter->path();
 					if (strcasecmp(entry.filename().c_str(), component.c_str()) == 0) {
 						followingExisting = true;
 						newPath2 = entry;
 						break;
 					}
+					iter.increment(ec);
+					if (ec)
+						return path;
 				}
 			}
 		}
