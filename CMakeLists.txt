@@ -623,14 +623,19 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
 
         function(wibo_add_fixture_dll)
             set(options)
-            set(oneValueArgs NAME)
+            set(oneValueArgs NAME DIRECTORY)
             set(multiValueArgs SOURCES COMPILE_OPTIONS DEPENDS BYPRODUCTS)
             cmake_parse_arguments(PARSE_ARGV 0 fixture "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
-            set(fixture_OUTPUT ${WIBO_TEST_BIN_DIR}/${fixture_NAME}.dll)
+            set(fixture_OUTPUT_DIRECTORY ${WIBO_TEST_BIN_DIR})
+            if(fixture_DIRECTORY)
+                string(APPEND fixture_OUTPUT_DIRECTORY /${fixture_DIRECTORY})
+            endif()
+            set(fixture_OUTPUT ${fixture_OUTPUT_DIRECTORY}/${fixture_NAME}.dll)
             add_custom_command(
                 OUTPUT ${fixture_OUTPUT}
                 BYPRODUCTS ${fixture_BYPRODUCTS}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${fixture_OUTPUT_DIRECTORY}
                 COMMAND ${WIBO_MINGW_CC} -Wall -Wextra -O2 -shared
                         -I${CMAKE_CURRENT_SOURCE_DIR}/test
                         -o ${fixture_OUTPUT}
@@ -995,6 +1000,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_virtual_release SOURCES test/test_virtual_release.c)
         wibo_add_fixture_bin(NAME test_virtualquery SOURCES test/test_virtualquery.c)
         wibo_add_fixture_bin(NAME test_createfilemapping SOURCES test/test_createfilemapping.c)
+        wibo_add_fixture_bin(NAME test_image_mapping SOURCES test/test_image_mapping.c)
+        set_tests_properties(wibo.test_image_mapping PROPERTIES TIMEOUT 15 ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_descriptor_control SOURCES test/test_descriptor_control.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_acl_information SOURCES test/test_acl_information.c)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
@@ -1061,6 +1068,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_module_lifetime SOURCES test/test_module_lifetime.c)
         set_tests_properties(wibo.test_module_lifetime PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_library_search_flags SOURCES test/test_library_search_flags.c)
+        set_tests_properties(wibo.test_library_search_flags PROPERTIES TIMEOUT 15)
 
         # DLLs for fixture tests
         wibo_add_fixture_dll(NAME external_exports SOURCES test/external_exports.c)
@@ -1144,6 +1153,67 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             DEPENDS test/system_loader_dependency.c test/system_loader_parent.c test/fixture_relocation_anchor.c)
         list(APPEND WIBO_TEST_FIXTURES
             ${_system_fixture_dir}/system_loader_dependency.dll ${_system_fixture_dir}/system_loader_parent.dll)
+
+        function(wibo_add_search_value name directory value)
+            wibo_add_fixture_dll(NAME ${name} DIRECTORY ${directory}
+                SOURCES test/system_loader_dependency.c test/fixture_relocation_anchor.c
+                BYPRODUCTS ${WIBO_TEST_BIN_DIR}/${directory}/${name}.a
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_DEPENDENCY_VALUE=${value}
+                    -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/${directory}/${name}.a)
+            set(WIBO_TEST_FIXTURES ${WIBO_TEST_FIXTURES} PARENT_SCOPE)
+        endfunction()
+
+        wibo_add_search_value(dep_priority search-mode/root 11)
+        wibo_add_search_value(dep_priority . 22)
+        wibo_add_search_value(dep_priority search-mode/current 33)
+        wibo_add_search_value(dep_priority search-mode/user 44)
+        wibo_add_search_value(dep_priority search-mode/environment 55)
+        wibo_add_search_value(dep_fallback . 22)
+        wibo_add_search_value(dep_fallback search-mode/current 33)
+        wibo_add_search_value(dep_fallback search-mode/user 44)
+        wibo_add_search_value(dep_fallback search-mode/environment 55)
+        wibo_add_search_value(dep_excluded search-mode/current 33)
+        wibo_add_search_value(dep_excluded search-mode/environment 55)
+        wibo_add_search_value(dep_environment search-mode/environment 55)
+        wibo_add_search_value(dep_inherited search-mode/root 11)
+        wibo_add_search_value(dep_inherited . 22)
+        wibo_add_search_value(dep_inherited search-mode/user 44)
+
+        function(wibo_add_search_parent name directory dependency)
+            wibo_add_fixture_dll(NAME ${name} DIRECTORY ${directory}
+                SOURCES test/system_loader_parent.c test/fixture_relocation_anchor.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_VALUE_ADJUSTMENT=0 ${dependency}
+                DEPENDS ${dependency})
+            set(WIBO_TEST_FIXTURES ${WIBO_TEST_FIXTURES} PARENT_SCOPE)
+        endfunction()
+        wibo_add_search_parent(flags_priority search-mode/root ${WIBO_TEST_BIN_DIR}/search-mode/root/dep_priority.a)
+        wibo_add_search_parent(flags_fallback search-mode/root ${WIBO_TEST_BIN_DIR}/./dep_fallback.a)
+        wibo_add_search_parent(flags_excluded search-mode/root ${WIBO_TEST_BIN_DIR}/search-mode/current/dep_excluded.a)
+        wibo_add_search_parent(flags_environment search-mode/root ${WIBO_TEST_BIN_DIR}/search-mode/environment/dep_environment.a)
+        foreach(_directory . search-mode/user)
+            wibo_add_fixture_dll(NAME flags_child DIRECTORY ${_directory}
+                SOURCES test/system_loader_parent.c test/fixture_relocation_anchor.c
+                BYPRODUCTS ${WIBO_TEST_BIN_DIR}/${_directory}/flags_child.a
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_VALUE_ADJUSTMENT=0 -DFIXTURE_EXPORT_NAME=child_value
+                    -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/${_directory}/flags_child.a
+                    ${WIBO_TEST_BIN_DIR}/search-mode/root/dep_inherited.a
+                DEPENDS ${WIBO_TEST_BIN_DIR}/search-mode/root/dep_inherited.a)
+        endforeach()
+        wibo_add_fixture_dll(NAME flags_inherited DIRECTORY search-mode/root
+            SOURCES test/system_loader_parent.c test/fixture_relocation_anchor.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_VALUE_ADJUSTMENT=0 -DFIXTURE_DEPENDENCY_NAME=child_value
+                ${WIBO_TEST_BIN_DIR}/./flags_child.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/./flags_child.a)
+        wibo_add_fixture_dll(NAME flags_forwarder DIRECTORY search-mode/root
+            SOURCES test/library_search_forwarder.def test/fixture_relocation_anchor.c
+            BYPRODUCTS ${WIBO_TEST_BIN_DIR}/search-mode/root/flags_forwarder.a
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0
+                -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/search-mode/root/flags_forwarder.a)
+        wibo_add_fixture_dll(NAME flags_forward_parent DIRECTORY search-mode/root
+            SOURCES test/system_loader_parent.c test/fixture_relocation_anchor.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_VALUE_ADJUSTMENT=0 -DFIXTURE_DEPENDENCY_NAME=forward_value
+                ${WIBO_TEST_BIN_DIR}/search-mode/root/flags_forwarder.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/search-mode/root/flags_forwarder.a)
 
         # Resources for test_resources
         add_custom_command(

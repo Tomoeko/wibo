@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kernel32/errhandlingapi.h"
 #include "kernel32/internal.h"
+#include "kernel32/processenv.h"
 #include "kernel32/winbase.h"
 #include "setup.h"
 #include "strutil.h"
@@ -226,12 +227,12 @@ struct ForwarderLookup {
 	bool staticImport = false;
 };
 
-void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, wibo::ModuleSearch search,
+void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, const wibo::ModuleSearch &search,
 							   wibo::ModuleInfo *importer, ForwarderLookup &lookup);
-void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, wibo::ModuleSearch search,
+void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, const wibo::ModuleSearch &search,
 								  wibo::ModuleInfo *importer, ForwarderLookup &lookup);
 
-wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName, wibo::ModuleSearch search,
+wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName, const wibo::ModuleSearch &search,
 											wibo::ModuleInfo &importer) {
 	wibo::ModuleInfo *target = wibo::loadDependency(importer, dllName.c_str(), search);
 	if (target || dllName.empty() || dllName[0] != '_') {
@@ -247,7 +248,7 @@ wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName, wibo::ModuleSe
 	return target;
 }
 
-void *resolveForwardedExport(wibo::ModuleInfo &source, const char *forwarder, wibo::ModuleSearch search,
+void *resolveForwardedExport(wibo::ModuleInfo &source, const char *forwarder, const wibo::ModuleSearch &search,
 							 wibo::ModuleInfo &importer, ForwarderLookup &lookup) {
 	auto missing = [&](const char *dllName, const char *exportName) -> void * {
 		return lookup.staticImport ? reinterpret_cast<void *>(resolveMissingFuncName(dllName, exportName)) : nullptr;
@@ -626,7 +627,8 @@ std::optional<std::string> systemDirectoryName() {
 	return std::string(buffer.data(), length);
 }
 
-std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg, wibo::ModuleSearch search) {
+std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg, DWORD flags,
+															const std::filesystem::path &topDirectory = {}) {
 	std::vector<std::filesystem::path> dirs;
 	std::unordered_set<std::string> seen;
 
@@ -648,25 +650,68 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 		}
 	};
 
-	if (search == wibo::ModuleSearch::SystemDirectory) {
-		if (auto system = systemDirectoryName())
-			addDirectory(files::pathFromWindows(system->c_str()));
+	const auto applicationDirectory = wibo::guestExecutablePath.parent_path();
+	if (flags & wibo::ModuleSearch::DefaultDirectories)
+		flags |= wibo::ModuleSearch::ApplicationDirectory | wibo::ModuleSearch::UserDirectories |
+				 wibo::ModuleSearch::SystemDirectory;
+	if (flags & wibo::ModuleSearch::DirectoryMask) {
+		if (flags & wibo::ModuleSearch::DllDirectory)
+			addDirectory(topDirectory);
+		if (flags & wibo::ModuleSearch::ApplicationDirectory)
+			addDirectory(applicationDirectory);
+		if ((flags & wibo::ModuleSearch::UserDirectories) && reg.dllDirectory)
+			addDirectory(*reg.dllDirectory);
+		if (flags & wibo::ModuleSearch::SystemDirectory) {
+			if (auto system = systemDirectoryName())
+				addDirectory(files::pathFromWindows(system->c_str()));
+		}
 		return dirs;
 	}
-
-	if (!wibo::guestExecutablePath.empty()) {
-		auto parent = wibo::guestExecutablePath.parent_path();
-		if (!parent.empty()) {
-			addDirectory(parent);
-		}
-	}
+	addDirectory((flags & wibo::ModuleSearch::AlteredPath) && !topDirectory.empty() ? topDirectory
+																					: applicationDirectory);
 
 	if (reg.dllDirectory.has_value()) {
 		addDirectory(*reg.dllDirectory);
 	}
 
+	if (flags & wibo::ModuleSearch::AlteredPath) {
+		if (auto system = systemDirectoryName())
+			addDirectory(files::pathFromWindows(system->c_str()));
+		std::vector<char> windowsDirectory(260);
+		UINT length =
+			kernel32::GetWindowsDirectoryA(windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
+		if (length >= windowsDirectory.size()) {
+			windowsDirectory.resize(length);
+			length =
+				kernel32::GetWindowsDirectoryA(windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
+		}
+		if (length && length < windowsDirectory.size()) {
+			auto windows = files::pathFromWindows(windowsDirectory.data());
+			addDirectory(windows / "System");
+			addDirectory(windows);
+		}
+	}
 	if (!reg.dllDirectory.has_value()) {
 		addDirectory(std::filesystem::current_path());
+	}
+	if (flags & wibo::ModuleSearch::AlteredPath) {
+		DWORD length = kernel32::GetEnvironmentVariableA("PATH", nullptr, 0);
+		if (length) {
+			std::vector<char> buffer(length);
+			length = kernel32::GetEnvironmentVariableA("PATH", buffer.data(), static_cast<DWORD>(buffer.size()));
+			if (length && length < buffer.size()) {
+				std::string_view pathList(buffer.data(), length);
+				for (size_t start = 0; start < pathList.size();) {
+					size_t end = pathList.find(';', start);
+					if (end == std::string_view::npos)
+						end = pathList.size();
+					std::string directory(pathList.substr(start, end - start));
+					addDirectory(files::pathFromWindows(directory.c_str()));
+					start = end + 1;
+				}
+			}
+		}
+		return dirs;
 	}
 
 	const auto addFromEnv = [&](const char *envVar) {
@@ -704,22 +749,26 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 }
 
 std::optional<std::filesystem::path> resolveModuleOnDisk(ModuleRegistry &reg, const std::string &requestedName,
-														 wibo::ModuleSearch search) {
+														 const wibo::ModuleSearch &search) {
 	ParsedModuleName parsed = parseModuleName(requestedName);
 	auto names = candidateModuleNames(parsed);
+	auto directories = search.directoriesResolved ? search.directories : collectSearchDirectories(reg, search.flags);
 
 	if (!parsed.directory.empty()) {
 		for (const auto &candidate : names) {
 			auto combined = parsed.directory + "\\" + candidate;
 			const bool absolute =
 				combined.front() == '\\' || (combined.size() > 2 && combined[1] == ':' && combined[2] == '\\');
-			if (search == wibo::ModuleSearch::SystemDirectory && !absolute) {
-				auto system = systemDirectoryName();
-				if (!system)
-					return std::nullopt;
-				system->push_back('\\');
-				system->append(combined);
-				combined = std::move(*system);
+			if (search.flags && !absolute) {
+				for (const auto &directory : directories) {
+					auto relative = combined;
+					std::replace(relative.begin(), relative.end(), '\\', '/');
+					auto windowsPath = files::pathToWindows(directory / relative);
+					auto path = files::pathFromWindows(windowsPath.c_str());
+					if (auto resolved = files::findCaseInsensitiveFile(path.parent_path(), path.filename().string()))
+						return files::canonicalPath(*resolved);
+				}
+				continue;
 			}
 			auto posixPath = files::pathFromWindows(combined.c_str());
 			if (!posixPath.empty()) {
@@ -733,8 +782,7 @@ std::optional<std::filesystem::path> resolveModuleOnDisk(ModuleRegistry &reg, co
 		return std::nullopt;
 	}
 
-	auto dirs = collectSearchDirectories(reg, search);
-	for (const auto &dir : dirs) {
+	for (const auto &dir : directories) {
 		for (const auto &candidate : names) {
 			auto resolved = combineAndFind(dir, candidate);
 			if (resolved) {
@@ -1081,7 +1129,7 @@ void ensureExportsInitialized(wibo::ModuleInfo &info) {
 	info.exportsInitialized = true;
 }
 
-void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, wibo::ModuleSearch search,
+void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, const wibo::ModuleSearch &search,
 							   wibo::ModuleInfo *importer, ForwarderLookup &lookup) {
 	if (!info || !funcName) {
 		return nullptr;
@@ -1100,7 +1148,7 @@ void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, wib
 	return nullptr;
 }
 
-void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, wibo::ModuleSearch search,
+void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, const wibo::ModuleSearch &search,
 								  wibo::ModuleInfo *importer, ForwarderLookup &lookup) {
 	if (!info) {
 		return nullptr;
@@ -1140,7 +1188,7 @@ void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, wibo
 	return nullptr;
 }
 
-bool ensureModuleReady(wibo::ModuleInfo &info, wibo::ModuleSearch search) {
+bool ensureModuleReady(wibo::ModuleInfo &info, const wibo::ModuleSearch &search) {
 	if (info.moduleStub && !info.moduleStub->dllData.empty() && !info.executable) {
 		DEBUG_LOG("registerBuiltinModule: loading PE for %s\n", info.originalName.c_str());
 		auto executable = std::make_unique<wibo::Executable>();
@@ -1605,7 +1653,7 @@ HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool u
 	return info->handle;
 }
 
-static ModuleInfo *loadModuleInternal(const std::string &dllName, ModuleSearch search, bool explicitReference) {
+static ModuleInfo *loadModuleInternal(const std::string &dllName, const ModuleSearch &search, bool explicitReference) {
 	auto reg = registry();
 	ParsedModuleName parsed = parseModuleName(dllName);
 	DWORD diskError = ERROR_SUCCESS;
@@ -1740,7 +1788,8 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName, ModuleSearch s
 			return reuseExternal(existing);
 		}
 		bool pinned = reg->pinnedModules.contains(existing);
-		if (!pinned && search == ModuleSearch::Default) {
+		if (!pinned && search.flags != ModuleSearch::SystemDirectory &&
+			(search.flags == 0 || !parsed.directory.empty())) {
 			if (ModuleInfo *external = resolveAndLoadExternal()) {
 				DEBUG_LOG("  replaced builtin module %s with external copy\n", dllName.c_str());
 				return external;
@@ -1824,7 +1873,7 @@ static std::optional<std::string> providerApiSetHost(const std::string &contract
 	return host;
 }
 
-static ModuleInfo *loadModuleWithReference(const char *dllName, ModuleSearch search, bool explicitReference) {
+static ModuleInfo *loadModuleWithReference(const char *dllName, const ModuleSearch &search, bool explicitReference) {
 	if (!dllName || *dllName == '\0') {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return nullptr;
@@ -1881,7 +1930,40 @@ static ModuleInfo *loadModuleWithReference(const char *dllName, ModuleSearch sea
 	return nullptr;
 }
 
-ModuleInfo *loadModule(const char *dllName, ModuleSearch search) {
+ModuleInfo *loadModule(const char *dllName, DWORD flags) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (flags & ~(ModuleSearch::AlteredPath | ModuleSearch::DirectoryMask)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return nullptr;
+	}
+	if ((flags & ModuleSearch::AlteredPath) && (flags & ModuleSearch::DirectoryMask)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return nullptr;
+	}
+	std::filesystem::path topDirectory;
+	if (flags & (ModuleSearch::AlteredPath | ModuleSearch::DllDirectory)) {
+		std::string name = dllName ? dllName : "";
+		std::replace(name.begin(), name.end(), '/', '\\');
+		const bool absolute =
+			!name.empty() && (name.front() == '\\' || (name.size() > 2 && name[1] == ':' && name[2] == '\\'));
+		if (!absolute && ((flags & ModuleSearch::DllDirectory) || name.find('\\') != std::string::npos)) {
+			kernel32::setLastError(ERROR_INVALID_PARAMETER);
+			return nullptr;
+		}
+		if (absolute)
+			topDirectory = files::pathFromWindows(name.c_str()).parent_path();
+	}
+	ModuleSearch search;
+	search.flags = flags;
+	search.directoriesResolved = true;
+	{
+		auto reg = registry();
+		search.directories = collectSearchDirectories(*reg, flags, topDirectory);
+	}
+	return loadModule(dllName, search);
+}
+
+ModuleInfo *loadModule(const char *dllName, const ModuleSearch &search) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	auto *info = loadModuleWithReference(dllName, search, true);
 	if (!info) {
@@ -1892,7 +1974,7 @@ ModuleInfo *loadModule(const char *dllName, ModuleSearch search) {
 	return info;
 }
 
-ModuleInfo *loadDependency(ModuleInfo &importer, const char *dllName, ModuleSearch search) {
+ModuleInfo *loadDependency(ModuleInfo &importer, const char *dllName, const ModuleSearch &search) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	auto *info = loadModuleWithReference(dllName, search, false);
 	if (info) {
@@ -1915,21 +1997,21 @@ void freeModule(ModuleInfo *info) {
 	collectUnusedModules();
 }
 
-void *findExportByName(ModuleInfo *info, const char *funcName, ModuleSearch search, ModuleInfo *importer) {
+void *findExportByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search, ModuleInfo *importer) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	ForwarderLookup lookup;
 	lookup.staticImport = importer != nullptr;
 	return findExportByNameInternal(info, funcName, search, importer, lookup);
 }
 
-void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search, ModuleInfo *importer) {
+void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search, ModuleInfo *importer) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	ForwarderLookup lookup;
 	lookup.staticImport = importer != nullptr;
 	return findExportByOrdinalInternal(info, ordinal, search, importer, lookup);
 }
 
-void *resolveFuncByName(ModuleInfo *info, const char *funcName, ModuleSearch search, ModuleInfo *importer) {
+void *resolveFuncByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search, ModuleInfo *importer) {
 	void *func = findExportByName(info, funcName, search, importer);
 	if (func) {
 		return func;
@@ -1941,7 +2023,7 @@ void *resolveFuncByName(ModuleInfo *info, const char *funcName, ModuleSearch sea
 	return nullptr;
 }
 
-void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search, ModuleInfo *importer) {
+void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search, ModuleInfo *importer) {
 	void *func = findExportByOrdinal(info, ordinal, search, importer);
 	if (func) {
 		return func;

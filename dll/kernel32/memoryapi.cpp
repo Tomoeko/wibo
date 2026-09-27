@@ -6,6 +6,7 @@
 #include "handles.h"
 #include "heap.h"
 #include "internal.h"
+#include "modules.h"
 #include "strutil.h"
 #include "types.h"
 
@@ -24,6 +25,7 @@
 namespace {
 
 constexpr size_t kVirtualAllocationGranularity = 64 * 1024;
+constexpr DWORD kSecImage = 0x01000000;
 #ifdef WIBO_GUEST_64
 constexpr uintptr_t kProcessAddressLimit = 0x0000800000000000ULL;
 #else
@@ -38,6 +40,7 @@ struct MappingObject : ObjectBase {
 	size_t maxSize = 0;
 	DWORD protect = 0;
 	bool anonymous = false;
+	bool image = false;
 	bool closed = false;
 
 	explicit MappingObject() : ObjectBase(kType) {}
@@ -57,6 +60,7 @@ struct ViewInfo {
 	uintptr_t allocationBase = 0;
 	size_t allocationLength = 0;
 	Pin<MappingObject> owner;
+	std::unique_ptr<wibo::Executable> image;
 	DWORD protect = PAGE_NOACCESS;
 	DWORD allocationProtect = PAGE_NOACCESS;
 	DWORD type = MEM_PRIVATE;
@@ -163,7 +167,7 @@ bool mappedViewRegionForAddress(uintptr_t request, uintptr_t pageBase, MEMORY_BA
 	const size_t pageSize = wibo::heap::systemPageSize();
 	for (const auto &entry : g_viewInfo) {
 		const ViewInfo &view = entry.second;
-		if (view.viewLength == 0) {
+		if (view.viewLength == 0 || view.image) {
 			continue;
 		}
 		uintptr_t allocationStart = view.allocationBase;
@@ -233,6 +237,23 @@ bool growFileForMapping(int fd, uint64_t size) {
 	return true;
 }
 
+using MappingFile = std::unique_ptr<FILE, decltype(&fclose)>;
+
+MappingFile openMappingFile(int fd) {
+	int duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+	if (duplicate == -1) {
+		kernel32::setLastErrorFromErrno();
+		return {nullptr, &fclose};
+	}
+	FILE *file = fdopen(duplicate, "rb");
+	if (!file) {
+		int error = errno;
+		close(duplicate);
+		kernel32::setLastError(wibo::winErrorFromErrno(error));
+	}
+	return {file, &fclose};
+}
+
 } // namespace
 
 namespace kernel32 {
@@ -246,16 +267,27 @@ HANDLE WINAPI CreateFileMappingA(HANDLE hFile, LPSECURITY_ATTRIBUTES lpFileMappi
 	(void)lpName;
 
 	uint64_t size = (static_cast<uint64_t>(dwMaximumSizeHigh) << 32) | dwMaximumSizeLow;
-	if (flProtect != PAGE_READONLY && flProtect != PAGE_READWRITE && flProtect != PAGE_WRITECOPY) {
+	const bool image = (flProtect & kSecImage) != 0;
+	const DWORD protect = image ? flProtect & 0xFF : flProtect;
+	const bool supportedImageProtect = protect == PAGE_READONLY || protect == PAGE_READWRITE ||
+									   protect == PAGE_WRITECOPY || protect == PAGE_EXECUTE_READ ||
+									   protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+	if ((image && ((flProtect & ~0xFFu) != kSecImage || !supportedImageProtect)) ||
+		(!image && protect != PAGE_READONLY && protect != PAGE_READWRITE && protect != PAGE_WRITECOPY)) {
 		DEBUG_LOG("CreateFileMappingA: unsupported protection 0x%x\n", flProtect);
 		setLastError(ERROR_INVALID_PARAMETER);
 		return NO_HANDLE;
 	}
 
 	auto mapping = make_pin<MappingObject>();
-	mapping->protect = flProtect;
+	mapping->protect = protect;
+	mapping->image = image;
 
 	if (hFile == INVALID_HANDLE_VALUE) {
+		if (image) {
+			setLastError(ERROR_BAD_EXE_FORMAT);
+			return NO_HANDLE;
+		}
 		mapping->anonymous = true;
 		mapping->fd = -1;
 		if (size == 0) {
@@ -275,6 +307,17 @@ HANDLE WINAPI CreateFileMappingA(HANDLE hFile, LPSECURITY_ATTRIBUTES lpFileMappi
 			return NO_HANDLE;
 		}
 		mapping->fd = dupFd;
+		if (image) {
+			auto source = openMappingFile(dupFd);
+			if (!source || !wibo::Executable::imageMappingSize(source.get(), mapping->maxSize)) {
+				return NO_HANDLE;
+			}
+			if (size > mapping->maxSize) {
+				setLastError(ERROR_NOT_ENOUGH_MEMORY);
+				return NO_HANDLE;
+			}
+			return wibo::handles().alloc(std::move(mapping), 0, 0);
+		}
 		uint64_t fileSize = 0;
 		if (!fileSizeFromFd(dupFd, fileSize)) {
 			return NO_HANDLE;
@@ -320,6 +363,40 @@ static LPVOID mapViewOfFileInternal(Pin<MappingObject> mapping, DWORD dwDesiredA
 	if (mapping->closed) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return nullptr;
+	}
+	if (mapping->image) {
+		if (offset != 0) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return nullptr;
+		}
+		const FileMapAccess access = fileMapAccessFromDesiredAccess(dwDesiredAccess);
+		if (access.write && !access.copy && !protectAllowsFileGrowth(mapping->protect)) {
+			DEBUG_LOG("MapViewOfFile: writable image view access is not supported for this section\n");
+			setLastError(ERROR_NOT_SUPPORTED);
+			return nullptr;
+		}
+		auto source = openMappingFile(mapping->fd);
+		if (!source) {
+			return nullptr;
+		}
+		auto executable = std::make_unique<wibo::Executable>();
+		if (!executable->mapImage(source.get(), baseAddress)) {
+			return nullptr;
+		}
+		void *base = executable->imageBase;
+		ViewInfo view{};
+		view.viewBase = reinterpret_cast<uintptr_t>(base);
+		view.viewLength = alignUp(executable->imageSize, wibo::heap::systemPageSize());
+		view.allocationBase = view.viewBase;
+		view.allocationLength = executable->imageSize;
+		view.owner = std::move(mapping);
+		view.image = std::move(executable);
+		view.type = MEM_IMAGE;
+		{
+			std::lock_guard guard(g_viewInfoMutex);
+			g_viewInfo.emplace(view.viewBase, std::move(view));
+		}
+		return base;
 	}
 	if (mapping->anonymous && offset != 0) {
 		setLastError(ERROR_INVALID_PARAMETER);
@@ -497,16 +574,30 @@ BOOL WINAPI UnmapViewOfFile(LPCVOID lpBaseAddress) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("UnmapViewOfFile(%p)\n", lpBaseAddress);
 	std::unique_lock lk(g_viewInfoMutex);
-	auto it = g_viewInfo.find(reinterpret_cast<uintptr_t>(lpBaseAddress));
+	const uintptr_t address = reinterpret_cast<uintptr_t>(lpBaseAddress);
+	auto it = g_viewInfo.upper_bound(address);
+	if (it != g_viewInfo.begin()) {
+		--it;
+		const auto &view = it->second;
+		if (address != view.viewBase && (!view.image || address - view.viewBase >= view.viewLength)) {
+			it = g_viewInfo.end();
+		}
+	} else {
+		it = g_viewInfo.end();
+	}
 	if (it == g_viewInfo.end()) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	void *base = reinterpret_cast<void *>(it->second.allocationBase);
-	size_t length = it->second.allocationLength;
-	bool managed = it->second.managed;
+	ViewInfo view = std::move(it->second);
 	g_viewInfo.erase(it);
 	lk.unlock();
+	if (view.image) {
+		return TRUE;
+	}
+	void *base = reinterpret_cast<void *>(view.allocationBase);
+	size_t length = view.allocationLength;
+	bool managed = view.managed;
 	if (length != 0) {
 		munmap(base, length);
 	}
@@ -611,6 +702,11 @@ LPVOID WINAPI VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationTy
 BOOL WINAPI VirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("VirtualFree(%p, %zu, %u)\n", lpAddress, dwSize, dwFreeType);
+	MEMORY_BASIC_INFORMATION info{};
+	if (wibo::heap::virtualQuery(lpAddress, &info) == wibo::heap::VmStatus::Success && info.Type == MEM_IMAGE) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
 	wibo::heap::VmStatus status = wibo::heap::virtualFree(lpAddress, static_cast<std::size_t>(dwSize), dwFreeType);
 	if (status != wibo::heap::VmStatus::Success) {
 		DWORD err = wibo::heap::win32ErrorFromVmStatus(status);

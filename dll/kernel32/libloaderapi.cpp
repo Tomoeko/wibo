@@ -19,8 +19,6 @@
 
 namespace {
 
-constexpr DWORD LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
-
 constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_PIN = 0x00000001;
 constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x00000002;
 constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x00000004;
@@ -310,7 +308,7 @@ HMODULE WINAPI LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 			  dwFlags);
 	// The reserved handle does not select a file or change the load mode.
 	(void)hFile;
-	if (dwFlags != 0 && dwFlags != LOAD_LIBRARY_SEARCH_SYSTEM32) {
+	if (dwFlags & ~(wibo::ModuleSearch::AlteredPath | wibo::ModuleSearch::DirectoryMask)) {
 		DEBUG_LOG("LoadLibraryExA: unsupported load mode\n");
 		setLastError(ERROR_NOT_SUPPORTED);
 		return NO_HANDLE;
@@ -331,9 +329,7 @@ HMODULE WINAPI LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 		setLastError(ERROR_MOD_NOT_FOUND);
 		return NO_HANDLE;
 	}
-	const auto search =
-		dwFlags == LOAD_LIBRARY_SEARCH_SYSTEM32 ? wibo::ModuleSearch::SystemDirectory : wibo::ModuleSearch::Default;
-	const auto *info = wibo::loadModule(filename.c_str(), search);
+	const auto *info = wibo::loadModule(filename.c_str(), dwFlags);
 	return info ? info->handle : NO_HANDLE;
 }
 
@@ -341,7 +337,7 @@ HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags
 	HOST_CONTEXT_GUARD();
 	(void)hFile;
 	DEBUG_LOG("LoadLibraryExW(%x) -> ", dwFlags);
-	if (dwFlags == LOAD_LIBRARY_SEARCH_SYSTEM32) {
+	if (dwFlags & (wibo::ModuleSearch::AlteredPath | wibo::ModuleSearch::DirectoryMask)) {
 		if (!lpLibFileName) {
 			setLastError(ERROR_INVALID_PARAMETER);
 			return NO_HANDLE;

@@ -1,0 +1,3 @@
+LIBRARY flags_forwarder
+EXPORTS
+ forward_value=dep_priority.dependency_value

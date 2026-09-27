@@ -42,17 +42,9 @@ int main(void) {
 	TEST_CHECK_EQ(ERROR_MOD_NOT_FOUND, GetLastError());
 	TEST_CHECK(GetModuleHandleA("external_exports.dll") == NULL);
 	if (getenv("WIBO_FIXTURE_RUNTIME")) {
-		const DWORD unsupported[] = {DONT_RESOLVE_DLL_REFERENCES,
-									 LOAD_LIBRARY_AS_DATAFILE,
-									 LOAD_WITH_ALTERED_SEARCH_PATH,
-									 LOAD_IGNORE_CODE_AUTHZ_LEVEL,
-									 LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-									 LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE,
-									 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
-									 LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
-									 LOAD_LIBRARY_SEARCH_USER_DIRS,
-									 LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-									 0x80000000};
+		const DWORD unsupported[] = {DONT_RESOLVE_DLL_REFERENCES,		 LOAD_LIBRARY_AS_DATAFILE,
+									 LOAD_IGNORE_CODE_AUTHZ_LEVEL,		 LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+									 LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE, 0x80000000};
 		for (unsigned i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); ++i) {
 			SetLastError(0x71);
 			TEST_CHECK(LoadLibraryExA("external_exports.dll", NULL, unsupported[i]) == NULL);

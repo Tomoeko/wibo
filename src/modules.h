@@ -18,7 +18,19 @@ struct ResourceIdentifier;
 struct ResourceLocation;
 struct ModuleInfo;
 
-enum class ModuleSearch { Default, SystemDirectory };
+struct ModuleSearch {
+	static constexpr DWORD AlteredPath = 0x8;
+	static constexpr DWORD DllDirectory = 0x100;
+	static constexpr DWORD ApplicationDirectory = 0x200;
+	static constexpr DWORD UserDirectories = 0x400;
+	static constexpr DWORD SystemDirectory = 0x800;
+	static constexpr DWORD DefaultDirectories = 0x1000;
+	static constexpr DWORD DirectoryMask =
+		DllDirectory | ApplicationDirectory | UserDirectories | SystemDirectory | DefaultDirectories;
+	DWORD flags = 0;
+	bool directoriesResolved = false;
+	std::vector<std::filesystem::path> directories;
+};
 
 struct ModuleStub {
 	const char **names;
@@ -41,7 +53,9 @@ class Executable {
 
 	bool loadPE(FILE *file, bool exec);
 	bool loadPE(std::span<const uint8_t> image, bool exec);
-	bool resolveImports(ModuleSearch search = ModuleSearch::Default, ModuleInfo *importer = nullptr);
+	static bool imageMappingSize(FILE *file, size_t &size);
+	bool mapImage(FILE *file, void *requestedBase = nullptr);
+	bool resolveImports(const ModuleSearch &search = {}, ModuleInfo *importer = nullptr);
 	bool findResource(const ResourceIdentifier &type, const ResourceIdentifier &name, std::optional<uint16_t> language,
 					  ResourceLocation &out) const;
 
@@ -139,16 +153,17 @@ std::unordered_map<std::string, ModulePtr> allLoadedModules();
 bool initializeModuleTls(ModuleInfo &module);
 void releaseModuleTls(ModuleInfo &module);
 
-ModuleInfo *loadModule(const char *name, ModuleSearch search = ModuleSearch::Default);
-ModuleInfo *loadDependency(ModuleInfo &importer, const char *name, ModuleSearch search);
+ModuleInfo *loadModule(const char *name, DWORD flags = 0);
+ModuleInfo *loadModule(const char *name, const ModuleSearch &search);
+ModuleInfo *loadDependency(ModuleInfo &importer, const char *name, const ModuleSearch &search);
 void freeModule(ModuleInfo *info);
-void *findExportByName(ModuleInfo *info, const char *funcName, ModuleSearch search = ModuleSearch::Default,
+void *findExportByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search = {},
 					   ModuleInfo *importer = nullptr);
-void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search = ModuleSearch::Default,
+void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search = {},
 						  ModuleInfo *importer = nullptr);
-void *resolveFuncByName(ModuleInfo *info, const char *funcName, ModuleSearch search = ModuleSearch::Default,
+void *resolveFuncByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search = {},
 						ModuleInfo *importer = nullptr);
-void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search = ModuleSearch::Default,
+void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search = {},
 						   ModuleInfo *importer = nullptr);
 void *resolveMissingImportByName(const char *dllName, const char *funcName);
 void *resolveMissingImportByOrdinal(const char *dllName, uint16_t ordinal);
