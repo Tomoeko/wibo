@@ -30,6 +30,9 @@ void GUEST_STDCALL wiboCaptureRtlRaiseException64(EXCEPTION_RECORD *record);
 extern const BYTE wiboRaiseCaptureContinuation64[];
 
 void wiboPrepareSoftwareExceptionCapture64(SoftwareExceptionCapture64 *capture, BOOL raiseArguments);
+// Each entry set supplies its own exact continuation before ancestry is read.
+void wiboPrepareSoftwareExceptionCaptureForEntry64(SoftwareExceptionCapture64 *capture, BOOL raiseArguments,
+												   const void *raiseEntry, const void *raiseContinuation);
 
 // Deliberately has no default implementation: an actual capture consumer must
 // be supplied before these entry points can be linked into a runnable target.
