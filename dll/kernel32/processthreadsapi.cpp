@@ -1193,6 +1193,10 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 			  lpCommandLine ? lpCommandLine : "<null>", lpProcessAttributes, lpThreadAttributes, bInheritHandles,
 			  dwCreationFlags, lpEnvironment, lpCurrentDirectory ? lpCurrentDirectory : "<none>", lpStartupInfo,
 			  lpProcessInformation);
+	if (lpStartupInfo) {
+		DEBUG_LOG("Process startup: cb=%u flags=0x%x expected=%zu\n", lpStartupInfo->cb, lpStartupInfo->dwFlags,
+				  (dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ? sizeof(STARTUPINFOEXA) : sizeof(STARTUPINFOA));
+	}
 
 	if (!lpStartupInfo || !lpProcessInformation ||
 		lpStartupInfo->cb !=
@@ -1221,12 +1225,17 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 		auto *extended = reinterpret_cast<STARTUPINFOEXA *>(lpStartupInfo);
 		if (extended->lpAttributeList) {
 			auto *list = reinterpret_cast<ProcessAttributeList *>(static_cast<uintptr_t>(extended->lpAttributeList));
+			DEBUG_LOG("Process attributes: count=%u capacity=%u\n", list->count, list->capacity);
 			if (list->count > list->capacity || list->count > 1) {
 				setLastError(ERROR_INVALID_PARAMETER);
 				return FALSE;
 			}
 			if (list->count) {
 				const auto *attribute = reinterpret_cast<ProcessAttribute *>(list + 1);
+				DEBUG_LOG("Process attribute: key=0x%llx size=%llu value=0x%llx\n",
+						  static_cast<unsigned long long>(attribute->key),
+						  static_cast<unsigned long long>(attribute->size),
+						  static_cast<unsigned long long>(attribute->value));
 				if (attribute->key != PROC_THREAD_ATTRIBUTE_HANDLE_LIST || !bInheritHandles || !attribute->value ||
 					!attribute->size || attribute->size % sizeof(HANDLE) ||
 					attribute->size / sizeof(HANDLE) > MAX_HANDLES) {
@@ -1239,8 +1248,13 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 		}
 	}
 	if (bInheritHandles) {
+		if (wibo::debugEnabled && selection) {
+			for (const HANDLE handle : *selection)
+				DEBUG_LOG("Process selected handle: 0x%llx\n", static_cast<unsigned long long>(handle));
+		}
 		error = wibo::handles().snapshotInherited(selection, options.handles);
 		if (error) {
+			DEBUG_LOG("Process inherited-handle snapshot failed: error=%u\n", error);
 			setLastError(error);
 			return FALSE;
 		}

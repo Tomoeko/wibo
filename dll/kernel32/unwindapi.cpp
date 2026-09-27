@@ -6,6 +6,13 @@ RUNTIME_FUNCTION *WINAPI RtlLookupFunctionEntry(ULONGLONG controlPc, ULONGLONG *
 	return ntdll::RtlLookupFunctionEntry(controlPc, imageBase, historyTable);
 }
 
+PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
+							  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame,
+							  KNONVOLATILE_CONTEXT_POINTERS *pointers) {
+	return ntdll::RtlVirtualUnwind(handlerType, imageBase, controlPc, functionEntry, context, handlerData, frame,
+								   pointers);
+}
+
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll) {

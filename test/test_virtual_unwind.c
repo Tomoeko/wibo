@@ -324,10 +324,19 @@ static void test_frame_epilogue(void) {
 	}
 }
 
+static unwind_fn resolve_unwind(LPCWSTR moduleName) {
+	HMODULE module = GetModuleHandleW(moduleName);
+	TEST_CHECK(module != NULL);
+	FARPROC address = GetProcAddress(module, "RtlVirtualUnwind");
+	unwind_fn function = NULL;
+	_Static_assert(sizeof(address) == sizeof(function), "function pointer size");
+	memcpy(&function, &address, sizeof(function));
+	TEST_CHECK(function != NULL);
+	return function;
+}
+
 int main(void) {
-	HMODULE module = GetModuleHandleW(L"ntdll.dll");
-	unwind = (unwind_fn)(ULONG_PTR)GetProcAddress(module, "RtlVirtualUnwind");
-	TEST_CHECK(unwind != NULL);
+	unwind = resolve_unwind(L"ntdll.dll");
 	image = VirtualAlloc(NULL, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	TEST_CHECK(image != NULL);
 	test_allocations_and_prologue();
@@ -341,6 +350,11 @@ int main(void) {
 	test_machine_frame_epilogue();
 	test_tail_jumps();
 	test_frame_epilogue();
+	unwind = resolve_unwind(L"kernel32.dll");
+	test_allocations_and_prologue();
+	test_saved_registers_and_frame();
+	test_handlers_and_chains();
+	test_epilogues();
 	TEST_CHECK(VirtualFree(image, 0, MEM_RELEASE));
 	return 0;
 }

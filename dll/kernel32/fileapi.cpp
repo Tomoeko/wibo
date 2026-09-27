@@ -609,30 +609,12 @@ DWORD WINAPI GetFileAttributesA(LPCSTR lpFileName) {
 	std::string pathStr = path.string();
 	DEBUG_LOG("GetFileAttributesA(%s) -> %s\n", lpFileName, pathStr.c_str());
 
-	if (endsWith(pathStr, "/license.dat")) {
-		DEBUG_LOG("MWCC license override\n");
-		return FILE_ATTRIBUTE_NORMAL;
-	}
-
-	std::error_code ec;
-	auto status = std::filesystem::status(path, ec);
-	if (ec) {
-		setLastError(wibo::winErrorFromErrno(ec.value()));
+	struct stat information{};
+	if (stat(pathStr.c_str(), &information) != 0) {
+		setLastErrorFromErrno();
 		return INVALID_FILE_ATTRIBUTES;
 	}
-
-	switch (status.type()) {
-	case std::filesystem::file_type::regular:
-		DEBUG_LOG("File exists\n");
-		return FILE_ATTRIBUTE_NORMAL;
-	case std::filesystem::file_type::directory:
-		return FILE_ATTRIBUTE_DIRECTORY;
-	case std::filesystem::file_type::not_found:
-	default:
-		DEBUG_LOG("File does not exist\n");
-		setLastError(ERROR_FILE_NOT_FOUND);
-		return INVALID_FILE_ATTRIBUTES;
-	}
+	return buildFileAttributes(information, S_ISDIR(information.st_mode));
 }
 
 DWORD WINAPI GetFileAttributesW(LPCWSTR lpFileName) {
@@ -642,7 +624,11 @@ DWORD WINAPI GetFileAttributesW(LPCWSTR lpFileName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return INVALID_FILE_ATTRIBUTES;
 	}
-	std::string str = wideStringToString(lpFileName);
+	std::string str;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName)), str)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return INVALID_FILE_ATTRIBUTES;
+	}
 	return GetFileAttributesA(str.c_str());
 }
 
@@ -661,16 +647,6 @@ BOOL WINAPI GetFileAttributesExA(LPCSTR lpFileName, GET_FILEEX_INFO_LEVELS fInfo
 
 	std::filesystem::path hostPath = files::pathFromWindows(lpFileName);
 	std::string hostPathStr = hostPath.string();
-
-	if (endsWith(hostPathStr, "/license.dat")) {
-		auto *attributeData = static_cast<LPWIN32_FILE_ATTRIBUTE_DATA>(lpFileInformation);
-		std::memset(attributeData, 0, sizeof(*attributeData));
-		attributeData->dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
-		attributeData->ftCreationTime = kDefaultFindFileTime;
-		attributeData->ftLastAccessTime = kDefaultFindFileTime;
-		attributeData->ftLastWriteTime = kDefaultFindFileTime;
-		return TRUE;
-	}
 
 	struct stat st{};
 	if (stat(hostPathStr.c_str(), &st) != 0) {
@@ -691,7 +667,12 @@ BOOL WINAPI GetFileAttributesExW(LPCWSTR lpFileName, GET_FILEEX_INFO_LEVELS fInf
 		setLastError(ERROR_PATH_NOT_FOUND);
 		return FALSE;
 	}
-	std::string fileName = wideStringToString(lpFileName);
+	std::string fileName;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName)),
+					 fileName)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return GetFileAttributesExA(fileName.c_str(), fInfoLevelId, lpFileInformation);
 }
 
@@ -1601,7 +1582,11 @@ BOOL WINAPI CreateDirectoryW(LPCWSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurit
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	const auto path = wideStringToString(lpPathName);
+	std::string path;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpPathName), wstrlen(lpPathName)), path)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return CreateDirectoryA(path.c_str(), lpSecurityAttributes);
 }
 

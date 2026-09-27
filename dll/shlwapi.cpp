@@ -3,6 +3,7 @@
 #include "common.h"
 #include "context.h"
 #include "errors.h"
+#include "kernel32/fileapi.h"
 #include "kernel32/internal.h"
 #include "kernel32/minwinbase.h"
 #include "modules.h"
@@ -14,6 +15,29 @@
 #include <string_view>
 
 namespace shlwapi {
+
+BOOL WINAPI PathIsDirectoryW(LPCWSTR path) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathIsDirectoryW(%p)\n", path);
+	if (!path)
+		return FALSE;
+	if (!*path) {
+		kernel32::setLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
+	const size_t length = wstrnlen(path, MAX_PATH);
+	if (length == MAX_PATH || (length >= 2 && path[0] == '\\' && path[1] == '\\')) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	std::string utf8;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(path), length), utf8)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const DWORD attributes = kernel32::GetFileAttributesA(utf8.c_str());
+	return attributes == INVALID_FILE_ATTRIBUTES ? FALSE : static_cast<BOOL>(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
 
 BOOL WINAPI PathCanonicalizeW(LPWSTR output, LPCWSTR path) {
 	HOST_CONTEXT_GUARD();

@@ -683,15 +683,18 @@ void init(std::optional<StandardHandles> inheritedStandards) {
 	auto &handles = wibo::handles();
 	auto stdinObject = make_pin<FileObject>(STDIN_FILENO);
 	stdinObject->closeOnDestroy = false;
-	stdinHandle.store(handles.alloc(std::move(stdinObject), FILE_GENERIC_READ, 0), std::memory_order_relaxed);
+	stdinHandle.store(handles.alloc(std::move(stdinObject), FILE_GENERIC_READ, HANDLE_FLAG_INHERIT),
+					  std::memory_order_relaxed);
 	auto stdoutObject = make_pin<FileObject>(STDOUT_FILENO);
 	stdoutObject->closeOnDestroy = false;
 	stdoutObject->appendOnly = true;
-	stdoutHandle.store(handles.alloc(std::move(stdoutObject), FILE_GENERIC_WRITE, 0), std::memory_order_relaxed);
+	stdoutHandle.store(handles.alloc(std::move(stdoutObject), FILE_GENERIC_WRITE, HANDLE_FLAG_INHERIT),
+					   std::memory_order_relaxed);
 	auto stderrObject = make_pin<FileObject>(STDERR_FILENO);
 	stderrObject->closeOnDestroy = false;
 	stderrObject->appendOnly = true;
-	stderrHandle.store(handles.alloc(std::move(stderrObject), FILE_GENERIC_WRITE, 0), std::memory_order_relaxed);
+	stderrHandle.store(handles.alloc(std::move(stderrObject), FILE_GENERIC_WRITE, HANDLE_FLAG_INHERIT),
+					   std::memory_order_relaxed);
 }
 
 std::optional<std::filesystem::path> findCaseInsensitiveFile(const std::filesystem::path &directory,
