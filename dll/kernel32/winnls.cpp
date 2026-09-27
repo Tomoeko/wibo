@@ -7,10 +7,13 @@
 #include "kernel32.h"
 #include "kernel32_trampolines.h"
 #include "strutil.h"
+#include "system_provider.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -26,6 +29,20 @@ constexpr DWORD LOCALE_ALLOW_NEUTRAL_NAMES = 0x08000000;
 constexpr DWORD kLocaleNoUserOverride = 0x80000000u;
 constexpr DWORD kLocaleReturnNumber = 0x20000000u;
 constexpr DWORD kLocaleFlagMask = 0xF0000000u;
+constexpr DWORD kMapSortKey = 0x00000400;
+constexpr DWORD kMapHash = 0x00040000;
+constexpr DWORD kMapSortHandle = 0x20000000;
+constexpr size_t kMaxLocaleNameUnits = 85;
+constexpr size_t kMaxMappingRequest = 64 * 1024;
+
+std::string encodeWideBytes(const uint16_t *text, size_t units) {
+	std::string bytes(units * 2, '\0');
+	for (size_t index = 0; index < units; ++index) {
+		bytes[index * 2] = static_cast<char>(text[index] & 0xff);
+		bytes[index * 2 + 1] = static_cast<char>(text[index] >> 8);
+	}
+	return wibo::provider::encodeBytes(bytes);
+}
 
 int compareStrings(const std::string &a, const std::string &b, DWORD dwCmpFlags) {
 	for (size_t i = 0;; ++i) {
@@ -433,6 +450,113 @@ int WINAPI LCMapStringW(LCID Locale, DWORD dwMapFlags, LPCWCH lpSrcStr, int cchS
 
 	std::memcpy(lpDestStr, buffer.data(), srcLen * sizeof(uint16_t));
 	return static_cast<int>(srcLen);
+}
+
+int WINAPI LCMapStringEx(LPCWSTR lpLocaleName, DWORD dwMapFlags, LPCWSTR lpSrcStr, int cchSrc, LPWSTR lpDestStr,
+						 int cchDest, LPNLSVERSIONINFO lpVersionInformation, LPVOID lpReserved, LONG_PTR sortHandle) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LCMapStringEx(%p, 0x%x, %p, %d, %p, %d, %p, %p, 0x%llx)\n", lpLocaleName, dwMapFlags, lpSrcStr, cchSrc,
+			  lpDestStr, cchDest, lpVersionInformation, lpReserved, static_cast<unsigned long long>(sortHandle));
+	if ((dwMapFlags & (kMapSortHandle | kMapHash)) || lpVersionInformation || lpReserved || sortHandle) {
+		// Hashing, sort tokens, and versioned requests are outside this provider operation.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	if (!lpSrcStr || !cchSrc || cchDest < 0) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	if (!lpDestStr && cchDest) {
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return 0;
+	}
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	std::string locale = "-";
+	if (lpLocaleName) {
+		const size_t localeUnits = wstrnlen(lpLocaleName, kMaxLocaleNameUnits);
+		if (localeUnits == kMaxLocaleNameUnits) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return 0;
+		}
+		locale = encodeWideBytes(lpLocaleName, localeUnits);
+	}
+	// Reserve room for framing, the operation, and numeric arguments. Each UTF-16
+	// source unit takes four characters when encoded as hexadecimal bytes.
+	const size_t sourceLimit = (kMaxMappingRequest - locale.size() - 128) / 4;
+	size_t sourceUnits;
+	if (cchSrc < 0) {
+		const size_t length = wstrnlen(lpSrcStr, sourceLimit);
+		if (length == sourceLimit) {
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return 0;
+		}
+		sourceUnits = length + 1;
+	} else {
+		sourceUnits = static_cast<size_t>(cchSrc);
+		if (sourceUnits > sourceLimit) {
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return 0;
+		}
+	}
+	const size_t outputUnitSize = dwMapFlags & kMapSortKey ? 1 : sizeof(uint16_t);
+	if (static_cast<size_t>(cchDest) > wibo::provider::kMaxResponse / outputUnitSize) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return 0;
+	}
+	const size_t sourceBytes = sourceUnits * sizeof(uint16_t);
+	const size_t destinationBytes = static_cast<size_t>(cchDest) * outputUnitSize;
+	const uintptr_t sourceAddress = reinterpret_cast<uintptr_t>(lpSrcStr);
+	const uintptr_t destinationAddress = reinterpret_cast<uintptr_t>(lpDestStr);
+	if (sourceBytes > std::numeric_limits<uintptr_t>::max() - sourceAddress ||
+		destinationBytes > std::numeric_limits<uintptr_t>::max() - destinationAddress) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	if (destinationBytes && lpSrcStr != lpDestStr && sourceAddress < destinationAddress + destinationBytes &&
+		destinationAddress < sourceAddress + sourceBytes) {
+		// Overlapping subranges need buffer identity beyond the supported alias mode.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	const char *destinationMode = !cchDest ? "0" : lpSrcStr == lpDestStr ? "2" : "1";
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"lc-map-string-ex", std::to_string(dwMapFlags), locale, std::to_string(cchSrc),
+								  encodeWideBytes(lpSrcStr, sourceUnits), std::to_string(cchDest), destinationMode},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	if (!reader.header(status)) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (status != ERROR_SUCCESS) {
+		if (!reader.done()) {
+			setLastError(ERROR_INVALID_DATA);
+			return 0;
+		}
+		setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+		return 0;
+	}
+	uint32_t result = 0;
+	std::vector<uint8_t> output;
+	if (!reader.number(result) || !result || result > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+		!reader.bytes(output) || !reader.done() ||
+		(cchDest == 0 ? !output.empty()
+					  : result > static_cast<uint32_t>(cchDest) ||
+							output.size() != static_cast<size_t>(result) * outputUnitSize)) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	if (cchDest) {
+		std::memcpy(lpDestStr, output.data(), output.size());
+	}
+	return static_cast<int>(result);
 }
 
 int WINAPI LCMapStringA(LCID Locale, DWORD dwMapFlags, LPCCH lpSrcStr, int cchSrc, LPSTR lpDestStr, int cchDest) {

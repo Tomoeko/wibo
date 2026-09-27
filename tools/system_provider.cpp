@@ -485,6 +485,126 @@ bool decodeHex(const WCHAR *source, std::string &result, bool allowZero = false)
 	return true;
 }
 
+bool parseUnsignedDecimal(const WCHAR *text, uint32_t maximum, uint32_t &value) {
+	if (!*text)
+		return false;
+	value = 0;
+	for (; *text; ++text) {
+		if (*text < L'0' || *text > L'9')
+			return false;
+		const uint32_t digit = *text - L'0';
+		if (value > maximum / 10 || (value == maximum / 10 && digit > maximum % 10))
+			return false;
+		value = value * 10 + digit;
+	}
+	return true;
+}
+
+bool parseMappingCount(const WCHAR *text, int &value) {
+	const bool negative = *text == L'-';
+	uint32_t magnitude;
+	if (!parseUnsignedDecimal(text + negative, negative ? uint32_t(INT32_MAX) + 1 : INT32_MAX, magnitude))
+		return false;
+	value = static_cast<int>(negative ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude));
+	return true;
+}
+
+bool decodeMappingString(const WCHAR *text, std::vector<WCHAR> &value) {
+	static_assert(sizeof(WCHAR) == 2);
+	const size_t length = wcslen(text);
+	if (length % 4 || length / 2 > kMaxResponse)
+		return false;
+	std::string bytes;
+	if (!decodeHex(text, bytes, true))
+		return false;
+	value.resize(bytes.size() / sizeof(WCHAR));
+	if (!bytes.empty())
+		std::memcpy(value.data(), bytes.data(), bytes.size());
+	return true;
+}
+
+bool lcMapStringEx(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t flags;
+	int sourceCount, destinationCapacity;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) || !parseMappingCount(parameters[2], sourceCount) ||
+		!parseMappingCount(parameters[4], destinationCapacity))
+		return fail(ERROR_INVALID_PARAMETER);
+	unsigned destinationMode;
+	if (wcscmp(parameters[5], L"0") == 0)
+		destinationMode = 0;
+	else if (wcscmp(parameters[5], L"1") == 0)
+		destinationMode = 1;
+	else if (wcscmp(parameters[5], L"2") == 0)
+		destinationMode = 2;
+	else
+		return fail(ERROR_INVALID_PARAMETER);
+	if (destinationCapacity < 0)
+		return fail(ERROR_INVALID_PARAMETER);
+	if (!destinationMode && destinationCapacity > 0)
+		return fail(ERROR_INSUFFICIENT_BUFFER);
+	if (flags & (LCMAP_HASH | LCMAP_SORTHANDLE))
+		return fail(ERROR_NOT_SUPPORTED);
+
+	const bool hasLocale = wcscmp(parameters[1], L"-") != 0;
+	std::vector<WCHAR> locale, source;
+	if ((hasLocale && !decodeMappingString(parameters[1], locale)) || !decodeMappingString(parameters[3], source))
+		return fail(ERROR_INVALID_PARAMETER);
+	for (WCHAR character : locale)
+		if (!character)
+			return fail(ERROR_INVALID_PARAMETER);
+	if (sourceCount >= 0) {
+		if (source.size() != static_cast<size_t>(sourceCount))
+			return fail(ERROR_INVALID_PARAMETER);
+	} else {
+		if (source.empty() || source.back())
+			return fail(ERROR_INVALID_PARAMETER);
+		for (size_t index = 0; index + 1 < source.size(); ++index)
+			if (!source[index])
+				return fail(ERROR_INVALID_PARAMETER);
+	}
+
+	const bool sortKey = flags & LCMAP_SORTKEY;
+	const size_t outputUnit = sortKey ? 1 : sizeof(WCHAR);
+	constexpr size_t kResponseOverhead = 5 * sizeof(uint32_t);
+	if (static_cast<size_t>(destinationCapacity) > (kMaxResponse - kResponseOverhead) / outputUnit)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	const size_t destinationBytes = static_cast<size_t>(destinationCapacity) * outputUnit;
+	const size_t destinationUnits = (destinationBytes + sizeof(WCHAR) - 1) / sizeof(WCHAR);
+	const size_t sourceUnits =
+		destinationMode == 2 && destinationUnits > source.size() ? destinationUnits : source.size();
+	const size_t separateUnits = destinationMode == 1 ? destinationUnits : 0;
+	if (sourceUnits + separateUnits + locale.size() + hasLocale > kMaxResponse / sizeof(WCHAR))
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	if (hasLocale)
+		locale.push_back(0);
+	if (destinationMode == 2)
+		source.resize(sourceUnits);
+	std::vector<WCHAR> separateDestination(separateUnits);
+	WCHAR *destination = nullptr;
+	if (destinationCapacity > 0)
+		destination = destinationMode == 2 ? source.data() : separateDestination.data();
+	SetLastError(ERROR_SUCCESS);
+	const int result =
+		LCMapStringEx(hasLocale ? locale.data() : nullptr, flags, source.empty() ? nullptr : source.data(), sourceCount,
+					  destination, destinationCapacity, nullptr, nullptr, 0);
+	if (!result) {
+		const DWORD error = GetLastError();
+		return fail(error ? error : ERROR_INVALID_DATA);
+	}
+	if (result < 0 || (destinationCapacity && result > destinationCapacity))
+		return fail(ERROR_INVALID_DATA);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(result));
+	response.bytes(destination, destinationCapacity ? static_cast<size_t>(result) * outputUnit : 0);
+	return response.write();
+}
+
 bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
 	std::string classBytes, enumerator;
 	GUID classGuid{};
@@ -1040,6 +1160,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = formatMessage(argv + 3, wcscmp(argv[2], L"w") == 0);
 	else if (argc == 5 && wcscmp(argv[1], L"known-folder-path") == 0)
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
+	else if (argc == 8 && wcscmp(argv[1], L"lc-map-string-ex") == 0)
+		written = lcMapStringEx(argv + 2);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)

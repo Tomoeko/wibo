@@ -925,6 +925,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_findfile SOURCES test/test_findfile.c)
         wibo_add_fixture_bin(NAME test_getfileattributesex SOURCES test/test_getfileattributesex.c)
         wibo_add_fixture_bin(NAME test_locale SOURCES test/test_locale.c)
+        wibo_add_fixture_bin(NAME test_lc_map_string_ex SOURCES test/test_lc_map_string_ex.c NO_TEST)
+        foreach(mode success failed truncated trailing wrong-length oversized-count query-data large-query)
+            add_test(NAME wibo.test_lc_map_string_ex_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_lc_map_string_ex.exe)
+            set_tests_properties(wibo.test_lc_map_string_ex_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_NLS_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_lc_map_string_ex_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_lc_map_string_ex.exe)
+        set_tests_properties(wibo.test_lc_map_string_ex_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_NLS_RESPONSE=unavailable")
+        add_test(NAME wibo.test_lc_map_string_ex_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_lc_map_string_ex.exe)
+        set_tests_properties(wibo.test_lc_map_string_ex_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_NLS_UNSUPPORTED=1")
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_global_atoms SOURCES test/test_global_atoms.c)
         wibo_add_fixture_bin(NAME test_system_random SOURCES test/test_system_random.c)

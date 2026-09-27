@@ -67,6 +67,29 @@ elif operation == 'numa-highest-node-number':
     elif fault == 'trailing':
         response += b'\0'
 
+elif operation == 'lc-map-string-ex':
+    flags, locale, count, source, capacity, destination = arguments
+    # A fixed response checks transport; the adapter owns locale mapping.
+    valid = (flags == '512' and locale == '' and count == '2'
+             and source == '61004200' and capacity in ('0', '2')
+             and destination == ('0' if capacity == '0' else '1'))
+    response = header() + number(2) + blob(b'' if capacity == '0' else b'A\0B\0') if valid else header(87)
+    fault = os.environ.get('WIBO_FIXTURE_NLS_RESPONSE')
+    if fault == 'failed':
+        response = header(122)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'wrong-length':
+        response = header() + number(2) + blob(b'A\0')
+    elif fault == 'oversized-count':
+        response = header() + number(0xffffffff) + blob(b'')
+    elif fault == 'query-data':
+        response = header() + number(2) + blob(b'A\0B\0')
+    elif fault == 'large-query':
+        response = header() + number(8 * 1024 * 1024 + 1) + blob(b'')
+
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)
