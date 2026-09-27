@@ -1875,6 +1875,55 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 	return TRUE;
 }
 
+BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
+										 LPVOID lpFileInformation, DWORD dwBufferSize) {
+	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
+	DEBUG_LOG("GetFileInformationByHandleEx(%p, %u, %p, %u)\n", hFile, static_cast<unsigned>(FileInformationClass),
+			  lpFileInformation, dwBufferSize);
+	if (FileInformationClass < FileBasicInfo || FileInformationClass >= MaximumFileInfoByHandleClass) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (FileInformationClass != FileStandardInfo) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	if (dwBufferSize < sizeof(FILE_STANDARD_INFO)) {
+		setLastError(ERROR_BAD_LENGTH);
+		return FALSE;
+	}
+	if (!lpFileInformation) {
+		setLastError(ERROR_NOACCESS);
+		return FALSE;
+	}
+	auto object = wibo::handles().getAs<FsObject>(hFile);
+	if (!object || !object->valid()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (object->flags & Of_File) {
+		auto file = object.clone().downcast<FileObject>();
+		if (file->isPipe) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+	}
+	FILE_STANDARD_INFO information{};
+	NTSTATUS status;
+	{
+		std::lock_guard lock(object->m);
+		status = queryStandardInformationLocked(*object, information);
+	}
+	if (status != STATUS_SUCCESS) {
+		setLastError(wibo::winErrorFromNtStatus(status));
+		return FALSE;
+	}
+	std::memcpy(lpFileInformation, &information, sizeof(information));
+	setLastError(incomingError);
+	return TRUE;
+}
+
 DWORD WINAPI GetFileType(HANDLE hFile) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetFileType(%p) ", hFile);

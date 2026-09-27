@@ -33,6 +33,9 @@ struct FsObject : ObjectBase {
 	explicit FsObject(ObjectType type, int fd) : ObjectBase(type), fd(fd) { flags |= Of_FsObject; }
 };
 
+// The caller must hold file.m and retain the file object throughout the query.
+NTSTATUS queryStandardInformationLocked(FsObject &file, FILE_STANDARD_INFORMATION &information);
+
 struct FileRangeLock {
 	uint64_t start;
 	uint64_t end;

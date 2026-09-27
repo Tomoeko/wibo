@@ -868,6 +868,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_file_version_info_ex
             SOURCES test/test_file_version_info_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
         wibo_add_fixture_bin(NAME test_locale_info_ex SOURCES test/test_locale_info_ex.c NO_TEST)
+        wibo_add_fixture_bin(NAME test_file_information_ex SOURCES test/test_file_information_ex.c)
+        set_tests_properties(wibo.test_file_information_ex PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_EXPECT_FILE_INFORMATION_LIMITS=1")
         foreach(mode success null-locale success-cleared false-zero false-mutated query-data negative-success write-overflow invalid-result truncated trailing short-blob failed failed-with-data)
             add_test(NAME wibo.test_locale_info_ex_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_locale_info_ex.exe)

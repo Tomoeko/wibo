@@ -167,11 +167,12 @@ void populateBasicInformation(const struct stat &st, FILE_BASIC_INFORMATION &inf
 void populateStandardInformation(const kernel32::FsObject &file, const struct stat &st,
 								 FILE_STANDARD_INFORMATION &info) {
 	info = {};
-	info.AllocationSize.QuadPart = static_cast<LONGLONG>(st.st_blocks) * 512;
-	info.EndOfFile.QuadPart = static_cast<LONGLONG>(st.st_size);
+	const bool directory = S_ISDIR(st.st_mode);
+	info.AllocationSize.QuadPart = directory ? 0 : static_cast<LONGLONG>(st.st_blocks) * 512;
+	info.EndOfFile.QuadPart = directory ? 0 : static_cast<LONGLONG>(st.st_size);
 	info.NumberOfLinks = static_cast<ULONG>(st.st_nlink);
 	info.DeletePending = file.deletePending ? TRUE : FALSE;
-	info.Directory = S_ISDIR(st.st_mode) ? TRUE : FALSE;
+	info.Directory = directory ? TRUE : FALSE;
 }
 
 std::vector<WCHAR> fileInformationName(const kernel32::FsObject &file) {
@@ -276,6 +277,19 @@ std::string windowsImagePathFor(const ProcessHandleDetails &details) {
 }
 
 } // namespace
+
+namespace kernel32 {
+
+NTSTATUS queryStandardInformationLocked(FsObject &file, FILE_STANDARD_INFORMATION &information) {
+	struct stat st{};
+	const auto fetched = fetchStat(&file, st);
+	if (!fetched.ok)
+		return wibo::statusFromErrno(fetched.err ? fetched.err : EINVAL);
+	populateStandardInformation(file, st, information);
+	return STATUS_SUCCESS;
+}
+
+} // namespace kernel32
 
 namespace ntdll {
 
@@ -727,15 +741,10 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			status = STATUS_INFO_LENGTH_MISMATCH;
 			break;
 		}
-		struct stat st{};
-		StatFetchResult statRes = fetchStat(obj.get(), st);
-		if (!statRes.ok) {
-			status = wibo::statusFromErrno(statRes.err != 0 ? statRes.err : EINVAL);
-			break;
-		}
 		auto info = reinterpret_cast<PFILE_STANDARD_INFORMATION>(FileInformation);
-		populateStandardInformation(*obj, st, *info);
-		IoStatusBlock->Information = sizeof(FILE_STANDARD_INFORMATION);
+		status = kernel32::queryStandardInformationLocked(*obj, *info);
+		if (status == STATUS_SUCCESS)
+			IoStatusBlock->Information = sizeof(FILE_STANDARD_INFORMATION);
 		break;
 	}
 	case FilePositionInformation: {

@@ -19,6 +19,45 @@ struct BY_HANDLE_FILE_INFORMATION {
 using PBY_HANDLE_FILE_INFORMATION = BY_HANDLE_FILE_INFORMATION *;
 using LPBY_HANDLE_FILE_INFORMATION = BY_HANDLE_FILE_INFORMATION *;
 
+enum FILE_INFO_BY_HANDLE_CLASS {
+	FileBasicInfo,
+	FileStandardInfo,
+	FileNameInfo,
+	FileRenameInfo,
+	FileDispositionInfo,
+	FileAllocationInfo,
+	FileEndOfFileInfo,
+	FileStreamInfo,
+	FileCompressionInfo,
+	FileAttributeTagInfo,
+	FileIdBothDirectoryInfo,
+	FileIdBothDirectoryRestartInfo,
+	FileIoPriorityHintInfo,
+	FileRemoteProtocolInfo,
+	FileFullDirectoryInfo,
+	FileFullDirectoryRestartInfo,
+	FileStorageInfo,
+	FileAlignmentInfo,
+	FileIdInfo,
+	FileIdExtdDirectoryInfo,
+	FileIdExtdDirectoryRestartInfo,
+	FileDispositionInfoEx,
+	FileRenameInfoEx,
+	FileCaseSensitiveInfo,
+	FileNormalizedNameInfo,
+	MaximumFileInfoByHandleClass,
+};
+
+using FILE_STANDARD_INFO = FILE_STANDARD_INFORMATION;
+static_assert(sizeof(FILE_STANDARD_INFO) == 24);
+static_assert(offsetof(FILE_STANDARD_INFO, AllocationSize) == 0);
+static_assert(offsetof(FILE_STANDARD_INFO, EndOfFile) == 8);
+static_assert(offsetof(FILE_STANDARD_INFO, NumberOfLinks) == 16);
+static_assert(offsetof(FILE_STANDARD_INFO, DeletePending) == 20);
+static_assert(offsetof(FILE_STANDARD_INFO, Directory) == 21);
+static_assert(sizeof(FILE_STANDARD_INFO::DeletePending) == 1);
+static_assert(sizeof(FILE_STANDARD_INFO::Directory) == 1);
+
 constexpr DWORD CREATE_NEW = 1;
 constexpr DWORD CREATE_ALWAYS = 2;
 constexpr DWORD OPEN_EXISTING = 3;
@@ -126,6 +165,8 @@ BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLa
 BOOL WINAPI SetFileTime(HANDLE hFile, const FILETIME *lpCreationTime, const FILETIME *lpLastAccessTime,
 						const FILETIME *lpLastWriteTime);
 BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATION lpFileInformation);
+BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
+										 LPVOID lpFileInformation, DWORD dwBufferSize);
 DWORD WINAPI GetFileType(HANDLE hFile);
 LONG WINAPI CompareFileTime(const FILETIME *lpFileTime1, const FILETIME *lpFileTime2);
 BOOL WINAPI GetVolumeInformationA(LPCSTR lpRootPathName, LPSTR lpVolumeNameBuffer, DWORD nVolumeNameSize,
