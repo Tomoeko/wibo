@@ -741,6 +741,30 @@ bool memoryStatus() {
 	return response.write();
 }
 
+bool memoryResourceState() {
+	HANDLE notifications[2] = {CreateMemoryResourceNotification(LowMemoryResourceNotification), nullptr};
+	DWORD error = notifications[0] ? ERROR_SUCCESS : GetLastError();
+	if (!error) {
+		notifications[1] = CreateMemoryResourceNotification(HighMemoryResourceNotification);
+		if (!notifications[1])
+			error = GetLastError();
+	}
+	BOOL states[2]{};
+	for (unsigned i = 0; i < 2 && !error; ++i)
+		if (!QueryMemoryResourceNotification(notifications[i], &states[i]))
+			error = GetLastError();
+	for (HANDLE notification : notifications)
+		if (notification)
+			CloseHandle(notification);
+	Response response;
+	response.header(error);
+	if (!error) {
+		response.number(states[0] ? 1 : 0);
+		response.number(states[1] ? 1 : 0);
+	}
+	return response.write();
+}
+
 bool systemMetrics(const WCHAR *indexText, const WCHAR *errorText) {
 	WCHAR *end = nullptr;
 	const auto index = wcstoll(indexText, &end, 10);
@@ -987,6 +1011,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = adapterAddresses<Response>(values[0], values[1], values[2]);
 	} else if (argc == 2 && wcscmp(argv[1], L"memory-status") == 0)
 		written = memoryStatus();
+	else if (argc == 2 && wcscmp(argv[1], L"memory-resource-state") == 0)
+		written = memoryResourceState();
 	else if (argc == 4 && wcscmp(argv[1], L"system-metrics") == 0)
 		written = systemMetrics(argv[2], argv[3]);
 	else if (argc == 4 && wcscmp(argv[1], L"system-query") == 0)

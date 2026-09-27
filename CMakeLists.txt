@@ -304,6 +304,7 @@ add_executable(wibo
     dll/kernel32/ioapiset.cpp
     dll/kernel32/libloaderapi.cpp
     dll/kernel32/memoryapi.cpp
+    dll/kernel32/memoryresourceapi.cpp
     dll/kernel32/memorystatus.cpp
     dll/kernel32/namedpipeapi.cpp
     dll/kernel32/processenv.cpp
@@ -558,6 +559,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/ioapiset.h
     dll/kernel32/libloaderapi.h
     dll/kernel32/memoryapi.h
+    dll/kernel32/memoryresourceapi.h
     dll/kernel32/namedpipeapi.h
     dll/kernel32/processenv.h
     dll/kernel32/processthreadsapi.h
@@ -778,6 +780,19 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_open_thread_token PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_process_job_membership SOURCES test/test_process_job_membership.c)
         set_tests_properties(wibo.test_process_job_membership PROPERTIES ENVIRONMENT "WIBO_EXPECT_NO_JOB=1")
+        wibo_add_fixture_bin(NAME test_memory_resource SOURCES test/test_memory_resource.c)
+        set_tests_properties(wibo.test_memory_resource PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        foreach(fault failed truncated trailing bad-state)
+            add_test(NAME wibo.test_memory_resource_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_memory_resource.exe ${fault})
+            set_tests_properties(wibo.test_memory_resource_${fault} PROPERTIES TIMEOUT 15
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        endforeach()
+        add_test(NAME wibo.test_memory_resource_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_memory_resource.exe unavailable)
+        set_tests_properties(wibo.test_memory_resource_unavailable PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=")
         wibo_add_fixture_bin(NAME test_psapi SOURCES test/test_psapi.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
         wibo_add_fixture_bin(NAME test_temppath SOURCES test/test_temppath.c)

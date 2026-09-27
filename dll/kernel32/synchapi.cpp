@@ -9,6 +9,7 @@
 #include "interlockedapi.h"
 #include "internal.h"
 #include "kernel32.h"
+#include "memoryresourceapi.h"
 #include "processthreadsapi.h"
 #include "strutil.h"
 #include "types.h"
@@ -802,6 +803,21 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 	DEBUG_LOG("Waiting on object with type %d\n", static_cast<int>(obj->type));
 
 	switch (obj->type) {
+	case ObjectType::MemoryResource: {
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
+		auto memory = std::move(obj).downcast<MemoryResourceObject>();
+		std::unique_lock lock(memory->m);
+		if (!doWait(lock, memory->cv, [&] { return memory->signaled || memory->backendError; }))
+			return WAIT_TIMEOUT;
+		if (memory->backendError) {
+			setLastError(memory->backendError);
+			return WAIT_FAILED;
+		}
+		return WAIT_OBJECT_0;
+	}
 	case ObjectType::Timer: {
 		auto timer = std::move(obj).downcast<TimerObject>();
 		if (!(meta.grantedAccess & SYNCHRONIZE)) {
@@ -932,7 +948,8 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread || pin->type == ObjectType::Process) &&
+		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread || pin->type == ObjectType::Process ||
+			 pin->type == ObjectType::MemoryResource) &&
 			!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;
@@ -1001,13 +1018,19 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 				DWORD selected = nCount;
 				bool allReady = true;
 				for (DWORD index = 0; index < nCount; ++index) {
+					if (auto *memory = detail::castTo<MemoryResourceObject>(targets[index].waitable);
+						memory && memory->backendError) {
+						setLastError(memory->backendError);
+						waitResult = WAIT_FAILED;
+						break;
+					}
 					if (ready(targets[index].waitable)) {
 						if (selected == nCount)
 							selected = index;
 					} else
 						allReady = false;
 				}
-				if ((bWaitAll && allReady) || (!bWaitAll && selected != nCount)) {
+				if (waitResult != WAIT_FAILED && ((bWaitAll && allReady) || (!bWaitAll && selected != nCount))) {
 					waitResult = bWaitAll ? WAIT_OBJECT_0 : WAIT_OBJECT_0 + selected;
 					for (DWORD index = 0; index < nCount; ++index) {
 						if (!bWaitAll && index != selected)
@@ -1109,6 +1132,12 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 				bool abandoned = false;
 				if (target.waitable) {
 					std::lock_guard objectLock(target.waitable->m);
+					if (auto *memory = detail::castTo<MemoryResourceObject>(target.waitable);
+						memory && memory->backendError) {
+						setLastError(memory->backendError);
+						waitResult = WAIT_FAILED;
+						break;
+					}
 					signaled = target.waitable->signaled;
 					if (auto *mu = detail::castTo<MutexObject>(target.waitable)) {
 						abandoned = mu->abandoned;

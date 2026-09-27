@@ -240,6 +240,24 @@ elif operation == 'ip-address-table':
         response = header() + number(0xffffffff)
     elif fault == 'failed':
         response = header(5)
+elif operation == 'memory-resource-state':
+    state_file = os.environ.get('WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE')
+    state = '0,0'
+    if state_file:
+        with open(state_file, encoding='ascii') as source:
+            state = source.read().strip()
+    if state == 'failed':
+        response = header(5)
+    else:
+        values = {'0,0': (0, 0), '1,0': (1, 0), '0,1': (0, 1),
+                  'bad-state': (2, 0)}
+        response = header() + b''.join(number(value) for value in values.get(state, (0, 0)))
+        if state == 'slow':
+            time.sleep(1)
+        if state == 'truncated':
+            response = response[:-1]
+        elif state == 'trailing':
+            response += b'\0'
 elif operation == 'memory-status':
     response = header() + blob(struct.pack('<II7Q', 64, 25, 16 << 30, 12 << 30, 20 << 30, 14 << 30, 1 << 47, (1 << 47) - 65536, 0))
     fault = os.environ.get('WIBO_FIXTURE_MEMORY_RESPONSE')
