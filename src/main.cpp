@@ -631,6 +631,8 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "Failed to register process module\n");
 		return 1;
 	}
+	// Dependency initialization can inspect the process image through the PEB.
+	peb->ImageBaseAddress = toGuestPtr(wibo::mainModule->executable->imageBase);
 	DEBUG_LOG("Registered main module %s at %p\n", wibo::mainModule->normalizedName.c_str(),
 			  wibo::mainModule->executable->imageBase);
 

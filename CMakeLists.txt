@@ -1417,12 +1417,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_dll(NAME dll_attach_failure SOURCES test/dll_attach_failure.c)
         wibo_add_fixture_dll(NAME thread_notifications SOURCES test/thread_notifications.c)
         if(WIBO_GUEST_64)
-            set(_thread_callouts_entry DllMain)
+            set(_dll_main_entry DllMain)
         else()
-            set(_thread_callouts_entry _DllMain@12)
+            set(_dll_main_entry _DllMain@12)
         endif()
         wibo_add_fixture_dll(NAME thread_callouts SOURCES test/thread_notifications.c
-            COMPILE_OPTIONS -nostdlib -Wl,--entry,${_thread_callouts_entry} -lkernel32)
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,${_dll_main_entry} -lkernel32)
         wibo_add_fixture_bin(NAME test_ldr_disable_callouts SOURCES test/test_ldr_disable_callouts.c
             DEPENDS ${WIBO_TEST_BIN_DIR}/thread_callouts.dll ${WIBO_TEST_BIN_DIR}/thread_notifications.dll)
         set_tests_properties(wibo.test_ldr_disable_callouts PROPERTIES TIMEOUT 25)
@@ -1430,6 +1430,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             DEPENDS ${WIBO_TEST_BIN_DIR}/external_exports.dll)
         set_tests_properties(wibo.test_ldr_get_dll_handle PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_EXPECT_COUNTED_DLL_NAMES=1")
+        wibo_add_fixture_dll(NAME peb_image_dependency SOURCES test/peb_image_dependency.c
+            DEPENDS test/fixture_peb_image.h
+            BYPRODUCTS ${WIBO_TEST_BIN_DIR}/peb_image_dependency.a
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,${_dll_main_entry}
+                -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/peb_image_dependency.a -lkernel32)
+        wibo_add_fixture_bin(NAME test_peb_image SOURCES test/test_peb_image.c
+            COMPILE_OPTIONS ${WIBO_TEST_BIN_DIR}/peb_image_dependency.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/peb_image_dependency.dll test/fixture_peb_image.h)
+        set_tests_properties(wibo.test_peb_image PROPERTIES TIMEOUT 15)
         wibo_add_fixture_dll(NAME thread_release SOURCES test/thread_release.c)
         wibo_add_fixture_dll(NAME thread_notifications_stress SOURCES test/thread_notifications_stress.c)
         wibo_add_fixture_dll(NAME tls_reloc SOURCES test/tls_reloc_dll.c)

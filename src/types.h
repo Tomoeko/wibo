@@ -489,7 +489,8 @@ using PPS_POST_PROCESS_INIT_ROUTINE = PS_POST_PROCESS_INIT_ROUTINE *;
 
 #ifdef WIBO_GUEST_64
 typedef struct _PEB {
-	BYTE ReservedToLdr[0x18];
+	BYTE ReservedToImageBase[0x10];
+	GUEST_PTR ImageBaseAddress;
 	GUEST_PTR Ldr;
 	GUEST_PTR ProcessParameters;
 	GUEST_PTR SubSystemData;
@@ -501,7 +502,8 @@ typedef struct _PEB {
 	BYTE Reserved1[2];
 	BYTE BeingDebugged;
 	BYTE Reserved2[1];
-	GUEST_PTR Reserved3[2];
+	GUEST_PTR Reserved3[1];
+	GUEST_PTR ImageBaseAddress;
 	GUEST_PTR Ldr;
 	GUEST_PTR ProcessParameters;
 	GUEST_PTR Reserved4[3];
@@ -678,6 +680,7 @@ typedef struct _TEB {
 typedef GUEST_PTR PTEB;
 
 #ifdef WIBO_GUEST_64
+static_assert(offsetof(PEB, ImageBaseAddress) == 0x10, "Win64 PEB image-base offset mismatch");
 static_assert(offsetof(PEB, Ldr) == 0x18, "Win64 PEB loader-data offset mismatch");
 static_assert(offsetof(PEB, ProcessParameters) == 0x20, "Win64 PEB process-parameters offset mismatch");
 static_assert(offsetof(PEB, ProcessHeap) == 0x30, "Win64 PEB process-heap offset mismatch");
@@ -690,6 +693,10 @@ static_assert(offsetof(TEB, DeallocationStack) == 0x1478, "Win64 stack allocatio
 static_assert(offsetof(TEB, TlsSlots) == 0x1480, "Win64 TLS slots offset mismatch");
 static_assert(offsetof(TEB, TlsExpansionSlots) == 0x1780, "Win64 expanded TLS slots offset mismatch");
 #else
+static_assert(offsetof(PEB, ImageBaseAddress) == 0x08, "Win32 PEB image-base offset mismatch");
+static_assert(offsetof(PEB, Ldr) == 0x0c, "Win32 PEB loader-data offset mismatch");
+static_assert(offsetof(PEB, ProcessParameters) == 0x10, "Win32 PEB process-parameters offset mismatch");
+static_assert(offsetof(PEB, Reserved4) == 0x14, "Win32 PEB subsystem-data offset mismatch");
 static_assert(offsetof(NT_TIB, Self) == TEB_SELF, "Self pointer offset mismatch");
 static_assert(offsetof(TEB, ThreadLocalStoragePointer) == 0x2C, "TLS pointer offset mismatch");
 static_assert(offsetof(TEB, Peb) == 0x30, "PEB pointer offset mismatch");
