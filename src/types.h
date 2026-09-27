@@ -457,6 +457,14 @@ constexpr DWORD PIPE_UNLIMITED_INSTANCES = 255;
 
 constexpr SIZE_T kTlsSlotCount = 64;
 
+typedef struct _STRING {
+	USHORT Length;
+	USHORT MaximumLength;
+	GUEST_PTR Buffer;
+} STRING, ANSI_STRING;
+typedef GUEST_PTR PSTRING;
+typedef GUEST_PTR PANSI_STRING;
+
 typedef struct _UNICODE_STRING {
 	USHORT Length;
 	USHORT MaximumLength;

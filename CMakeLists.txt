@@ -339,6 +339,7 @@ add_executable(wibo
     dll/mscoree.cpp
     dll/ntdll.cpp
     dll/ntdll_memory.cpp
+    dll/ntdll_string.cpp
     dll/function_table.cpp
     dll/virtual_unwind.cpp
     dll/context_x64.S
@@ -740,6 +741,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endforeach()
 
         # Define fixture tests
+        wibo_add_fixture_bin(NAME test_rtl_string_init SOURCES test/test_rtl_string_init.c)
+        set_tests_properties(wibo.test_rtl_string_init PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_rtl_string_init_documented_boundaries
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_rtl_string_init.exe --documented-boundaries)
+        set_tests_properties(wibo.test_rtl_string_init_documented_boundaries PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
         wibo_add_fixture_bin(NAME test_nt_query_virtual_memory SOURCES test/test_nt_query_virtual_memory.c)
@@ -756,6 +763,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_process_std_handles SOURCES test/test_process_std_handles.c)
         set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
+        wibo_add_fixture_bin(NAME test_crt_null_stdio SOURCES test/test_crt_null_stdio.c
+            COMPILE_OPTIONS -municode)
+        set_tests_properties(wibo.test_crt_null_stdio PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_process_default_std SOURCES test/test_process_default_std.c)
         set_tests_properties(wibo.test_process_default_std PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_default_std_missing SOURCES test/test_process_default_std_missing.c)

@@ -77,6 +77,12 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 							  KNONVOLATILE_CONTEXT_POINTERS *pointers);
 #endif
 
+VOID WINAPI RtlInitString(STRING *destination, LPCSTR source);
+VOID WINAPI RtlInitAnsiString(ANSI_STRING *destination, LPCSTR source);
+VOID WINAPI RtlInitUnicodeString(UNICODE_STRING *destination, LPCWSTR source);
+NTSTATUS WINAPI RtlInitAnsiStringEx(ANSI_STRING *destination, LPCSTR source);
+NTSTATUS WINAPI RtlInitUnicodeStringEx(UNICODE_STRING *destination, LPCWSTR source);
+
 ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);
 PVOID WINAPI RtlPcToFileHeader(PVOID pcValue, GUEST_PTR *baseOfImage);
 NTSTATUS WINAPI NtQuerySystemInformation(ULONG informationClass, PVOID information, ULONG length,
