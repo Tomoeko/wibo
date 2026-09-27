@@ -72,7 +72,7 @@ struct timespec accessTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_atim;
 #else
-	struct timespec ts {};
+	struct timespec ts{};
 	ts.tv_sec = st.st_atime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -85,7 +85,7 @@ struct timespec modifyTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_mtim;
 #else
-	struct timespec ts {};
+	struct timespec ts{};
 	ts.tv_sec = st.st_mtime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -98,7 +98,7 @@ struct timespec changeTimespec(const struct stat &st) {
 #elif defined(__linux__)
 	return st.st_ctim;
 #else
-	struct timespec ts {};
+	struct timespec ts{};
 	ts.tv_sec = st.st_ctime;
 	ts.tv_nsec = 0;
 	return ts;
@@ -329,7 +329,7 @@ template <typename FindData> void populateFromStat(const FindSearchEntry &entry,
 template <typename FindData> void populateFindData(const FindSearchEntry &entry, FindData &out) {
 	resetFindDataStruct(out);
 	std::string nativePath = entry.fullPath.empty() ? std::string() : entry.fullPath.string();
-	struct stat st {};
+	struct stat st{};
 	if (!nativePath.empty() && stat(nativePath.c_str(), &st) == 0) {
 		populateFromStat(entry, st, out);
 	} else {
@@ -672,7 +672,7 @@ BOOL WINAPI GetFileAttributesExA(LPCSTR lpFileName, GET_FILEEX_INFO_LEVELS fInfo
 		return TRUE;
 	}
 
-	struct stat st {};
+	struct stat st{};
 	if (stat(hostPathStr.c_str(), &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -800,13 +800,16 @@ BOOL WINAPI WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrit
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-#ifdef CHECK_ACCESS
 	if ((meta.grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)) == 0) {
 		setLastError(ERROR_ACCESS_DENIED);
 		DEBUG_LOG("!!! DENIED: 0x%x\n", meta.grantedAccess);
 		return FALSE;
 	}
-#endif
+	if (!(meta.grantedAccess & FILE_WRITE_DATA) && !file->appendOnly && !file->isPipe) {
+		// Reduced append access on a shared writable object needs per-handle append I/O.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 
 	if (lpOverlapped == nullptr && lpNumberOfBytesWritten == nullptr) {
 		setLastError(ERROR_INVALID_PARAMETER);
@@ -997,13 +1000,11 @@ BOOL WINAPI ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-#ifdef CHECK_ACCESS
 	if ((meta.grantedAccess & FILE_READ_DATA) == 0) {
 		setLastError(ERROR_ACCESS_DENIED);
 		DEBUG_LOG("!!! DENIED: 0x%x\n", meta.grantedAccess);
 		return FALSE;
 	}
-#endif
 
 	if (lpOverlapped == nullptr && lpNumberOfBytesRead == nullptr) {
 		setLastError(ERROR_INVALID_PARAMETER);
@@ -1268,7 +1269,7 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 		return INVALID_HANDLE_VALUE;
 	}
 
-	struct stat st {};
+	struct stat st{};
 	if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
 		isDirectory = true;
 	}
@@ -1494,30 +1495,34 @@ DWORD WINAPI SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistance
 		setLastError(ERROR_INVALID_HANDLE);
 		return INVALID_SET_FILE_POINTER;
 	}
-	// TODO access check
-	std::lock_guard lk(file->m);
-	off_t position = 0;
-	off_t offset = static_cast<off_t>(lDistanceToMove);
-	if (dwMoveMethod == FILE_BEGIN) {
-		position = offset;
-	} else if (dwMoveMethod == FILE_CURRENT) {
-		position = file->filePos + offset;
-	} else if (dwMoveMethod == FILE_END) {
-		position = lseek(file->fd, offset, SEEK_END);
-	}
-	if (position < 0) {
-		if (errno == EINVAL) {
-			setLastError(ERROR_NEGATIVE_SEEK);
-		} else {
-			setLastError(ERROR_INVALID_PARAMETER);
-		}
+	if (!(meta.grantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA))) {
+		setLastError(ERROR_ACCESS_DENIED);
 		return INVALID_SET_FILE_POINTER;
 	}
-	file->filePos = position;
+	int64_t distance = lDistanceToMove;
 	if (lpDistanceToMoveHigh) {
-		*lpDistanceToMoveHigh = static_cast<LONG>(static_cast<uint64_t>(position) >> 32);
+		LONG high;
+		std::memcpy(&high, lpDistanceToMoveHigh, sizeof(high));
+		const uint64_t bits =
+			(static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32) | static_cast<uint32_t>(lDistanceToMove);
+		std::memcpy(&distance, &bits, sizeof(distance));
 	}
-	return static_cast<DWORD>(static_cast<uint64_t>(position) & 0xFFFFFFFFu);
+	std::lock_guard lk(file->m);
+	off_t position = 0;
+	const DWORD error = files::seekPositionLocked(*file, distance, dwMoveMethod, position,
+												  lpDistanceToMoveHigh ? INT64_MAX : UINT32_MAX);
+	if (error) {
+		setLastError(error);
+		return INVALID_SET_FILE_POINTER;
+	}
+	if (lpDistanceToMoveHigh) {
+		const LONG high = static_cast<LONG>(static_cast<uint64_t>(position) >> 32);
+		std::memcpy(lpDistanceToMoveHigh, &high, sizeof(high));
+	}
+	const DWORD low = static_cast<DWORD>(position);
+	if (low == INVALID_SET_FILE_POINTER)
+		setLastError(ERROR_SUCCESS);
+	return low;
 }
 
 BOOL WINAPI SetFilePointerEx(HANDLE hFile, LARGE_INTEGER liDistanceToMove, PLARGE_INTEGER lpNewFilePointer,
@@ -1534,32 +1539,15 @@ BOOL WINAPI SetFilePointerEx(HANDLE hFile, LARGE_INTEGER liDistanceToMove, PLARG
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	// TODO access check
+	if (!(meta.grantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA))) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
 	std::lock_guard lk(file->m);
 	off_t position = 0;
-	off_t offset = static_cast<off_t>(liDistanceToMove.QuadPart);
-	if (dwMoveMethod == FILE_BEGIN) {
-		position = offset;
-	} else if (dwMoveMethod == FILE_CURRENT) {
-		position = file->filePos + offset;
-	} else if (dwMoveMethod == FILE_END) {
-		position = lseek(file->fd, offset, SEEK_END);
-	}
-	if (position < 0) {
-		if (errno == EINVAL) {
-			setLastError(ERROR_NEGATIVE_SEEK);
-		} else {
-			setLastError(ERROR_INVALID_PARAMETER);
-		}
-		return INVALID_SET_FILE_POINTER;
-	}
-	file->filePos = position;
-	if (position < 0) {
-		if (errno == EINVAL) {
-			setLastError(ERROR_NEGATIVE_SEEK);
-		} else {
-			setLastError(ERROR_INVALID_PARAMETER);
-		}
+	const DWORD error = files::seekPositionLocked(*file, liDistanceToMove.QuadPart, dwMoveMethod, position);
+	if (error) {
+		setLastError(error);
 		return FALSE;
 	}
 	if (lpNewFilePointer) {
@@ -1577,14 +1565,14 @@ BOOL WINAPI SetEndOfFile(HANDLE hFile) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	// TODO access check
-	std::lock_guard lk(file->m);
-	if (file->filePos < 0) {
-		setLastErrorFromErrno();
+	if (!(meta.grantedAccess & FILE_WRITE_DATA)) {
+		setLastError(ERROR_ACCESS_DENIED);
 		return FALSE;
 	}
-	if (ftruncate(file->fd, file->filePos) != 0) {
-		setLastErrorFromErrno();
+	std::lock_guard lk(file->m);
+	const DWORD error = files::truncateAtPositionLocked(*file);
+	if (error) {
+		setLastError(error);
 		return FALSE;
 	}
 	return TRUE;
@@ -1691,7 +1679,7 @@ DWORD WINAPI GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh) {
 		DEBUG_LOG("-> INVALID_FILE_SIZE (ERROR_INVALID_HANDLE)\n");
 		return INVALID_FILE_SIZE;
 	}
-	struct stat status {};
+	struct stat status{};
 	if (fstat(file->fd, &status) != 0 || status.st_size < 0) {
 		if (lpFileSizeHigh) {
 			*lpFileSizeHigh = 0;
@@ -1720,7 +1708,7 @@ BOOL WINAPI GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	struct stat status {};
+	struct stat status{};
 	if (fstat(file->fd, &status) != 0 || status.st_size < 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1746,7 +1734,7 @@ BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLa
 	}
 #endif
 
-	struct stat st {};
+	struct stat st{};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1793,7 +1781,7 @@ BOOL WINAPI SetFileTime(HANDLE hFile, const FILETIME *lpCreationTime, const FILE
 	if (!changeAccess && !changeWrite) {
 		return TRUE;
 	}
-	struct stat st {};
+	struct stat st{};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1855,7 +1843,7 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 		return FALSE;
 	}
 	// TODO access check
-	struct stat st {};
+	struct stat st{};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1933,7 +1921,7 @@ DWORD WINAPI GetFileType(HANDLE hFile) {
 		DEBUG_LOG("-> ERROR_INVALID_HANDLE\n");
 		return FILE_TYPE_UNKNOWN;
 	}
-	struct stat st {};
+	struct stat st{};
 	if (fstat(file->fd, &st) != 0) {
 		setLastErrorFromErrno();
 		DEBUG_LOG("-> fstat error\n");

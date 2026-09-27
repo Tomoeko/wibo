@@ -1,13 +1,18 @@
 #include "processes.h"
 
 #include "common.h"
+#include "errors.h"
 #include "files.h"
 #include "handles.h"
 #include "kernel32/internal.h"
+#include "kernel32/processenv.h"
+#include "strutil.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +23,9 @@
 #include <vector>
 
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -38,6 +46,12 @@ std::string detail::snapshotProcessName(const std::string &hostImage, const std:
 			const auto &arg = arguments[i];
 			if (options && arg == "--") {
 				options = false;
+				continue;
+			}
+			if (options && arg == "--process-bootstrap") {
+				if (arguments.size() - i <= 2)
+					break;
+				i += 2;
 				continue;
 			}
 			if (options && (arg == "--cmdline" || arg == "--chdir" || arg == "-C")) {
@@ -118,8 +132,10 @@ static bool hasExtension(const std::string &command) {
 }
 
 static std::vector<std::string> pathextValues() {
-	const char *envValue = std::getenv("PATHEXT");
-	std::string raw = envValue ? envValue : ".COM;.EXE;.BAT;.CMD";
+	std::string raw = ".COM;.EXE;.BAT;.CMD";
+	if (const auto value = kernel32::environmentValue(u"PATHEXT"))
+		if (!utf16ToUtf8(*value, raw))
+			return {};
 	std::vector<std::string> exts;
 	size_t start = 0;
 	while (start <= raw.size()) {
@@ -145,9 +161,9 @@ static std::vector<std::string> pathextValues() {
 	return exts;
 }
 
-static std::vector<std::filesystem::path> parseHostPath(const std::string &value) {
+static std::vector<std::filesystem::path> parseHostPath(const std::string &value, bool windowsList = false) {
 	std::vector<std::filesystem::path> paths;
-	const char *delims = std::strchr(value.c_str(), ';') ? ";" : ":";
+	const char *delims = windowsList || std::strchr(value.c_str(), ';') ? ";" : ":";
 	size_t start = 0;
 	while (start <= value.size()) {
 		size_t end = value.find_first_of(delims, start);
@@ -192,7 +208,13 @@ static std::vector<std::filesystem::path> buildSearchDirectories() {
 	};
 	addFromEnv("WIBO_PATH");
 	addFromEnv("WINEPATH");
-	addFromEnv("PATH");
+	if (const auto value = kernel32::environmentValue(u"PATH")) {
+		std::string path;
+		if (utf16ToUtf8(*value, path)) {
+			auto parsed = parseHostPath(path, true);
+			dirs.insert(dirs.end(), parsed.begin(), parsed.end());
+		}
+	}
 	return dirs;
 }
 
@@ -279,12 +301,46 @@ int SpawnDirectory::open(const char *directory) {
 	return mFd < 0 ? errno : 0;
 }
 
+static bool reapFailedSpawn(pid_t pid) {
+	if (kill(pid, SIGKILL) != 0 && errno != ESRCH)
+		return false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	do {
+		int waitFlags = WNOHANG;
+#ifdef __linux__
+		waitFlags |= __WALL;
+#endif
+		const pid_t result = waitpid(pid, nullptr, waitFlags);
+		if (result == pid || (result < 0 && errno == ECHILD))
+			return true;
+		if (result < 0 && errno != EINTR)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	return false;
+}
+
 static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::ProcessObject> &pinOut,
-						 int directoryFd = -1) {
+						 int directoryFd = -1, const SpawnOptions *options = nullptr, DWORD *bootstrapError = nullptr) {
+	if (bootstrapError)
+		*bootstrapError = 0;
+	std::vector<std::string> preparedArgs;
+	detail::ProcessBootstrap bootstrap;
+	if (options) {
+		const DWORD error = bootstrap.prepare(*options);
+		if (error) {
+			if (bootstrapError)
+				*bootstrapError = error;
+			return ENOTSUP;
+		}
+		preparedArgs = {"--process-bootstrap", std::to_string(bootstrap.childManifestDescriptor()),
+						std::to_string(bootstrap.childControlDescriptor())};
+	}
+	preparedArgs.insert(preparedArgs.end(), args.begin(), args.end());
 	std::vector<char *> argv;
-	argv.reserve(args.size() + 2);
+	argv.reserve(preparedArgs.size() + 2);
 	argv.push_back(const_cast<char *>("wibo"));
-	for (auto &arg : args) {
+	for (auto &arg : preparedArgs) {
 		argv.push_back(const_cast<char *>(arg.c_str()));
 	}
 	argv.push_back(nullptr);
@@ -317,24 +373,68 @@ static int spawnInternal(const std::vector<std::string> &args, Pin<kernel32::Pro
 	envp.push_back(nullptr);
 
 	detail::SpawnProcessInfo info;
-	int rc = detail::spawnProcess(argv.data(), envp.data(), directoryFd, info);
+	int rc = detail::spawnProcess(argv.data(), envp.data(), directoryFd, info, bootstrap.descriptors());
 	if (rc != 0) {
 		return rc;
 	}
 
 	DEBUG_LOG("Spawned process with PID %d (pidfd=%d)\n", info.pid, info.pidfd);
 
-	auto obj = make_pin<kernel32::ProcessObject>(info.pid, info.pidfd, true);
-	pinOut = obj.clone();
-	if (!processes().addProcess(std::move(obj))) {
-		std::fprintf(stderr, "Failed to add process to process manager\n");
-		std::abort();
+	DWORD threadId = 0;
+	int control = -1;
+	int resume = -1;
+	if (options) {
+		rc = bootstrap.receiveReady(threadId);
+		if (rc == 0) {
+			control = bootstrap.releaseControl();
+			resume = fcntl(control, F_DUPFD_CLOEXEC, 3);
+			if (resume < 0)
+				rc = errno;
+		}
+		if (rc == 0 && !options->suspended) {
+			const char command = 'R';
+			int flags = 0;
+#ifdef MSG_NOSIGNAL
+			flags |= MSG_NOSIGNAL;
+#endif
+			ssize_t count;
+			do {
+				count = send(control, &command, 1, flags);
+			} while (count < 0 && errno == EINTR);
+			if (count != 1)
+				rc = count < 0 ? errno : EIO;
+		}
+		if (rc) {
+			if (control >= 0)
+				close(control);
+			if (resume >= 0)
+				close(resume);
+			if (!reapFailedSpawn(info.pid))
+				DEBUG_LOG("Failed to reap child after bootstrap failure\n");
+			if (info.pidfd >= 0)
+				close(info.pidfd);
+			return rc;
+		}
 	}
+	auto obj = make_pin<kernel32::ProcessObject>(info.pid, info.pidfd, true);
+	if (options) {
+		obj->primaryThread = make_pin<kernel32::ProcessThreadObject>(threadId, resume, options->suspended);
+		obj->primaryMonitor = monitorPrimaryThread(control, obj->primaryThread.clone());
+	}
+	if (!processes().addProcess(obj.clone())) {
+		const bool reaped = reapFailedSpawn(info.pid);
+		if (obj->primaryThread)
+			obj->primaryThread->complete(0, false);
+		DEBUG_LOG("Process registration failed; child reaped=%u\n", reaped);
+		return reaped ? EIO : ETIMEDOUT;
+	}
+	pinOut = std::move(obj);
 	return 0;
 }
 
 int spawnWithCommandLine(const std::string &applicationName, const std::string &commandLine,
-						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd) {
+						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd, const SpawnOptions *options,
+						 DWORD *bootstrapError) {
 	if (applicationName.empty() && commandLine.empty()) {
 		return ENOENT;
 	}
@@ -349,7 +449,7 @@ int spawnWithCommandLine(const std::string &applicationName, const std::string &
 		args.push_back(applicationName);
 	}
 
-	return spawnInternal(args, pinOut, directoryFd);
+	return spawnInternal(args, pinOut, directoryFd, options, bootstrapError);
 }
 
 int spawnWithArgv(const std::string &applicationName, const std::vector<std::string> &argv,

@@ -13,6 +13,7 @@
 #include "types.h"
 #include "version_info.h"
 
+#include <charconv>
 #include <csignal>
 #include <cstdarg>
 #include <cstdio>
@@ -69,9 +70,8 @@ void recordDarwinFatalSignal(int signalNumber, siginfo_t *info, void *rawContext
 		return;
 	}
 	auto *context = static_cast<ucontext_t *>(rawContext);
-	const uintptr_t instruction = context && context->uc_mcontext
-								  ? static_cast<uintptr_t>(context->uc_mcontext->__ss.__rip)
-								  : 0;
+	const uintptr_t instruction =
+		context && context->uc_mcontext ? static_cast<uintptr_t>(context->uc_mcontext->__ss.__rip) : 0;
 	const uintptr_t faultAddress = info ? reinterpret_cast<uintptr_t>(info->si_addr) : 0;
 
 	char buffer[160];
@@ -99,7 +99,7 @@ void installDarwinSignalPolicy() {
 	// A closed diagnostic pipe is not a guest crash. Ignoring SIGPIPE makes the
 	// underlying write report EPIPE and prevents a bounded log consumer from
 	// terminating a long-running guest process.
-	struct sigaction pipeAction {};
+	struct sigaction pipeAction{};
 	pipeAction.sa_handler = SIG_IGN;
 	sigemptyset(&pipeAction.sa_mask);
 	(void)sigaction(SIGPIPE, &pipeAction, nullptr);
@@ -118,7 +118,7 @@ void installDarwinSignalPolicy() {
 	if (gDarwinCrashLogFd < 0) {
 		return;
 	}
-	struct sigaction faultAction {};
+	struct sigaction faultAction{};
 	faultAction.sa_sigaction = recordDarwinFatalSignal;
 	sigemptyset(&faultAction.sa_mask);
 	faultAction.sa_flags = SA_SIGINFO | SA_RESETHAND;
@@ -364,6 +364,8 @@ int main(int argc, char **argv) {
 	bool parsingOptions = true;
 	int programIndex = -1;
 	std::string cmdLine;
+	int bootstrapFd = -1;
+	int controlFd = -1;
 
 	for (int i = 1; i < argc; ++i) {
 		const char *arg = argv[i];
@@ -391,6 +393,19 @@ int main(int argc, char **argv) {
 					return 1;
 				}
 				cmdLine = argv[++i];
+				continue;
+			}
+			if (strcmp(arg, "--process-bootstrap") == 0) {
+				if (i + 2 >= argc || bootstrapFd >= 0)
+					return 1;
+				const auto parseDescriptor = [](const char *value, int &descriptor) {
+					const char *end = value + std::strlen(value);
+					const auto result = std::from_chars(value, end, descriptor);
+					return result.ec == std::errc{} && result.ptr == end && descriptor >= 3;
+				};
+				if (!parseDescriptor(argv[++i], bootstrapFd) || !parseDescriptor(argv[++i], controlFd) ||
+					bootstrapFd == controlFd)
+					return 1;
 				continue;
 			}
 			if (strcmp(arg, "-D") == 0 || strcmp(arg, "--debug") == 0) {
@@ -451,7 +466,15 @@ int main(int argc, char **argv) {
 		wibo::debugIndent = std::stoul(debugIndentEnv);
 	}
 
-	files::init();
+	std::optional<files::StandardHandles> inheritedStandardHandles;
+	if (bootstrapFd >= 0) {
+		const DWORD error = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles);
+		if (error) {
+			std::fprintf(stderr, "Failed to initialize child process state: %u\n", error);
+			return 1;
+		}
+	}
+	files::init(inheritedStandardHandles);
 
 	// Create PEB
 	PEB *peb = reinterpret_cast<PEB *>(wibo::heap::guestMalloc(sizeof(PEB), true));

@@ -5,6 +5,7 @@
 #include "types.h"
 
 #include <condition_variable>
+#include <future>
 #include <pthread.h>
 
 namespace kernel32 {
@@ -42,9 +43,30 @@ struct FileRangeLock {
 	bool exclusive;
 };
 
+class FileCursor {
+  public:
+	FileCursor() = default;
+	FileCursor(const FileCursor &) = delete;
+	FileCursor &operator=(const FileCursor &) = delete;
+	~FileCursor();
+
+	// The file object's mutex must protect these operations and descriptor transfer.
+	int prepareTransferLocked();
+	// Ownership transfers only on success. There must be one descriptor per object.
+	int adoptControlDescriptor(int fd);
+	[[nodiscard]] int controlDescriptorLocked() const { return mControlFd; }
+	int lockOperationLocked() const;
+	int unlockOperationLocked() const;
+
+  private:
+	int mControlFd = -1;
+};
+
 struct FileObject : FsObject {
 	std::vector<FileRangeLock> rangeLocks;
-	off_t filePos = 0;
+	FileCursor cursor;
+	// Additional inherited standard descriptors belong to the same file object.
+	std::vector<int> ownedDescriptorAliases;
 	bool appendOnly = false;
 	bool isPipe = false;
 	bool pipeMessageMode = false;
@@ -56,13 +78,11 @@ struct FileObject : FsObject {
 			off_t pos = lseek(fd, 0, SEEK_CUR);
 			if (pos == -1 && errno == ESPIPE) {
 				isPipe = true;
-			} else if (pos >= 0) {
-				filePos = pos;
 			}
 		}
 	}
 
-	~FileObject() override = default;
+	~FileObject() override;
 };
 
 struct DirectoryObject final : FsObject {
@@ -81,6 +101,28 @@ struct DirectoryObject final : FsObject {
 	explicit DirectoryObject(int dirfd) : FsObject(kType, dirfd) {}
 };
 
+struct ProcessThreadObject final : WaitableObject {
+	static constexpr ObjectType kType = ObjectType::ProcessThread;
+
+	DWORD threadId;
+	DWORD exitCode = STILL_ACTIVE;
+	bool exitCodeKnown = true;
+	unsigned int suspendCount;
+
+	ProcessThreadObject(DWORD threadId, int resumeFd, bool suspended);
+	~ProcessThreadObject() override;
+	void onLastHandleClosed() noexcept override;
+	DWORD resumeInitial();
+	void complete(DWORD code, bool known);
+
+  private:
+	int mResumeFd;
+	int mResumeError = 0;
+};
+
+HANDLE allocateProcessThreadHandle(Pin<ProcessThreadObject> thread, DWORD access, DWORD flags);
+HANDLE openProcessThreadHandle(DWORD threadId, DWORD access, DWORD flags);
+
 struct ProcessObject final : WaitableObject {
 	static constexpr ObjectType kType = ObjectType::Process;
 
@@ -91,6 +133,9 @@ struct ProcessObject final : WaitableObject {
 	bool exitCodeKnown = true;
 	bool childProcess = true;
 	bool waitable = true;
+	bool nativeExitObserved = false;
+	Pin<ProcessThreadObject> primaryThread;
+	std::shared_future<void> primaryMonitor;
 
 	explicit ProcessObject(pid_t pid, int pidfd, bool waitable = true)
 		: WaitableObject(kType), pid(pid), pidfd(pidfd), waitable(waitable) {}

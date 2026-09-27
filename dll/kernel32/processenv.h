@@ -2,7 +2,19 @@
 
 #include "types.h"
 
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
 namespace kernel32 {
+std::optional<std::u16string> environmentValue(std::u16string_view name);
+
+// Child environments are UTF-16 blocks; the creation flag selects an input block's encoding.
+DWORD snapshotChildEnvironment(const void *block, bool unicode, std::vector<uint16_t> &output);
+// Replaces the guest environment without importing host defaults or changing runtime configuration.
+DWORD installChildEnvironment(std::span<const uint16_t> block);
 
 GUEST_PTR WINAPI GetCommandLineA();
 GUEST_PTR WINAPI GetCommandLineW();

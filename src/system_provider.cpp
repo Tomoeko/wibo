@@ -109,7 +109,13 @@ class PersistentProvider {
 			posix_spawn_file_actions_addclose(&actions, descriptor);
 		posix_spawnattr_t attributes;
 		posix_spawnattr_init(&attributes);
-		posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+		short spawnFlags = POSIX_SPAWN_SETPGROUP;
+#ifdef __APPLE__
+		spawnFlags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+		if (fcntl(STDERR_FILENO, F_GETFD) >= 0)
+			posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
+#endif
+		posix_spawnattr_setflags(&attributes, spawnFlags);
 		posix_spawnattr_setpgroup(&attributes, 0);
 		char serve[] = "--serve";
 		char *argv[] = {const_cast<char *>(executable), serve, nullptr};
@@ -260,11 +266,8 @@ bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &re
 		return client.request(path, arguments, response, timeoutMs, timedOut);
 	}
 	int descriptors[2];
-	if (pipe(descriptors) != 0) {
+	if (!makePipe(descriptors)) {
 		return false;
-	}
-	for (int descriptor : descriptors) {
-		fcntl(descriptor, F_SETFD, FD_CLOEXEC);
 	}
 	std::vector<char *> argv{const_cast<char *>(path)};
 	for (const auto &argument : arguments) {
@@ -278,7 +281,14 @@ bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &re
 	posix_spawn_file_actions_addclose(&actions, descriptors[1]);
 	posix_spawnattr_t attributes;
 	posix_spawnattr_init(&attributes);
-	posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+	short spawnFlags = POSIX_SPAWN_SETPGROUP;
+#ifdef __APPLE__
+	spawnFlags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+	for (int descriptor : {STDIN_FILENO, STDERR_FILENO})
+		if (fcntl(descriptor, F_GETFD) >= 0)
+			posix_spawn_file_actions_adddup2(&actions, descriptor, descriptor);
+#endif
+	posix_spawnattr_setflags(&attributes, spawnFlags);
 	posix_spawnattr_setpgroup(&attributes, 0);
 	pid_t child = 0;
 	int spawnError;

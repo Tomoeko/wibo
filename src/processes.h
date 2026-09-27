@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kernel32/internal.h"
+#include "process_bootstrap.h"
 
 #include <filesystem>
 #include <memory>
@@ -44,7 +45,8 @@ struct SpawnProcessInfo {
 std::string snapshotProcessName(const std::string &hostImage, const std::string &runtimeImage,
 								const std::vector<std::string> &arguments);
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl();
-int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info);
+int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info,
+				 std::span<const DescriptorMapping> descriptors = {});
 
 #ifdef __APPLE__
 // Serialize process creation with operations that synchronously inspect running threads.
@@ -87,7 +89,8 @@ class SpawnDirectory {
 
 std::optional<std::filesystem::path> resolveExecutable(const std::string &command, bool searchPath);
 int spawnWithCommandLine(const std::string &applicationName, const std::string &commandLine,
-						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd = -1);
+						 Pin<kernel32::ProcessObject> &pinOut, int directoryFd = -1,
+						 const SpawnOptions *options = nullptr, DWORD *bootstrapError = nullptr);
 int spawnWithArgv(const std::string &applicationName, const std::vector<std::string> &argv,
 				  Pin<kernel32::ProcessObject> &pinOut);
 std::vector<std::string> splitCommandLine(const char *commandLine);

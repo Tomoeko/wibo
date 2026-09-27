@@ -382,6 +382,7 @@ add_executable(wibo
     src/loader.cpp
     src/main.cpp
     src/modules.cpp
+    src/process_bootstrap.cpp
     src/processes_common.cpp
     src/resources.cpp
     src/setup.S
@@ -686,9 +687,33 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             endif()
         endfunction(wibo_add_fixture_bin)
 
+        add_executable(test_handle_transfer test/test_handle_transfer.cpp src/handles.cpp)
+        target_compile_features(test_handle_transfer PRIVATE cxx_std_20)
+        target_compile_options(test_handle_transfer PRIVATE -fno-exceptions -fno-rtti)
+        target_include_directories(test_handle_transfer PRIVATE src dll test)
+        if(WIBO_GUEST_64)
+            target_compile_definitions(test_handle_transfer PRIVATE WIBO_GUEST_64=1)
+        endif()
+        add_test(NAME wibo.test_handle_transfer COMMAND test_handle_transfer)
+        set_tests_properties(wibo.test_handle_transfer PROPERTIES TIMEOUT 15)
+
         # Define fixture tests
         wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+        wibo_add_fixture_bin(NAME test_process_std_handles SOURCES test/test_process_std_handles.c)
+        set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
+        wibo_add_fixture_bin(NAME test_process_default_std SOURCES test/test_process_default_std.c)
+        set_tests_properties(wibo.test_process_default_std PROPERTIES TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_process_startup_info SOURCES test/test_process_startup_info.c)
+        set_tests_properties(wibo.test_process_startup_info PROPERTIES TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_process_path SOURCES test/test_process_path.c)
+        set_tests_properties(wibo.test_process_path PROPERTIES TIMEOUT 75)
+        wibo_add_fixture_bin(NAME test_process_environment SOURCES test/test_process_environment.c)
+        set_tests_properties(wibo.test_process_environment PROPERTIES TIMEOUT 90)
+        wibo_add_fixture_bin(NAME test_process_primary_exit SOURCES test/test_process_primary_exit.c)
+        set_tests_properties(wibo.test_process_primary_exit PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_process_suspended SOURCES test/test_process_suspended.c)
+        set_tests_properties(wibo.test_process_suspended PROPERTIES TIMEOUT 25)
         wibo_add_fixture_bin(NAME test_pipe_inherit_flags SOURCES test/test_pipe_inherit_flags.c)
         wibo_add_fixture_bin(NAME test_exit_resources SOURCES test/test_exit_resources.c)
         set_tests_properties(wibo.test_exit_resources PROPERTIES TIMEOUT 20
@@ -1501,7 +1526,21 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             WORKING_DIRECTORY ${WIBO_TEST_BIN_DIR}
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_release.rc)
 
+        # Transport fixtures explicitly opt in to their native helper control variables.
+        get_property(_wibo_tests DIRECTORY PROPERTY TESTS)
+        foreach(_wibo_test IN LISTS _wibo_tests)
+            get_property(_wibo_test_environment TEST ${_wibo_test} PROPERTY ENVIRONMENT)
+            if(_wibo_test_environment MATCHES "WIBO_SYSTEM_PROVIDER=")
+                set_property(TEST ${_wibo_test} APPEND PROPERTY ENVIRONMENT
+                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
+            endif()
+        endforeach()
+        set_property(TEST wibo.test_load_cursor APPEND PROPERTY ENVIRONMENT
+            "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_HEADLESS")
+
         add_custom_target(wibo_test_fixtures DEPENDS ${WIBO_TEST_FIXTURES})
+        add_dependencies(wibo_test_fixtures test_handle_transfer)
+        set_tests_properties(wibo.test_handle_transfer PROPERTIES DEPENDS wibo.build_fixtures)
         if(TARGET test_context_capture_helpers)
             add_dependencies(wibo_test_fixtures test_context_capture_helpers)
             set_tests_properties(wibo.test_context_capture_helpers PROPERTIES DEPENDS wibo.build_fixtures)

@@ -4,14 +4,18 @@
 #include "handles.h"
 #include "kernel32/internal.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -22,6 +26,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include <linux/sched.h>
 
@@ -75,14 +80,41 @@ class LinuxProcessManager final : public wibo::detail::ProcessManagerImpl {
 
 namespace wibo::detail {
 
-std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() {
-	return std::make_unique<LinuxProcessManager>();
-}
+std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() { return std::make_unique<LinuxProcessManager>(); }
 
-int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info) {
+int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info,
+				 std::span<const DescriptorMapping> descriptors) {
 	int errorPipe[2];
 	if (pipe2(errorPipe, O_CLOEXEC) != 0)
 		return errno;
+	std::vector<int> retained;
+	if (!descriptors.empty()) {
+		int maximum = std::max(errorPipe[0], errorPipe[1]);
+		for (const auto &mapping : descriptors)
+			maximum = std::max({maximum, mapping.source, mapping.destination});
+		const int replacement = fcntl(errorPipe[1], F_DUPFD_CLOEXEC, maximum + 1);
+		if (replacement < 0) {
+			const int error = errno;
+			close(errorPipe[0]);
+			close(errorPipe[1]);
+			return error;
+		}
+		close(errorPipe[1]);
+		errorPipe[1] = replacement;
+		retained.push_back(errorPipe[1]);
+		for (const auto &mapping : descriptors)
+			if (mapping.source >= 0 && mapping.destination >= 3)
+				retained.push_back(mapping.destination);
+		std::sort(retained.begin(), retained.end());
+		retained.erase(std::unique(retained.begin(), retained.end()), retained.end());
+	}
+	const long descriptorLimit = sysconf(_SC_OPEN_MAX);
+	if (!descriptors.empty() && descriptorLimit < 0) {
+		const int error = errno ? errno : ENOTSUP;
+		close(errorPipe[0]);
+		close(errorPipe[1]);
+		return error;
+	}
 	pid_t pid = static_cast<pid_t>(syscall(SYS_clone, CLONE_PIDFD, nullptr, &info.pidfd));
 	if (pid < 0) {
 		info.pidfd = -1;
@@ -94,9 +126,40 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 	if (pid == 0) {
 		close(errorPipe[0]);
 		(void)prctl(PR_SET_PDEATHSIG, SIGKILL);
-		if (directoryFd < 0 || fchdir(directoryFd) == 0)
+		int err = directoryFd >= 0 && fchdir(directoryFd) != 0 ? errno : 0;
+		for (const auto &mapping : descriptors) {
+			if (err)
+				break;
+			if (mapping.source < 0) {
+				if (close(mapping.destination) != 0 && errno != EBADF)
+					err = errno;
+			} else if (dup2(mapping.source, mapping.destination) < 0 || fcntl(mapping.destination, F_SETFD, 0) != 0) {
+				err = errno;
+			}
+		}
+		if (!err && !descriptors.empty()) {
+			unsigned int first = 3;
+			for (int preserved : retained) {
+				const unsigned int last = static_cast<unsigned int>(preserved);
+				if (first < last) {
+#ifdef SYS_close_range
+					if (syscall(SYS_close_range, first, last - 1, 0) != 0)
+#endif
+						for (unsigned int fd = first; fd < last; ++fd)
+							close(static_cast<int>(fd));
+				}
+				first = last + 1;
+			}
+#ifdef SYS_close_range
+			if (syscall(SYS_close_range, first, UINT_MAX, 0) != 0)
+#endif
+				for (long fd = first; fd < descriptorLimit; ++fd)
+					close(static_cast<int>(fd));
+		}
+		if (!err) {
 			execve("/proc/self/exe", argv, envp);
-		int err = errno;
+			err = errno;
+		}
 		const char *bytes = reinterpret_cast<const char *>(&err);
 		size_t remaining = sizeof(err);
 		while (remaining) {
@@ -373,16 +436,35 @@ void LinuxProcessManager::checkPidfd(int pidfd) {
 	// expose their exit status through waitid. Preserve that distinction.
 	epoll_ctl(mEpollFd, EPOLL_CTL_DEL, pidfd, nullptr);
 	takeProcess(pidfd);
+	Pin<kernel32::ProcessThreadObject> primaryThread;
+	std::shared_future<void> primaryMonitor;
+	DWORD primaryExitCode = STILL_ACTIVE;
+	bool primaryExitKnown = false;
 	{
 		std::lock_guard lock(process->m);
+		process->nativeExitObserved = true;
 		close(pidfd);
-		process->signaled = true;
 		process->pidfd = -1;
 		if (!process->forcedExitCode) {
 			process->exitCodeKnown = statusKnown;
 			if (statusKnown)
 				process->exitCode = decodeExitCode(status);
 		}
+		primaryThread = process->primaryThread.clone();
+		primaryMonitor = process->primaryMonitor;
+		primaryExitCode = process->exitCode;
+		primaryExitKnown = process->exitCodeKnown;
+	}
+	if (primaryThread) {
+		if (primaryMonitor.valid() && primaryMonitor.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+			std::fputs("Primary thread exit monitor exceeded its deadline\n", stderr);
+			primaryExitKnown = false;
+		}
+		primaryThread->complete(primaryExitCode, primaryExitKnown);
+	}
+	{
+		std::lock_guard lock(process->m);
+		process->signaled = true;
 	}
 	process->cv.notify_all();
 	process->notifyWaiters(false);

@@ -4,11 +4,15 @@
 #include "handles.h"
 #include "kernel32/internal.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <libproc.h>
 #include <mutex>
@@ -89,15 +93,34 @@ class DarwinProcessManager final : public wibo::detail::ProcessManagerImpl {
 };
 
 void completeProcess(Pin<ProcessObject> process, int status, bool statusKnown = true) {
+	Pin<kernel32::ProcessThreadObject> primaryThread;
+	std::shared_future<void> primaryMonitor;
+	DWORD primaryExitCode = STILL_ACTIVE;
+	bool primaryExitKnown = false;
 	{
 		std::lock_guard lk(process->m);
-		process->signaled = true;
+		process->nativeExitObserved = true;
 		process->pidfd = -1;
 		if (!process->forcedExitCode) {
 			process->exitCodeKnown = statusKnown;
 			if (statusKnown)
 				process->exitCode = decodeExitStatus(status);
 		}
+		primaryThread = process->primaryThread.clone();
+		primaryMonitor = process->primaryMonitor;
+		primaryExitCode = process->exitCode;
+		primaryExitKnown = process->exitCodeKnown;
+	}
+	if (primaryThread) {
+		if (primaryMonitor.valid() && primaryMonitor.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+			std::fputs("Primary thread exit monitor exceeded its deadline\n", stderr);
+			primaryExitKnown = false;
+		}
+		primaryThread->complete(primaryExitCode, primaryExitKnown);
+	}
+	{
+		std::lock_guard lock(process->m);
+		process->signaled = true;
 	}
 	process->cv.notify_all();
 	process->notifyWaiters(false);
@@ -114,7 +137,8 @@ std::mutex &nativeProcessOperationMutex() {
 
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() { return std::make_unique<DarwinProcessManager>(); }
 
-int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info) {
+int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info,
+				 std::span<const DescriptorMapping> descriptors) {
 	auto &path = executablePath();
 	if (path.empty())
 		return ENOENT;
@@ -124,6 +148,20 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 		return rc;
 	if (directoryFd >= 0)
 		rc = posix_spawn_file_actions_addfchdir_np(&actions, directoryFd);
+	if (!descriptors.empty()) {
+		for (const auto &mapping : descriptors) {
+			if (rc)
+				break;
+			rc = mapping.source < 0 ? posix_spawn_file_actions_addclose(&actions, mapping.destination)
+									: posix_spawn_file_actions_adddup2(&actions, mapping.source, mapping.destination);
+		}
+		for (int descriptor = 0; descriptor < 3 && !rc; ++descriptor) {
+			const bool replaced = std::any_of(descriptors.begin(), descriptors.end(),
+											  [&](const auto &mapping) { return mapping.destination == descriptor; });
+			if (!replaced && fcntl(descriptor, F_GETFD) >= 0)
+				rc = posix_spawn_file_actions_adddup2(&actions, descriptor, descriptor);
+		}
+	}
 	if (rc != 0) {
 		posix_spawn_file_actions_destroy(&actions);
 		return rc;
@@ -138,7 +176,8 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 	sigemptyset(&mask);
 	rc = posix_spawnattr_setsigmask(&attr, &mask);
 	if (rc == 0) {
-		rc = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+		rc = posix_spawnattr_setflags(&attr,
+									  POSIX_SPAWN_SETSIGMASK | (descriptors.empty() ? 0 : POSIX_SPAWN_CLOEXEC_DEFAULT));
 	}
 	pid_t pid = -1;
 	if (rc == 0) {
@@ -273,6 +312,10 @@ bool DarwinProcessManager::addProcess(Pin<ProcessObject> po) {
 		auto process = takeProcess(pid);
 		DEBUG_LOG("ProcessManager: kevent add for pid %d failed: %s\n", pid, strerror(error));
 		if (error == ESRCH && process) {
+			{
+				std::lock_guard lock(process->m);
+				process->nativeExitObserved = true;
+			}
 			int status = 0;
 			pid_t result;
 			do {
@@ -329,6 +372,10 @@ void DarwinProcessManager::handleExit(const struct kevent &event) {
 	if (!process) {
 		DEBUG_LOG("ProcessManager: exit event for unknown pid %d\n", pid);
 		return;
+	}
+	{
+		std::lock_guard lock(process->m);
+		process->nativeExitObserved = true;
 	}
 
 	if (!process->childProcess) {

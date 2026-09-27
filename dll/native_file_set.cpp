@@ -2,6 +2,8 @@
 
 #include "context.h"
 #include "errors.h"
+#include "files.h"
+#include "kernel32/fileapi.h"
 #include "kernel32/internal.h"
 
 #include <cstring>
@@ -47,8 +49,9 @@ NTSTATUS WINAPI NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK ioStatus, PVO
 					status = STATUS_INVALID_PARAMETER;
 				} else {
 					std::lock_guard lock(object->m);
-					object->filePos = static_cast<off_t>(value.QuadPart);
-					status = STATUS_SUCCESS;
+					off_t position = 0;
+					status = wibo::statusFromWinError(
+						files::seekPositionLocked(*object, value.QuadPart, FILE_BEGIN, position));
 				}
 			} else if (!(meta.grantedAccess & FILE_WRITE_DATA)) {
 				status = STATUS_ACCESS_DENIED;

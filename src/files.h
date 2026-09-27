@@ -19,11 +19,24 @@ struct IOResult {
 	bool reachedEnd = false;
 };
 
+struct StandardHandles {
+	HANDLE input;
+	HANDLE output;
+	HANDLE error;
+	bool explicitStartup = true;
+};
+
 DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusive, bool blocking);
 DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length);
 DWORD checkRangeAccess(FileObject *file, off_t start, size_t length, bool writing);
 
-void init();
+void init(std::optional<StandardHandles> inheritedStandards = std::nullopt);
+// The caller must retain the object and hold file.m for these operations.
+DWORD prepareInheritanceLocked(FileObject &file);
+DWORD queryPositionLocked(FileObject &file, off_t &position);
+DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t &position,
+						 uint64_t maximumPosition = INT64_MAX);
+DWORD truncateAtPositionLocked(FileObject &file);
 std::filesystem::path pathFromWindows(const char *inStr);
 std::string pathToWindows(const std::filesystem::path &path);
 IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::optional<off_t> &offset,
@@ -32,6 +45,8 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 			   bool updateFilePointer);
 HANDLE getStdHandle(DWORD nStdHandle);
 BOOL setStdHandle(DWORD nStdHandle, HANDLE hHandle);
+// The startup flag is fixed at initialization; selected handle values remain current.
+std::optional<StandardHandles> startupStandardHandles();
 std::optional<std::filesystem::path> findCaseInsensitiveFile(const std::filesystem::path &directory,
 															 const std::string &filename);
 std::filesystem::path canonicalPath(const std::filesystem::path &path);

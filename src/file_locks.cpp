@@ -113,6 +113,8 @@ DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusiv
 	}
 	const uint64_t end = start + length;
 	std::lock_guard guard(file->m);
+	if (file->cursor.controlDescriptorLocked() >= 0)
+		return ERROR_NOT_SUPPORTED;
 	for (const auto &range : file->rangeLocks) {
 		if (exclusive && overlaps(start, end, range))
 			return ERROR_LOCK_VIOLATION;
@@ -126,6 +128,8 @@ DWORD lockRange(FileObject *file, uint64_t start, uint64_t length, bool exclusiv
 
 DWORD unlockRange(FileObject *file, uint64_t start, uint64_t length) {
 	std::lock_guard guard(file->m);
+	if (file->cursor.controlDescriptorLocked() >= 0)
+		return ERROR_NOT_SUPPORTED;
 	if (!length || length > std::numeric_limits<uint64_t>::max() - start) {
 		return ERROR_NOT_LOCKED;
 	}

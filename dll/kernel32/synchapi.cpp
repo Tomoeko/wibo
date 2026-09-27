@@ -632,8 +632,7 @@ HANDLE WINAPI OpenEventA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpNa
 	DEBUG_LOG("OpenEventA -> ");
 	std::vector<uint16_t> wideName;
 	makeWideNameFromAnsi(lpName, wideName);
-	return OpenEventW(dwDesiredAccess, bInheritHandle,
-					lpName ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
+	return OpenEventW(dwDesiredAccess, bInheritHandle, lpName ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
 }
 
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
@@ -642,7 +641,7 @@ HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG
 }
 
 HANDLE WINAPI CreateSemaphoreExW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
-								LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess) {
+								 LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CreateSemaphoreExW(%p, %ld, %ld, %s, %u, %u)\n", lpSemaphoreAttributes, lInitialCount, lMaximumCount,
 			  wideStringToString(lpName).c_str(), dwFlags, dwDesiredAccess);
@@ -758,7 +757,8 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bA
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if ((object->type == ObjectType::Timer || object->type == ObjectType::Thread) &&
+		if ((object->type == ObjectType::Timer || object->type == ObjectType::Thread ||
+			 object->type == ObjectType::ProcessThread) &&
 			!(metadata.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return WAIT_FAILED;
@@ -895,6 +895,15 @@ DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
 		bool ok = doWait(lk, th->cv, [&] { return th->signaled; });
 		return ok ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
 	}
+	case ObjectType::ProcessThread: {
+		if (!(meta.grantedAccess & SYNCHRONIZE)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return WAIT_FAILED;
+		}
+		auto thread = std::move(obj).downcast<ProcessThreadObject>();
+		std::unique_lock lock(thread->m);
+		return doWait(lock, thread->cv, [&] { return thread->signaled; }) ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
+	}
 	case ObjectType::Process: {
 		if (!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
@@ -948,7 +957,8 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 			setLastError(ERROR_INVALID_HANDLE);
 			return WAIT_FAILED;
 		}
-		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread || pin->type == ObjectType::Process ||
+		if ((pin->type == ObjectType::Timer || pin->type == ObjectType::Thread ||
+			 pin->type == ObjectType::ProcessThread || pin->type == ObjectType::Process ||
 			 pin->type == ObjectType::MemoryResource) &&
 			!(meta.grantedAccess & SYNCHRONIZE)) {
 			setLastError(ERROR_ACCESS_DENIED);
@@ -958,8 +968,7 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 			targets[i].waitable = waitable;
 		} else if (auto *file = detail::castTo<FileObject>(pin.get()); file && file->valid() && file->isPipe) {
 			targets[i].pipe = file;
-			targets[i].pipeEvents =
-				(meta.grantedAccess & FILE_READ_DATA) != 0 ? POLLIN : static_cast<short>(POLLOUT);
+			targets[i].pipeEvents = (meta.grantedAccess & FILE_READ_DATA) != 0 ? POLLIN : static_cast<short>(POLLOUT);
 			hasPipe = true;
 		} else {
 			setLastError(ERROR_INVALID_HANDLE);
@@ -1091,8 +1100,8 @@ DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOO
 		}
 		const auto start = std::chrono::steady_clock::now();
 		const auto deadline = dwMilliseconds == INFINITE
-							  ? std::chrono::steady_clock::time_point::max()
-							  : start + std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
+								  ? std::chrono::steady_clock::time_point::max()
+								  : start + std::chrono::milliseconds(static_cast<uint64_t>(dwMilliseconds));
 		bool firstScan = true;
 		for (;;) {
 			int timeoutMs = 0;

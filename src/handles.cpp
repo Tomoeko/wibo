@@ -1,4 +1,5 @@
 #include "handles.h"
+#include "errors.h"
 #include "types.h"
 #include <atomic>
 #include <cassert>
@@ -227,6 +228,113 @@ bool Handles::duplicateTo(HANDLE src, Handles &dst, HANDLE &out, uint32_t desire
 		release(src);
 	}
 	return true;
+}
+
+DWORD Handles::snapshotInherited(std::optional<std::span<const HANDLE>> selection,
+								 std::vector<HandleTransferEntry> &out) const {
+	std::vector<HandleTransferEntry> snapshot;
+	std::shared_lock lock(m);
+	if (selection) {
+		if (selection->size() > MAX_HANDLES)
+			return ERROR_NOT_SUPPORTED;
+		std::vector<uint32_t> indices;
+		indices.reserve(selection->size());
+		for (HANDLE handle : *selection) {
+			if (handle <= 0 || static_cast<uint64_t>(handle) > UINT32_MAX)
+				return ERROR_INVALID_HANDLE;
+			const uint32_t index = indexOf(handle);
+			if (index >= mSlots.size() || !mSlots[index].obj)
+				return ERROR_INVALID_HANDLE;
+			if (index >= MAX_HANDLES)
+				return ERROR_NOT_SUPPORTED;
+			if (!(mSlots[index].meta.flags & HANDLE_FLAG_INHERIT))
+				return ERROR_INVALID_PARAMETER;
+			indices.push_back(index);
+		}
+		std::sort(indices.begin(), indices.end());
+		indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+		snapshot.reserve(indices.size());
+		for (uint32_t index : indices) {
+			const auto &entry = mSlots[index];
+			snapshot.push_back(
+				{makeHandle(index), Pin<>::acquire(entry.obj), entry.meta.grantedAccess, entry.meta.flags});
+		}
+	} else {
+		for (uint32_t index = 0; index < mSlots.size(); ++index) {
+			const auto &entry = mSlots[index];
+			if (!entry.obj || !(entry.meta.flags & HANDLE_FLAG_INHERIT))
+				continue;
+			if (index >= MAX_HANDLES || snapshot.size() == MAX_HANDLES)
+				return ERROR_NOT_SUPPORTED;
+			snapshot.push_back(
+				{makeHandle(index), Pin<>::acquire(entry.obj), entry.meta.grantedAccess, entry.meta.flags});
+		}
+	}
+	lock.unlock();
+	out = std::move(snapshot);
+	return ERROR_SUCCESS;
+}
+
+DWORD Handles::snapshotSelected(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const {
+	if (selection.size() > MAX_HANDLES)
+		return ERROR_NOT_SUPPORTED;
+	std::vector<HandleTransferEntry> snapshot;
+	std::shared_lock lock(m);
+	for (HANDLE handle : selection) {
+		if (handle == NO_HANDLE || handle == static_cast<HANDLE>(-1))
+			continue;
+		if (handle <= 0 || static_cast<uint64_t>(handle) > UINT32_MAX || (static_cast<uint32_t>(handle) & 3))
+			return ERROR_INVALID_HANDLE;
+		const uint32_t index = indexOf(handle);
+		if (index >= mSlots.size() || !mSlots[index].obj)
+			return ERROR_INVALID_HANDLE;
+		const auto &entry = mSlots[index];
+		snapshot.push_back({handle, Pin<>::acquire(entry.obj), entry.meta.grantedAccess, entry.meta.flags});
+	}
+	lock.unlock();
+	out = std::move(snapshot);
+	return ERROR_SUCCESS;
+}
+
+DWORD Handles::importExact(std::span<HandleTransferEntry> entries) {
+	std::unique_lock lock(m);
+	if (!mSlots.empty())
+		return ERROR_INVALID_DATA;
+	if (entries.size() > MAX_HANDLES)
+		return ERROR_NOT_SUPPORTED;
+	constexpr uint32_t allowedFlags = HANDLE_FLAG_INHERIT | HANDLE_FLAG_PROTECT_FROM_CLOSE;
+	std::vector<bool> occupied(MAX_HANDLES, false);
+	uint32_t slotCount = 0;
+	for (const auto &entry : entries) {
+		if (!entry.object || entry.handle <= 0 || static_cast<uint64_t>(entry.handle) > UINT32_MAX ||
+			(static_cast<uint32_t>(entry.handle) & 3) || (entry.flags & ~allowedFlags))
+			return ERROR_INVALID_DATA;
+		const uint32_t index = indexOf(entry.handle);
+		if (index >= MAX_HANDLES)
+			return ERROR_NOT_SUPPORTED;
+		if (occupied[index])
+			return ERROR_INVALID_DATA;
+		occupied[index] = true;
+		slotCount = std::max(slotCount, index + 1);
+	}
+	std::vector<Entry> slots(slotCount);
+	std::vector<uint32_t> freeBelow, freeAbove;
+	for (uint32_t index = 0; index < slotCount; ++index) {
+		if (!occupied[index])
+			(index <= kCompatMaxIndex ? freeBelow : freeAbove).push_back(index);
+	}
+	// All validation and allocation precede publication and reference transfer.
+	for (auto &entry : entries) {
+		auto &slot = slots[indexOf(entry.handle)];
+		slot.obj = entry.object.release();
+		slot.meta = {entry.grantedAccess, entry.flags, slot.obj->type, 1};
+		slot.obj->handleCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	mSlots = std::move(slots);
+	mFreeBelow = std::move(freeBelow);
+	mFreeAbove = std::move(freeAbove);
+	nextIndex = slotCount;
+	return ERROR_SUCCESS;
 }
 
 bool Namespace::insert(const std::u16string &name, ObjectBase *obj, bool permanent) {

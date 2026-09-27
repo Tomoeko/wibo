@@ -2,15 +2,19 @@
 #include "common.h"
 #include "errors.h"
 #include "handles.h"
+#include "kernel32/fileapi.h"
 #include "strutil.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -19,6 +23,103 @@
 #include <system_error>
 #include <unistd.h>
 #include <utility>
+
+namespace {
+
+int cursorRecordLock(int fd, short type) {
+	if (fd < 0)
+		return 0;
+	struct flock request{};
+	request.l_type = type;
+	request.l_whence = SEEK_SET;
+	request.l_len = 1;
+	int result;
+	do {
+		result = fcntl(fd, type == F_UNLCK ? F_SETLK : F_SETLKW, &request);
+	} while (result == -1 && errno == EINTR);
+	return result == 0 ? 0 : (errno ? errno : EIO);
+}
+
+class CursorOperation {
+  public:
+	explicit CursorOperation(kernel32::FileCursor &cursor) : mCursor(cursor), mError(cursor.lockOperationLocked()) {}
+	CursorOperation(const CursorOperation &) = delete;
+	CursorOperation &operator=(const CursorOperation &) = delete;
+	~CursorOperation() {
+		if (!mFinished && !mError) {
+			const int error = mCursor.unlockOperationLocked();
+			if (error)
+				DEBUG_LOG("Cursor unlock failed: errno=%d\n", error);
+		}
+	}
+	[[nodiscard]] int error() const { return mError; }
+	int finish() {
+		mFinished = true;
+		return mError ? mError : mCursor.unlockOperationLocked();
+	}
+
+  private:
+	kernel32::FileCursor &mCursor;
+	int mError;
+	bool mFinished = false;
+};
+
+} // namespace
+
+kernel32::FileCursor::~FileCursor() {
+	if (mControlFd >= 0)
+		close(mControlFd);
+}
+
+int kernel32::FileCursor::prepareTransferLocked() {
+	if (mControlFd >= 0)
+		return 0;
+	const char *temporaryDirectory = std::getenv("TMPDIR");
+	std::string path = temporaryDirectory && temporaryDirectory[0] ? temporaryDirectory : "/tmp";
+	if (path.back() != '/')
+		path.push_back('/');
+	path += "wibo-cursor-XXXXXX";
+	std::vector<char> name(path.begin(), path.end());
+	name.push_back('\0');
+	const int fd = mkostemp(name.data(), O_CLOEXEC);
+	if (fd == -1)
+		return errno ? errno : EIO;
+	if (unlink(name.data()) == -1) {
+		const int error = errno ? errno : EIO;
+		close(fd);
+		return error;
+	}
+	mControlFd = fd;
+	return 0;
+}
+
+int kernel32::FileCursor::adoptControlDescriptor(int fd) {
+	if (mControlFd >= 0 || fd < 0)
+		return EINVAL;
+	struct stat metadata{};
+	if (fstat(fd, &metadata) == -1)
+		return errno ? errno : EIO;
+	const int flags = fcntl(fd, F_GETFL);
+	if (flags == -1)
+		return errno ? errno : EIO;
+	if (!S_ISREG(metadata.st_mode) || (flags & O_ACCMODE) != O_RDWR)
+		return EINVAL;
+	const int descriptorFlags = fcntl(fd, F_GETFD);
+	if (descriptorFlags == -1 || fcntl(fd, F_SETFD, descriptorFlags | FD_CLOEXEC) == -1)
+		return errno ? errno : EIO;
+	mControlFd = fd;
+	return 0;
+}
+
+int kernel32::FileCursor::lockOperationLocked() const { return cursorRecordLock(mControlFd, F_WRLCK); }
+int kernel32::FileCursor::unlockOperationLocked() const { return cursorRecordLock(mControlFd, F_UNLCK); }
+
+kernel32::FileObject::~FileObject() {
+	for (auto iter = ownedDescriptorAliases.begin(); iter != ownedDescriptorAliases.end(); ++iter) {
+		if (*iter >= 0 && *iter != fd && std::find(ownedDescriptorAliases.begin(), iter, *iter) == iter)
+			close(*iter);
+	}
+}
 
 kernel32::FsObject::~FsObject() {
 	int fd = std::exchange(this->fd, -1);
@@ -33,6 +134,96 @@ kernel32::FsObject::~FsObject() {
 }
 
 namespace files {
+
+DWORD prepareInheritanceLocked(FileObject &file) {
+	if (!file.valid())
+		return ERROR_INVALID_HANDLE;
+	if (file.type != ObjectType::File || file.overlapped || std::atomic_load(&file.completion) || file.deletePending ||
+		!file.rangeLocks.empty() || file.pipeMessageMode)
+		return ERROR_NOT_SUPPORTED;
+	struct stat metadata{};
+	if (fstat(file.fd, &metadata) == -1)
+		return wibo::winErrorFromErrno(errno);
+	if (!S_ISREG(metadata.st_mode) && !S_ISFIFO(metadata.st_mode) && !S_ISCHR(metadata.st_mode))
+		return ERROR_NOT_SUPPORTED;
+	// A private control inode serializes compound offset operations after transfer.
+	// Closing any duplicate of this inode must also hold the file object's mutex.
+	if (S_ISREG(metadata.st_mode))
+		return wibo::winErrorFromErrno(file.cursor.prepareTransferLocked());
+	return ERROR_SUCCESS;
+}
+
+DWORD queryPositionLocked(FileObject &file, off_t &position) {
+	CursorOperation operation(file.cursor);
+	if (operation.error())
+		return wibo::winErrorFromErrno(operation.error());
+	const off_t current = lseek(file.fd, 0, SEEK_CUR);
+	int error = current == -1 ? (errno ? errno : EIO) : 0;
+	const int unlockError = operation.finish();
+	if (!error)
+		error = unlockError;
+	if (error)
+		return wibo::winErrorFromErrno(error);
+	position = current;
+	return ERROR_SUCCESS;
+}
+
+DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t &position, uint64_t maximumPosition) {
+	if (method != FILE_BEGIN && method != FILE_CURRENT && method != FILE_END)
+		return ERROR_INVALID_PARAMETER;
+	if (file.isPipe)
+		return ERROR_INVALID_PARAMETER;
+	CursorOperation operation(file.cursor);
+	if (operation.error())
+		return wibo::winErrorFromErrno(operation.error());
+	off_t base = 0;
+	DWORD error = ERROR_SUCCESS;
+	if (method == FILE_CURRENT) {
+		base = lseek(file.fd, 0, SEEK_CUR);
+		if (base == -1)
+			error = wibo::winErrorFromErrno(errno);
+	} else if (method == FILE_END) {
+		struct stat metadata{};
+		if (fstat(file.fd, &metadata) == -1)
+			error = wibo::winErrorFromErrno(errno);
+		else
+			base = metadata.st_size;
+	}
+	off_t result = 0;
+	if (!error) {
+		if (base < 0 || (distance < 0 && distance < -static_cast<int64_t>(base))) {
+			error = ERROR_NEGATIVE_SEEK;
+		} else if (distance > 0 && distance > std::numeric_limits<off_t>::max() - base) {
+			error = ERROR_INVALID_PARAMETER;
+		} else {
+			result = base + static_cast<off_t>(distance);
+			if (static_cast<uint64_t>(result) > maximumPosition)
+				error = ERROR_INVALID_PARAMETER;
+			else if (lseek(file.fd, result, SEEK_SET) == -1)
+				error = wibo::winErrorFromErrno(errno);
+		}
+	}
+	const int unlockError = operation.finish();
+	if (!error)
+		error = wibo::winErrorFromErrno(unlockError);
+	if (!error)
+		position = result;
+	return error;
+}
+
+DWORD truncateAtPositionLocked(FileObject &file) {
+	if (file.isPipe)
+		return ERROR_INVALID_PARAMETER;
+	CursorOperation operation(file.cursor);
+	if (operation.error())
+		return wibo::winErrorFromErrno(operation.error());
+	const off_t position = lseek(file.fd, 0, SEEK_CUR);
+	int error = 0;
+	if (position == -1 || ftruncate(file.fd, position) == -1)
+		error = errno ? errno : EIO;
+	const int unlockError = operation.finish();
+	return wibo::winErrorFromErrno(error ? error : unlockError);
+}
 
 static std::vector<std::string> splitList(const std::string &value, char delimiter) {
 	std::vector<std::string> entries;
@@ -78,9 +269,10 @@ static std::string toHostPathEntry(const std::string &entry) {
 	return normalized;
 }
 
-static HANDLE stdinHandle;
-static HANDLE stdoutHandle;
-static HANDLE stderrHandle;
+static std::atomic<HANDLE> stdinHandle;
+static std::atomic<HANDLE> stdoutHandle;
+static std::atomic<HANDLE> stderrHandle;
+static bool explicitStartupStandards = false;
 
 // Strip the Windows trailing-dot "no extension" convention from each path
 // component. Windows treats "foo." and "foo" as the same filename — the
@@ -264,9 +456,18 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 	}
 
 	std::lock_guard rangeGuard(file->m);
+	CursorOperation operation(file->cursor);
+	if (operation.error()) {
+		result.unixError = operation.error();
+		return result;
+	}
 	const auto doRead = [&](off_t pos) {
 		result.windowsError = checkRangeAccess(file, pos, bytesToRead, false);
 		if (result.windowsError) {
+			return;
+		}
+		if (updateFilePointer && offset && lseek(file->fd, pos, SEEK_SET) == -1) {
+			result.unixError = errno ? errno : EIO;
 			return;
 		}
 		size_t total = 0;
@@ -274,7 +475,8 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 		uint8_t *in = static_cast<uint8_t *>(buffer);
 		while (remaining > 0) {
 			size_t chunk = remaining > SSIZE_MAX ? SSIZE_MAX : remaining;
-			ssize_t rc = pread(file->fd, in + total, chunk, pos);
+			ssize_t rc =
+				updateFilePointer ? ::read(file->fd, in + total, chunk) : pread(file->fd, in + total, chunk, pos);
 			if (rc == -1) {
 				if (errno == EINTR) {
 					continue;
@@ -293,15 +495,18 @@ IOResult read(FileObject *file, void *buffer, size_t bytesToRead, const std::opt
 		result.bytesTransferred = total;
 	};
 
-	if (updateFilePointer || !offset.has_value()) {
-		const off_t pos = offset.value_or(file->filePos);
-		doRead(pos);
-		if (updateFilePointer) {
-			file->filePos = pos + static_cast<off_t>(result.bytesTransferred);
-		}
-	} else {
+	if (offset) {
 		doRead(*offset);
+	} else {
+		const off_t pos = lseek(file->fd, 0, SEEK_CUR);
+		if (pos == -1)
+			result.unixError = errno ? errno : EIO;
+		else
+			doRead(pos);
 	}
+	const int unlockError = operation.finish();
+	if (!result.unixError && !result.windowsError)
+		result.unixError = unlockError;
 
 	return result;
 }
@@ -322,7 +527,18 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 
 	if (file->appendOnly || file->isPipe) {
 		std::lock_guard lk(file->m);
+		CursorOperation operation(file->cursor);
+		if (operation.error()) {
+			result.unixError = operation.error();
+			return result;
+		}
+		off_t originalPosition = 0;
 		if (!file->isPipe) {
+			originalPosition = lseek(file->fd, 0, SEEK_CUR);
+			if (originalPosition == -1) {
+				result.unixError = errno ? errno : EIO;
+				return result;
+			}
 			struct stat info{};
 			if (fstat(file->fd, &info) != 0) {
 				result.unixError = errno;
@@ -353,21 +569,29 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 			remaining -= static_cast<size_t>(rc);
 		}
 		result.bytesTransferred = total;
-		if (updateFilePointer) {
-			off_t pos = file->isPipe ? 0 : lseek(file->fd, 0, SEEK_CUR);
-			if (pos >= 0) {
-				file->filePos = pos;
-			} else if (result.unixError == 0) {
-				result.unixError = errno ? errno : EIO;
-			}
+		if (!updateFilePointer && !file->isPipe && lseek(file->fd, originalPosition, SEEK_SET) == -1 &&
+			result.unixError == 0) {
+			result.unixError = errno ? errno : EIO;
 		}
+		const int unlockError = operation.finish();
+		if (!result.unixError && !result.windowsError)
+			result.unixError = unlockError;
 		return result;
 	}
 
 	std::lock_guard rangeGuard(file->m);
+	CursorOperation operation(file->cursor);
+	if (operation.error()) {
+		result.unixError = operation.error();
+		return result;
+	}
 	auto doWrite = [&](off_t pos) {
 		result.windowsError = checkRangeAccess(file, pos, bytesToWrite, true);
 		if (result.windowsError) {
+			return;
+		}
+		if (updateFilePointer && offset && lseek(file->fd, pos, SEEK_SET) == -1) {
+			result.unixError = errno ? errno : EIO;
 			return;
 		}
 		size_t total = 0;
@@ -375,7 +599,8 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 		const uint8_t *in = static_cast<const uint8_t *>(buffer);
 		while (remaining > 0) {
 			size_t chunk = remaining > SSIZE_MAX ? SSIZE_MAX : remaining;
-			ssize_t rc = pwrite(file->fd, in + total, chunk, pos);
+			ssize_t rc =
+				updateFilePointer ? ::write(file->fd, in + total, chunk) : pwrite(file->fd, in + total, chunk, pos);
 			if (rc == -1) {
 				if (errno == EINTR) {
 					continue;
@@ -393,15 +618,18 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 		result.bytesTransferred = total;
 	};
 
-	if (updateFilePointer || !offset.has_value()) {
-		const off_t pos = offset.value_or(file->filePos);
-		doWrite(pos);
-		if (updateFilePointer) {
-			file->filePos = pos + static_cast<off_t>(result.bytesTransferred);
-		}
-	} else {
+	if (offset) {
 		doWrite(*offset);
+	} else {
+		const off_t pos = lseek(file->fd, 0, SEEK_CUR);
+		if (pos == -1)
+			result.unixError = errno ? errno : EIO;
+		else
+			doWrite(pos);
 	}
+	const int unlockError = operation.finish();
+	if (!result.unixError && !result.windowsError)
+		result.unixError = unlockError;
 
 	return result;
 }
@@ -409,11 +637,11 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 HANDLE getStdHandle(DWORD nStdHandle) {
 	switch (nStdHandle) {
 	case STD_INPUT_HANDLE:
-		return stdinHandle;
+		return stdinHandle.load(std::memory_order_relaxed);
 	case STD_OUTPUT_HANDLE:
-		return stdoutHandle;
+		return stdoutHandle.load(std::memory_order_relaxed);
 	case STD_ERROR_HANDLE:
-		return stderrHandle;
+		return stderrHandle.load(std::memory_order_relaxed);
 	default:
 		return INVALID_HANDLE_VALUE;
 	}
@@ -422,13 +650,13 @@ HANDLE getStdHandle(DWORD nStdHandle) {
 BOOL setStdHandle(DWORD nStdHandle, HANDLE hHandle) {
 	switch (nStdHandle) {
 	case STD_INPUT_HANDLE:
-		stdinHandle = hHandle;
+		stdinHandle.store(hHandle, std::memory_order_relaxed);
 		break;
 	case STD_OUTPUT_HANDLE:
-		stdoutHandle = hHandle;
+		stdoutHandle.store(hHandle, std::memory_order_relaxed);
 		break;
 	case STD_ERROR_HANDLE:
-		stderrHandle = hHandle;
+		stderrHandle.store(hHandle, std::memory_order_relaxed);
 		break;
 	default:
 		return 0; // fail
@@ -436,20 +664,34 @@ BOOL setStdHandle(DWORD nStdHandle, HANDLE hHandle) {
 	return 1; // success
 }
 
-void init() {
+std::optional<StandardHandles> startupStandardHandles() {
+	if (!explicitStartupStandards)
+		return std::nullopt;
+	return StandardHandles{getStdHandle(STD_INPUT_HANDLE), getStdHandle(STD_OUTPUT_HANDLE),
+						   getStdHandle(STD_ERROR_HANDLE)};
+}
+
+void init(std::optional<StandardHandles> inheritedStandards) {
 	signal(SIGPIPE, SIG_IGN);
+	explicitStartupStandards = inheritedStandards && inheritedStandards->explicitStartup;
+	if (inheritedStandards) {
+		stdinHandle.store(inheritedStandards->input, std::memory_order_relaxed);
+		stdoutHandle.store(inheritedStandards->output, std::memory_order_relaxed);
+		stderrHandle.store(inheritedStandards->error, std::memory_order_relaxed);
+		return;
+	}
 	auto &handles = wibo::handles();
 	auto stdinObject = make_pin<FileObject>(STDIN_FILENO);
 	stdinObject->closeOnDestroy = false;
-	stdinHandle = handles.alloc(std::move(stdinObject), FILE_GENERIC_READ, 0);
+	stdinHandle.store(handles.alloc(std::move(stdinObject), FILE_GENERIC_READ, 0), std::memory_order_relaxed);
 	auto stdoutObject = make_pin<FileObject>(STDOUT_FILENO);
 	stdoutObject->closeOnDestroy = false;
 	stdoutObject->appendOnly = true;
-	stdoutHandle = handles.alloc(std::move(stdoutObject), FILE_GENERIC_WRITE, 0);
+	stdoutHandle.store(handles.alloc(std::move(stdoutObject), FILE_GENERIC_WRITE, 0), std::memory_order_relaxed);
 	auto stderrObject = make_pin<FileObject>(STDERR_FILENO);
 	stderrObject->closeOnDestroy = false;
 	stderrObject->appendOnly = true;
-	stderrHandle = handles.alloc(std::move(stderrObject), FILE_GENERIC_WRITE, 0);
+	stderrHandle.store(handles.alloc(std::move(stderrObject), FILE_GENERIC_WRITE, 0), std::memory_order_relaxed);
 }
 
 std::optional<std::filesystem::path> findCaseInsensitiveFile(const std::filesystem::path &directory,

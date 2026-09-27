@@ -11,7 +11,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -36,6 +38,7 @@ enum class ObjectType : uint16_t {
 	CompletionPort,
 	ServiceLookup,
 	MemoryResource,
+	ProcessThread,
 };
 
 enum ObjectFlags : uint16_t {
@@ -202,6 +205,13 @@ struct HandleMeta {
 	uint16_t generation;
 };
 
+struct HandleTransferEntry {
+	HANDLE handle;
+	Pin<> object;
+	uint32_t grantedAccess;
+	uint32_t flags;
+};
+
 // We have to stay under a HANDLE value of 0x7FFF for legacy applications,
 // and handles values are aligned to 4.
 constexpr DWORD MAX_HANDLES = 0x2000;
@@ -243,6 +253,12 @@ class Handles {
 	}
 	bool getInformation(HANDLE h, uint32_t *outFlags) const;
 	bool duplicateTo(HANDLE src, Handles &dst, HANDLE &out, uint32_t desiredAccess, bool inherit, uint32_t options);
+	DWORD snapshotInherited(std::optional<std::span<const HANDLE>> selection,
+							std::vector<HandleTransferEntry> &out) const;
+	// Preserve selection order and aliases without requiring HANDLE_FLAG_INHERIT; skip NULL and -1.
+	DWORD snapshotSelected(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const;
+	// Import is atomic, requires an empty table, and consumes pins only on success.
+	DWORD importExact(std::span<HandleTransferEntry> entries);
 
   private:
 	struct Entry {

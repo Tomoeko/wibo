@@ -10,11 +10,14 @@
 #include "types.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <mimalloc.h>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -54,27 +57,101 @@ std::string convertEnvValueForWindows(const std::string &name, const char *rawVa
 	return converted.empty() ? std::string(rawValue) : converted;
 }
 
-const char *getenvCaseInsensitive(const std::string &name) {
-	if (const char *exact = getenv(name.c_str())) {
-		return exact;
-	}
-	for (char **work = environ; *work; ++work) {
-		std::string_view entry(*work);
-		size_t eq = entry.find('=');
-		if (eq != std::string_view::npos && entry.size() >= eq + 1 && entry.compare(0, eq, name) == 0) {
-			return entry.data() + eq + 1;
-		}
-		if (eq != std::string_view::npos && entry.size() >= eq + 1) {
-			std::string envName(entry.substr(0, eq));
-			if (strcasecmp(envName.c_str(), name.c_str()) == 0) {
-				return entry.data() + eq + 1;
-			}
-		}
-	}
-	return nullptr;
+char16_t foldEnvironmentCharacter(char16_t character) {
+	// Keep the current ASCII/Latin-1 case mapping independent of the host locale.
+	// Other Unicode case mappings remain outside this name comparison's verified scope.
+	if ((character >= u'a' && character <= u'z') || (character >= 0x00e0 && character <= 0x00f6) ||
+		(character >= 0x00f8 && character <= 0x00fe))
+		return character - 0x20;
+	if (character == 0x00ff)
+		return 0x0178;
+	return character;
 }
 
-void importEnvironmentDefaults() {
+struct EnvironmentNameLess {
+	bool operator()(std::u16string_view left, std::u16string_view right) const {
+		const size_t common = std::min(left.size(), right.size());
+		for (size_t index = 0; index < common; ++index) {
+			const char16_t first = foldEnvironmentCharacter(left[index]);
+			const char16_t second = foldEnvironmentCharacter(right[index]);
+			if (first != second)
+				return first < second;
+		}
+		return left.size() < right.size();
+	}
+	using is_transparent = void;
+};
+
+using Environment = std::map<std::u16string, std::u16string, EnvironmentNameLess>;
+std::mutex g_environmentMutex;
+std::once_flag g_environmentInitialization;
+Environment g_environment;
+bool g_environmentInitialized = false;
+constexpr size_t kMaxEnvironmentUnits = 2 * 1024 * 1024;
+
+const std::vector<std::u16string> &environmentBridgeNames() {
+	static const std::vector<std::u16string> names = [] {
+		std::vector<std::u16string> result;
+		const char *setting = std::getenv("WIBO_GUEST_ENVIRONMENT_BRIDGE");
+		if (!setting || !*setting)
+			return result;
+		std::string_view remaining(setting);
+		if (remaining.size() > 65536)
+			return result;
+		for (;;) {
+			const size_t comma = remaining.find(',');
+			const auto name = remaining.substr(0, comma);
+			if (name.empty() || std::any_of(name.begin(), name.end(), [](unsigned char character) {
+					return character < 0x21 || character > 0x7e || character == '=';
+				})) {
+				DEBUG_LOG("Invalid guest environment bridge names; bridge disabled\n");
+				return std::vector<std::u16string>{};
+			}
+			std::u16string wide;
+			for (unsigned char character : name)
+				wide.push_back(character);
+			// A guest cannot change the capability inherited by another host runtime.
+			if (!EnvironmentNameLess{}(wide, u"WIBO_GUEST_ENVIRONMENT_BRIDGE") &&
+				!EnvironmentNameLess{}(u"WIBO_GUEST_ENVIRONMENT_BRIDGE", wide)) {
+				DEBUG_LOG("Guest environment bridge cannot include its control variable\n");
+				return std::vector<std::u16string>{};
+			}
+			result.push_back(std::move(wide));
+			if (comma == std::string_view::npos)
+				return result;
+			remaining.remove_prefix(comma + 1);
+		}
+	}();
+	return names;
+}
+
+std::u16string decodeAnsi(std::string_view input) {
+	std::u16string output;
+	output.reserve(input.size());
+	for (unsigned char character : input)
+		output.push_back(character);
+	return output;
+}
+
+std::string encodeAnsi(std::u16string_view input) {
+	// GetACP currently selects ISO-8859-1. Unrepresentable characters use its default byte.
+	std::string output;
+	output.reserve(input.size());
+	for (size_t index = 0; index < input.size(); ++index) {
+		char16_t character = input[index];
+		if (character <= 0xff) {
+			output.push_back(static_cast<char>(character));
+		} else {
+			output.push_back('?');
+			if (character >= 0xd800 && character <= 0xdbff && index + 1 < input.size() && input[index + 1] >= 0xdc00 &&
+				input[index + 1] <= 0xdfff)
+				++index;
+		}
+	}
+	return output;
+}
+
+void importEnvironmentDefaults(Environment &environment) {
 	if (!wibo::provider::configured())
 		return;
 	std::vector<uint8_t> response;
@@ -97,65 +174,163 @@ void importEnvironmentDefaults() {
 	}
 	if (!reader.done())
 		return;
-	for (const auto &[name, value] : values)
-		if (!getenvCaseInsensitive(name))
-			setenv(name.c_str(), value.c_str(), 0);
+	for (const auto &[name, value] : values) {
+		auto wideName = utf8ToUtf16(name);
+		auto wideValue = utf8ToUtf16(value);
+		if (wideName && wideValue)
+			environment.try_emplace(std::move(*wideName), std::move(*wideValue));
+	}
 }
 
-void ensureTempEnvVariables() {
-	static const bool initialized = [] {
-		if (getenv("WIBO_ENVIRONMENT_INITIALIZED"))
-			return true;
-		importEnvironmentDefaults();
-		const char *hostTemp = getenv("TMPDIR");
-		if (!hostTemp || !*hostTemp) {
+void ensureEnvironment() {
+	(void)environmentBridgeNames();
+	std::call_once(g_environmentInitialization, [] {
+		{
+			std::lock_guard lock(g_environmentMutex);
+			if (g_environmentInitialized)
+				return;
+		}
+		Environment initial;
+		for (char **entry = environ; *entry; ++entry) {
+			std::string_view text(*entry);
+			const size_t separator = text.find('=', text.starts_with('=') ? 1 : 0);
+			if (separator == std::string_view::npos || separator == 0)
+				continue;
+			std::string name(text.substr(0, separator));
+			auto wideName = utf8ToUtf16(name);
+			auto wideValue = utf8ToUtf16(convertEnvValueForWindows(name, text.data() + separator + 1));
+			if (wideName && wideValue)
+				initial.try_emplace(std::move(*wideName), std::move(*wideValue));
+		}
+		importEnvironmentDefaults(initial);
+		const char *hostTemp = std::getenv("TMPDIR");
+		if (!hostTemp || !*hostTemp)
 			hostTemp = "/tmp";
+		auto temporary = utf8ToUtf16(convertEnvValueForWindows("TEMP", hostTemp));
+		if (temporary) {
+			initial.try_emplace(u"TMP", *temporary);
+			initial.try_emplace(u"TEMP", *temporary);
 		}
-		if (!getenvCaseInsensitive("TMP")) {
-			setenv("TMP", hostTemp, 0);
+		std::lock_guard lock(g_environmentMutex);
+		if (!g_environmentInitialized) {
+			g_environment = std::move(initial);
+			g_environmentInitialized = true;
 		}
-		if (!getenvCaseInsensitive("TEMP")) {
-			setenv("TEMP", hostTemp, 0);
-		}
-		setenv("WIBO_ENVIRONMENT_INITIALIZED", "1", 1);
-		return true;
-	}();
-	(void)initialized;
+	});
 }
 
-std::optional<std::string> getEnvValueForWindows(const std::string &name) {
-	ensureTempEnvVariables();
-	if (const char *rawValue = getenvCaseInsensitive(name)) {
-		return convertEnvValueForWindows(name, rawValue);
-	}
-	return std::nullopt;
+Environment environmentSnapshot() {
+	ensureEnvironment();
+	std::lock_guard lock(g_environmentMutex);
+	return g_environment;
 }
 
-std::optional<std::string> expansionVariableName(std::string_view name) {
-	return name.empty() ? std::nullopt : std::make_optional(std::string(name));
+std::optional<std::u16string> getEnvironmentValue(std::u16string_view name) {
+	ensureEnvironment();
+	std::lock_guard lock(g_environmentMutex);
+	const auto entry = g_environment.find(name);
+	return entry == g_environment.end() ? std::nullopt : std::make_optional(entry->second);
 }
 
-std::optional<std::string> expansionVariableName(std::u16string_view name) {
-	if (name.empty()) {
-		return std::nullopt;
+std::u16string expansionVariableName(std::string_view name) { return decodeAnsi(name); }
+std::u16string expansionVariableName(std::u16string_view name) { return std::u16string(name); }
+
+std::string expansionValue(std::u16string_view value, const char *) { return encodeAnsi(value); }
+std::u16string expansionValue(std::u16string_view value, const char16_t *) { return std::u16string(value); }
+
+DWORD parseEnvironmentBlock(std::span<const uint16_t> block, Environment &environment) {
+	if (block.size() < 2 || block.size() > kMaxEnvironmentUnits || block[block.size() - 1] || block[block.size() - 2])
+		return ERROR_INVALID_PARAMETER;
+	size_t cursor = 0;
+	while (cursor < block.size() && block[cursor]) {
+		const size_t start = cursor;
+		while (cursor < block.size() && block[cursor])
+			++cursor;
+		if (cursor == block.size())
+			return ERROR_INVALID_PARAMETER;
+		const auto units = block.subspan(start, cursor - start);
+		std::u16string entry(units.begin(), units.end());
+		const size_t separator = entry.find(u'=', entry.starts_with(u'=') ? 1 : 0);
+		if (separator == std::u16string::npos || separator == 0)
+			return ERROR_INVALID_PARAMETER;
+		// Duplicate names have no established selection policy in this parser.
+		if (!environment.emplace(entry.substr(0, separator), entry.substr(separator + 1)).second)
+			return ERROR_NOT_SUPPORTED;
+		++cursor;
 	}
-	// Environment storage uses wibo's current single-byte ACP. A wide name
-	// outside that mapping must remain unknown, never alias its low bytes.
-	std::string result;
-	result.reserve(name.size());
-	for (char16_t character : name) {
-		if (character > 0xff) {
-			return std::nullopt;
-		}
-		result.push_back(static_cast<char>(character));
+	if (cursor + (cursor == 0 ? 2 : 1) != block.size())
+		return ERROR_INVALID_PARAMETER;
+	return ERROR_SUCCESS;
+}
+
+bool appendEnvironmentBlock(const Environment &environment, std::vector<uint16_t> &output) {
+	output.clear();
+	size_t units = environment.empty() ? 2 : 1;
+	for (const auto &[name, value] : environment) {
+		if (name.size() > kMaxEnvironmentUnits - 2 || value.size() > kMaxEnvironmentUnits - name.size() - 2 ||
+			units > kMaxEnvironmentUnits - name.size() - value.size() - 2)
+			return false;
+		units += name.size() + value.size() + 2;
 	}
-	return result;
+	output.reserve(units);
+	for (const auto &[name, value] : environment) {
+		output.insert(output.end(), name.begin(), name.end());
+		output.push_back(u'=');
+		output.insert(output.end(), value.begin(), value.end());
+		output.push_back(0);
+	}
+	if (output.empty())
+		output.push_back(0);
+	output.push_back(0);
+	return true;
+}
+
+DWORD setEnvironmentValue(std::u16string_view name, const std::optional<std::u16string> &value) {
+	if (name.empty() || name.find(u'=') != std::u16string_view::npos)
+		return ERROR_INVALID_PARAMETER;
+	ensureEnvironment();
+	std::lock_guard lock(g_environmentMutex);
+	const auto existing = g_environment.find(name);
+	if (value) {
+		size_t units = 1;
+		for (const auto &[key, current] : g_environment)
+			if (EnvironmentNameLess{}(key, name) || EnvironmentNameLess{}(name, key)) {
+				if (key.size() > kMaxEnvironmentUnits - 2 || current.size() > kMaxEnvironmentUnits - key.size() - 2 ||
+					units > kMaxEnvironmentUnits - key.size() - current.size() - 2)
+					return ERROR_NOT_ENOUGH_MEMORY;
+				units += key.size() + current.size() + 2;
+			}
+		if (name.size() > kMaxEnvironmentUnits - 2 || value->size() > kMaxEnvironmentUnits - name.size() - 2 ||
+			units > kMaxEnvironmentUnits - name.size() - value->size() - 2)
+			return ERROR_NOT_ENOUGH_MEMORY;
+	}
+	for (const auto &allowed : environmentBridgeNames()) {
+		if (EnvironmentNameLess{}(allowed, name) || EnvironmentNameLess{}(name, allowed))
+			continue;
+		std::string hostName(allowed.begin(), allowed.end()), hostValue;
+		if (value && !utf16ToUtf8(*value, hostValue))
+			return kNoUnicodeTranslation;
+		const int result = value ? setenv(hostName.c_str(), hostValue.c_str(), 1) : unsetenv(hostName.c_str());
+		if (result)
+			return wibo::winErrorFromErrno(errno);
+		break;
+	}
+	if (!value) {
+		if (existing != g_environment.end())
+			g_environment.erase(existing);
+	} else if (existing != g_environment.end()) {
+		existing->second = *value;
+	} else {
+		g_environment.emplace(name, *value);
+	}
+	return ERROR_SUCCESS;
 }
 
 template <typename Character, typename Append>
 bool visitEnvironmentExpansion(std::basic_string_view<Character> source, Append append) {
 	using View = std::basic_string_view<Character>;
 	constexpr Character percent = static_cast<Character>('%');
+	const auto environment = environmentSnapshot();
 	size_t cursor = 0;
 	while (cursor < source.size()) {
 		size_t opening = source.find(percent, cursor);
@@ -170,13 +345,9 @@ bool visitEnvironmentExpansion(std::basic_string_view<Character> source, Append 
 			return append(source.substr(opening), false);
 		}
 		auto name = expansionVariableName(source.substr(opening + 1, closing - opening - 1));
-		auto value = name ? getEnvValueForWindows(*name) : std::nullopt;
-		if (value) {
-			std::basic_string<Character> replacement;
-			replacement.reserve(value->size());
-			for (unsigned char character : *value) {
-				replacement.push_back(static_cast<Character>(character));
-			}
+		auto entry = name.empty() ? environment.end() : environment.find(name);
+		if (entry != environment.end()) {
+			auto replacement = expansionValue(entry->second, static_cast<const Character *>(nullptr));
 			if (!append(View(replacement), true)) {
 				return false;
 			}
@@ -190,44 +361,48 @@ bool visitEnvironmentExpansion(std::basic_string_view<Character> source, Append 
 	return true;
 }
 
-std::vector<std::string> prepareEnvStrings(size_t &totalSize) {
-	ensureTempEnvVariables();
-	std::vector<std::string> strings;
-	totalSize = 0;
-	for (char **work = environ; *work; ++work) {
-		std::string s = *work;
-		size_t eq = s.find('=');
-		if (eq != std::string::npos) {
-			std::string name = s.substr(0, eq);
-			std::string value = s.substr(eq + 1);
-			std::string converted = convertEnvValueForWindows(name, value.c_str());
-			s = name;
-			s += '=';
-			s += converted;
-		}
-		strings.push_back(s);
-		totalSize += s.size() + 1;
-	}
-
-	totalSize++; // For the final null
-	return strings;
-}
-
-std::string convertEnvValueToHost(const std::string &name, const char *rawValue) {
-	if (!rawValue) {
-		return {};
-	}
-	if (strcasecmp(name.c_str(), "PATH") != 0) {
-		return rawValue;
-	}
-	std::string converted = files::windowsPathListToHost(rawValue);
-	return converted.empty() ? std::string(rawValue) : converted;
-}
-
 } // namespace
 
 namespace kernel32 {
-void initializeEnvironment() { ensureTempEnvVariables(); }
+void initializeEnvironment() { ensureEnvironment(); }
+
+std::optional<std::u16string> environmentValue(std::u16string_view name) { return getEnvironmentValue(name); }
+
+DWORD snapshotChildEnvironment(const void *block, bool unicode, std::vector<uint16_t> &output) {
+	output.clear();
+	if (!block) {
+		return appendEnvironmentBlock(environmentSnapshot(), output) ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY;
+	}
+	std::vector<uint16_t> copied;
+	for (size_t index = 0; index < kMaxEnvironmentUnits; ++index) {
+		uint16_t unit;
+		if (unicode)
+			std::memcpy(&unit, static_cast<const unsigned char *>(block) + index * sizeof(unit), sizeof(unit));
+		else
+			unit = static_cast<const unsigned char *>(block)[index];
+		copied.push_back(unit);
+		if (index && !unit && !copied[index - 1]) {
+			Environment parsed;
+			const DWORD error = parseEnvironmentBlock(copied, parsed);
+			if (!error)
+				output = std::move(copied);
+			return error;
+		}
+	}
+	return ERROR_NOT_ENOUGH_MEMORY;
+}
+
+DWORD installChildEnvironment(std::span<const uint16_t> block) {
+	(void)environmentBridgeNames();
+	Environment parsed;
+	const DWORD error = parseEnvironmentBlock(block, parsed);
+	if (error)
+		return error;
+	std::lock_guard lock(g_environmentMutex);
+	g_environment = std::move(parsed);
+	g_environmentInitialized = true;
+	return ERROR_SUCCESS;
+}
 
 GUEST_PTR WINAPI GetCommandLineA() {
 	HOST_CONTEXT_GUARD();
@@ -270,22 +445,23 @@ GUEST_PTR WINAPI GetEnvironmentStringsA() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetEnvironmentStringsA()\n");
 
-	size_t bufSize = 0;
-	auto strings = prepareEnvStrings(bufSize);
+	const DWORD incomingError = getLastError();
+	std::vector<uint16_t> snapshot;
+	if (!appendEnvironmentBlock(environmentSnapshot(), snapshot)) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return GUEST_NULL;
+	}
+	std::u16string wide(snapshot.begin(), snapshot.end());
+	const auto bytes = encodeAnsi(wide);
+	const size_t bufSize = bytes.size();
 
 	char *buffer = static_cast<char *>(wibo::heap::guestMalloc(bufSize));
 	if (!buffer) {
 		setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return GUEST_NULL;
 	}
-	char *ptr = buffer;
-	for (const auto &s : strings) {
-		memcpy(ptr, s.c_str(), s.size());
-		ptr[s.size()] = 0;
-		ptr += s.size() + 1;
-	}
-	*ptr = 0;
-
+	std::copy(bytes.begin(), bytes.end(), buffer);
+	setLastError(incomingError);
 	return toGuestPtr(buffer);
 }
 
@@ -294,38 +470,19 @@ GUEST_PTR WINAPI GetEnvironmentStringsW() {
 	const DWORD incomingError = getLastError();
 	DEBUG_LOG("GetEnvironmentStringsW()\n");
 
-	size_t byteSize = 0;
-	auto strings = prepareEnvStrings(byteSize);
-	std::vector<std::u16string> wideStrings;
-	wideStrings.reserve(strings.size());
-	size_t totalUnits = 1;
-	constexpr size_t maximumUnits = std::numeric_limits<size_t>::max() / sizeof(WCHAR);
-	for (const auto &string : strings) {
-		auto wide = utf8ToUtf16(string);
-		if (!wide) {
-			setLastError(kNoUnicodeTranslation);
-			return GUEST_NULL;
-		}
-		if (totalUnits == maximumUnits || wide->size() > maximumUnits - totalUnits - 1) {
-			setLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return GUEST_NULL;
-		}
-		totalUnits += wide->size() + 1;
-		wideStrings.push_back(std::move(*wide));
+	std::vector<uint16_t> snapshot;
+	if (!appendEnvironmentBlock(environmentSnapshot(), snapshot)) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return GUEST_NULL;
 	}
-	totalUnits = std::max(totalUnits, size_t(2));
+	const size_t totalUnits = snapshot.size();
 
 	WCHAR *buffer = static_cast<WCHAR *>(wibo::heap::guestMalloc(totalUnits * sizeof(WCHAR), true));
 	if (!buffer) {
 		setLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return GUEST_NULL;
 	}
-	WCHAR *ptr = buffer;
-	for (const auto &string : wideStrings) {
-		ptr = std::copy(string.begin(), string.end(), ptr);
-		*ptr++ = 0;
-	}
-	*ptr = 0;
+	std::memcpy(buffer, snapshot.data(), totalUnits * sizeof(WCHAR));
 	setLastError(incomingError);
 	return toGuestPtr(buffer);
 }
@@ -355,17 +512,20 @@ BOOL WINAPI FreeEnvironmentStringsW(LPWCH penv) {
 DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName, LPSTR lpBuffer, DWORD nSize) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetEnvironmentVariableA(%s, %p, %u)\n", lpName ? lpName : "(null)", lpBuffer, nSize);
-	if (!lpName) {
+	const DWORD incomingError = getLastError();
+	if (!lpName || !*lpName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
 	}
-	auto value = getEnvValueForWindows(lpName);
-	if (!value) {
+	auto wideValue = getEnvironmentValue(decodeAnsi(lpName));
+	if (!wideValue) {
 		setLastError(ERROR_ENVVAR_NOT_FOUND);
 		return 0;
 	}
-	DWORD len = static_cast<DWORD>(value->size());
+	const auto value = encodeAnsi(*wideValue);
+	DWORD len = static_cast<DWORD>(value.size());
 	if (nSize == 0) {
+		setLastError(incomingError);
 		return len + 1;
 	}
 	if (!lpBuffer) {
@@ -373,9 +533,11 @@ DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName, LPSTR lpBuffer, DWORD nSize)
 		return 0;
 	}
 	if (nSize <= len) {
+		setLastError(incomingError);
 		return len + 1;
 	}
-	memcpy(lpBuffer, value->c_str(), len + 1);
+	memcpy(lpBuffer, value.c_str(), len + 1);
+	setLastError(incomingError);
 	return len;
 }
 
@@ -386,20 +548,11 @@ DWORD WINAPI GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSiz
 		setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
 	}
-	std::string name;
-	if (!utf16ToUtf8(std::u16string(lpName, lpName + wstrlen(lpName)), name)) {
-		setLastError(kNoUnicodeTranslation);
-		return 0;
-	}
-	DEBUG_LOG("GetEnvironmentVariableW(%s, %p, %u)\n", name.c_str(), lpBuffer, nSize);
-	auto value = getEnvValueForWindows(name);
-	if (!value) {
-		setLastError(ERROR_ENVVAR_NOT_FOUND);
-		return 0;
-	}
-	auto wideValue = utf8ToUtf16(*value);
+	DEBUG_LOG("GetEnvironmentVariableW(%p, %p, %u)\n", lpName, lpBuffer, nSize);
+	auto wideValue =
+		getEnvironmentValue(std::u16string_view(reinterpret_cast<const char16_t *>(lpName), wstrlen(lpName)));
 	if (!wideValue) {
-		setLastError(kNoUnicodeTranslation);
+		setLastError(ERROR_ENVVAR_NOT_FOUND);
 		return 0;
 	}
 	if (wideValue->size() >= std::numeric_limits<DWORD>::max()) {
@@ -466,8 +619,7 @@ DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR lpSrc, LPWSTR lpDst, DWORD nSize)
 		setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
 	}
-	// Preserve literal UTF-16 independently of the single-byte environment
-	// storage; no wideStringToString conversion is permitted here.
+	// Both the source and owned environment values preserve literal UTF-16.
 	std::u16string source(lpSrc, lpSrc + wstrlen(lpSrc));
 	DWORD remaining = nSize;
 	size_t written = 0;
@@ -514,39 +666,18 @@ DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR lpSrc, LPWSTR lpDst, DWORD nSize)
 BOOL WINAPI SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetEnvironmentVariableA(%s, %s)\n", lpName ? lpName : "(null)", lpValue ? lpValue : "(null)");
-	if (!lpName || std::strchr(lpName, '=')) {
+	const DWORD incomingError = getLastError();
+	if (!lpName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	ensureTempEnvVariables();
-	std::string environmentName(lpName);
-	for (char **work = environ; *work; ++work) {
-		std::string_view entry(*work);
-		const auto separator = entry.find('=');
-		if (separator == std::string_view::npos)
-			continue;
-		std::string candidate(entry.substr(0, separator));
-		if (strcasecmp(candidate.c_str(), lpName) == 0) {
-			environmentName = std::move(candidate);
-			break;
-		}
-	}
-	int rc = 0;
-	if (!lpValue) {
-		rc = unsetenv(environmentName.c_str());
-		if (rc != 0) {
-			setLastErrorFromErrno();
-			return FALSE;
-		}
-		return TRUE;
-	}
-	std::string hostValue = convertEnvValueToHost(lpName, lpValue);
-	const char *valuePtr = hostValue.empty() ? lpValue : hostValue.c_str();
-	rc = setenv(environmentName.c_str(), valuePtr, 1);
-	if (rc != 0) {
-		setLastErrorFromErrno();
+	const DWORD error =
+		setEnvironmentValue(decodeAnsi(lpName), lpValue ? std::make_optional(decodeAnsi(lpValue)) : std::nullopt);
+	if (error) {
+		setLastError(error);
 		return FALSE;
 	}
+	setLastError(incomingError);
 	return TRUE;
 }
 
@@ -559,16 +690,11 @@ BOOL WINAPI SetEnvironmentVariableW(LPCWSTR lpName, LPCWSTR lpValue) {
 		DEBUG_LOG("ERROR_INVALID_PARAMETER\n");
 		return FALSE;
 	}
-	std::string name, value;
-	if (!utf16ToUtf8(std::u16string(lpName, lpName + wstrlen(lpName)), name) ||
-		(lpValue && !utf16ToUtf8(std::u16string(lpValue, lpValue + wstrlen(lpValue)), value))) {
-		setLastError(kNoUnicodeTranslation);
-		return FALSE;
-	}
-	BOOL result = SetEnvironmentVariableA(name.c_str(), lpValue ? value.c_str() : nullptr);
-	if (result)
-		setLastError(incomingError);
-	return result;
+	const std::u16string name(lpName, lpName + wstrlen(lpName));
+	const auto value = lpValue ? std::make_optional(std::u16string(lpValue, lpValue + wstrlen(lpValue))) : std::nullopt;
+	const DWORD error = setEnvironmentValue(name, value);
+	setLastError(error ? error : incomingError);
+	return error == ERROR_SUCCESS;
 }
 
 } // namespace kernel32

@@ -10,20 +10,132 @@
 #include <pthread.h>
 #endif
 
+#include <cerrno>
 #include <cstddef>
 #include <cstring>
 #include <sched.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <unordered_map>
 
 namespace kernel32 {
 namespace {
 constexpr DWORD kFailure = static_cast<DWORD>(-1);
 constexpr unsigned kMaximumSuspendCount = 127;
+std::mutex g_processThreadRegistryMutex;
+std::unordered_map<DWORD, Pin<ProcessThreadObject>> g_processThreads;
+
+void retireProcessThread(ProcessThreadObject *object) {
+	Pin<ProcessThreadObject> retired;
+	{
+		std::lock_guard registryLock(g_processThreadRegistryMutex);
+		std::lock_guard objectLock(object->m);
+		if (!object->signaled || object->handleCount.load(std::memory_order_relaxed))
+			return;
+		auto found = g_processThreads.find(object->threadId);
+		if (found != g_processThreads.end() && found->second.get() == object) {
+			retired = std::move(found->second);
+			g_processThreads.erase(found);
+		}
+	}
+}
 #ifdef __APPLE__
 DWORD controlError(kern_return_t result) {
 	return result == KERN_INVALID_ARGUMENT ? ERROR_INVALID_HANDLE : ERROR_GEN_FAILURE;
 }
 #endif
 } // namespace
+
+ProcessThreadObject::ProcessThreadObject(DWORD threadId, int resumeFd, bool suspended)
+	: WaitableObject(kType), threadId(threadId), suspendCount(suspended ? 1 : 0), mResumeFd(resumeFd) {
+	if (!suspended && mResumeFd >= 0) {
+		close(mResumeFd);
+		mResumeFd = -1;
+	}
+#ifdef __APPLE__
+	if (mResumeFd >= 0) {
+		int enabled = 1;
+		if (setsockopt(mResumeFd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0)
+			mResumeError = errno;
+	}
+#endif
+	std::lock_guard lock(g_processThreadRegistryMutex);
+	g_processThreads.insert_or_assign(threadId, Pin<ProcessThreadObject>::acquire(this));
+}
+
+ProcessThreadObject::~ProcessThreadObject() {
+	if (mResumeFd >= 0)
+		close(mResumeFd);
+}
+
+void ProcessThreadObject::onLastHandleClosed() noexcept { retireProcessThread(this); }
+
+DWORD ProcessThreadObject::resumeInitial() {
+	std::lock_guard lock(m);
+	if (signaled) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return kFailure;
+	}
+	const DWORD previous = suspendCount;
+	if (!previous)
+		return 0;
+	if (mResumeError || mResumeFd < 0) {
+		setLastError(mResumeError ? wibo::winErrorFromErrno(mResumeError) : ERROR_INVALID_HANDLE);
+		return kFailure;
+	}
+	const char resume = 'R';
+	int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+	flags |= MSG_NOSIGNAL;
+#endif
+	ssize_t sent;
+	do {
+		sent = send(mResumeFd, &resume, sizeof(resume), flags);
+	} while (sent < 0 && errno == EINTR);
+	if (sent != static_cast<ssize_t>(sizeof(resume))) {
+		setLastError(sent < 0 ? wibo::winErrorFromErrno(errno) : ERROR_GEN_FAILURE);
+		return kFailure;
+	}
+	suspendCount = 0;
+	close(mResumeFd);
+	mResumeFd = -1;
+	return previous;
+}
+
+void ProcessThreadObject::complete(DWORD code, bool known) {
+	{
+		std::lock_guard lock(m);
+		if (signaled)
+			return;
+		exitCode = code;
+		exitCodeKnown = known;
+		signaled = true;
+		if (mResumeFd >= 0) {
+			close(mResumeFd);
+			mResumeFd = -1;
+		}
+	}
+	cv.notify_all();
+	notifyWaiters(false);
+	retireProcessThread(this);
+}
+
+HANDLE allocateProcessThreadHandle(Pin<ProcessThreadObject> thread, DWORD access, DWORD flags) {
+	std::lock_guard lock(g_processThreadRegistryMutex);
+	// A newer thread may already own a recycled native ID.
+	g_processThreads.try_emplace(thread->threadId, thread.clone());
+	return wibo::handles().alloc(std::move(thread), access, flags);
+}
+
+HANDLE openProcessThreadHandle(DWORD threadId, DWORD access, DWORD flags) {
+	std::lock_guard lock(g_processThreadRegistryMutex);
+	auto found = g_processThreads.find(threadId);
+	if (found == g_processThreads.end()) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	return wibo::handles().alloc(found->second.clone(), access, flags);
+}
 
 BOOL WINAPI SwitchToThread() {
 	HOST_CONTEXT_GUARD();
@@ -36,6 +148,13 @@ DWORD WINAPI SuspendThread(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SuspendThread(%p)\n", hThread);
 	HandleMeta metadata{};
+	if (!isPseudoCurrentThreadHandle(hThread)) {
+		auto processThread = wibo::handles().getAs<ProcessThreadObject>(hThread, &metadata);
+		if (processThread) {
+			setLastError(metadata.grantedAccess & THREAD_SUSPEND_RESUME ? ERROR_NOT_SUPPORTED : ERROR_ACCESS_DENIED);
+			return kFailure;
+		}
+	}
 	auto object = isPseudoCurrentThreadHandle(hThread) ? currentThreadObject()
 													   : wibo::handles().getAs<ThreadObject>(hThread, &metadata);
 	if (!object) {
@@ -82,6 +201,16 @@ DWORD WINAPI ResumeThread(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("ResumeThread(%p)\n", hThread);
 	HandleMeta metadata{};
+	if (!isPseudoCurrentThreadHandle(hThread)) {
+		auto processThread = wibo::handles().getAs<ProcessThreadObject>(hThread, &metadata);
+		if (processThread) {
+			if (!(metadata.grantedAccess & THREAD_SUSPEND_RESUME)) {
+				setLastError(ERROR_ACCESS_DENIED);
+				return kFailure;
+			}
+			return processThread->resumeInitial();
+		}
+	}
 	auto object = isPseudoCurrentThreadHandle(hThread) ? currentThreadObject()
 													   : wibo::handles().getAs<ThreadObject>(hThread, &metadata);
 	if (!object) {
@@ -142,6 +271,14 @@ BOOL WINAPI GetThreadContext(HANDLE hThread, LPCONTEXT context) {
 		return FALSE;
 	}
 	HandleMeta metadata{};
+	if (!isPseudoCurrentThreadHandle(hThread)) {
+		auto processThread = wibo::handles().getAs<ProcessThreadObject>(hThread, &metadata);
+		if (processThread) {
+			constexpr DWORD kGetContextAccess = 8;
+			setLastError(metadata.grantedAccess & kGetContextAccess ? ERROR_NOT_SUPPORTED : ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+	}
 	auto thread = isPseudoCurrentThreadHandle(hThread) ? currentThreadObject()
 													   : wibo::handles().getAs<ThreadObject>(hThread, &metadata);
 	if (!thread) {

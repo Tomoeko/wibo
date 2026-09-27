@@ -12,6 +12,7 @@
 #include "kernel32.h"
 #include "kernel32_trampolines.h"
 #include "modules.h"
+#include "processenv.h"
 #include "processes.h"
 #include "strutil.h"
 #include "timeutil.h"
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <climits>
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -60,10 +62,11 @@ bool g_processAffinityMaskInitialized = false;
 const FILETIME kDefaultThreadFileTime = {static_cast<DWORD>(UNIX_TIME_ZERO & 0xFFFFFFFFULL),
 										 static_cast<DWORD>(UNIX_TIME_ZERO >> 32)};
 
-constexpr DWORD STARTF_USESHOWWINDOW = 0x00000001;
 constexpr DWORD STARTF_USESTDHANDLES = 0x00000100;
-constexpr WORD SW_SHOWNORMAL = 1;
 
+constexpr DWORD CREATE_SUSPENDED = 0x00000004;
+constexpr DWORD CREATE_NO_WINDOW = 0x08000000;
+constexpr DWORD CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 constexpr DWORD EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 constexpr DWORD_PTR PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
 
@@ -239,19 +242,30 @@ DWORD_PTR computeSystemAffinityMask() {
 	return (static_cast<DWORD_PTR>(1) << usable) - 1;
 }
 
-template <typename StartupInfo> void populateStartupInfo(StartupInfo *info) {
+std::once_flag g_startupInfoAInitialization;
+std::optional<files::StandardHandles> g_startupInfoStandardsA;
+
+template <typename StartupInfo> void populateStartupInfo(StartupInfo *info, bool narrow) {
 	if (!info) {
 		return;
 	}
-	std::memset(info, 0, sizeof(StartupInfo));
+	// The ANSI entry caches its first selected handle snapshot. The wide entry
+	// reads current handles, leaving those output fields untouched without the flag.
+	if (narrow)
+		std::call_once(g_startupInfoAInitialization, [] { g_startupInfoStandardsA = files::startupStandardHandles(); });
+	const auto standards = narrow ? g_startupInfoStandardsA : files::startupStandardHandles();
+	std::memset(info, 0, offsetof(StartupInfo, hStdInput));
 	info->cb = sizeof(StartupInfo);
-	info->dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-	info->wShowWindow = SW_SHOWNORMAL;
-	info->cbReserved2 = 0;
-	info->lpReserved2 = GUEST_NULL;
-	info->hStdInput = files::getStdHandle(STD_INPUT_HANDLE);
-	info->hStdOutput = files::getStdHandle(STD_OUTPUT_HANDLE);
-	info->hStdError = files::getStdHandle(STD_ERROR_HANDLE);
+	if (standards) {
+		info->dwFlags = STARTF_USESTDHANDLES;
+		info->hStdInput = standards->input;
+		info->hStdOutput = standards->output;
+		info->hStdError = standards->error;
+	} else if (narrow) {
+		info->hStdInput = INVALID_HANDLE_VALUE;
+		info->hStdOutput = INVALID_HANDLE_VALUE;
+		info->hStdError = INVALID_HANDLE_VALUE;
+	}
 }
 
 thread_local ThreadObject *g_currentThreadObject = nullptr;
@@ -475,26 +489,29 @@ HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId) {
 		setLastError(ERROR_NOT_SUPPORTED);
 		return NO_HANDLE;
 	}
-	std::lock_guard lock(g_threadRegistryMutex);
-	auto it = g_threadRegistry.find(threadId);
-	if (it == g_threadRegistry.end()) {
-		setLastError(ERROR_INVALID_PARAMETER);
-		return NO_HANDLE;
-	}
 	if (access & THREAD_QUERY_INFORMATION)
 		access |= THREAD_QUERY_LIMITED_INFORMATION; // Query information also grants the limited query right.
 	if (access & THREAD_SET_INFORMATION)
 		access |= THREAD_SET_LIMITED_INFORMATION;
-	return wibo::handles().alloc(it->second.clone(), access, inherit ? HANDLE_FLAG_INHERIT : 0);
+	const DWORD flags = inherit ? HANDLE_FLAG_INHERIT : 0;
+	{
+		std::lock_guard lock(g_threadRegistryMutex);
+		auto it = g_threadRegistry.find(threadId);
+		if (it != g_threadRegistry.end())
+			return wibo::handles().alloc(it->second.clone(), access, flags);
+	}
+	return openProcessThreadHandle(threadId, access, flags);
 }
 
 BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
-											 DWORD dwFlags, SIZE_T *lpSize) {
+											  DWORD dwFlags, SIZE_T *lpSize) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("InitializeProcThreadAttributeList(%p, %u, %u, %p)\n", lpAttributeList, dwAttributeCount, dwFlags, lpSize);
+	DEBUG_LOG("InitializeProcThreadAttributeList(%p, %u, %u, %p)\n", lpAttributeList, dwAttributeCount, dwFlags,
+			  lpSize);
 	constexpr SIZE_T headerSize = sizeof(ProcessAttributeList);
 	if (!lpSize || dwFlags ||
-		(dwAttributeCount && sizeof(ProcessAttribute) > (std::numeric_limits<SIZE_T>::max() - headerSize) / dwAttributeCount)) {
+		(dwAttributeCount &&
+		 sizeof(ProcessAttribute) > (std::numeric_limits<SIZE_T>::max() - headerSize) / dwAttributeCount)) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
@@ -512,7 +529,7 @@ BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAtt
 }
 
 BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwFlags, DWORD_PTR Attribute,
-									 PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize) {
+									  PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("UpdateProcThreadAttribute(%p, %u, 0x%llx, %p, %llu, %p, %p)\n", lpAttributeList, dwFlags,
 			  static_cast<unsigned long long>(Attribute), lpValue, static_cast<unsigned long long>(cbSize),
@@ -660,8 +677,8 @@ DWORD WINAPI GetThreadId(HANDLE Thread) {
 		return wibo::getThreadId();
 	}
 	HandleMeta metadata{};
-	Pin<ThreadObject> obj = wibo::handles().getAs<ThreadObject>(Thread, &metadata);
-	if (!obj) {
+	auto obj = wibo::handles().get(Thread, &metadata);
+	if (!obj || (obj->type != ObjectType::Thread && obj->type != ObjectType::ProcessThread)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return 0;
 	}
@@ -669,7 +686,9 @@ DWORD WINAPI GetThreadId(HANDLE Thread) {
 		setLastError(ERROR_ACCESS_DENIED);
 		return 0;
 	}
-	return obj->threadId;
+	if (auto *processThread = detail::castTo<ProcessThreadObject>(obj.get()))
+		return processThread->threadId;
+	return detail::castTo<ThreadObject>(obj.get())->threadId;
 }
 
 BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask) {
@@ -795,7 +814,7 @@ BOOL WINAPI TerminateProcess(HANDLE hProcess, UINT uExitCode) {
 	if (process->pid == getpid())
 		exitInternal(uExitCode);
 	std::lock_guard lk(process->m);
-	if (process->signaled) {
+	if (process->signaled || process->nativeExitObserved) {
 		return TRUE;
 	}
 	int killResult = 0;
@@ -1021,6 +1040,7 @@ HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwSt
 	// Can't use pthread_cleanup_push/pop because it can't unwind the Windows stack
 	// So call the cleanup function directly before pthread_exit
 	threadCleanup(obj);
+	wibo::reportPrimaryThreadExit(dwExitCode);
 	pthread_exit(nullptr);
 }
 
@@ -1036,8 +1056,8 @@ BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode) {
 		return TRUE;
 	}
 	HandleMeta metadata{};
-	auto obj = wibo::handles().getAs<ThreadObject>(hThread, &metadata);
-	if (!obj) {
+	auto obj = wibo::handles().get(hThread, &metadata);
+	if (!obj || (obj->type != ObjectType::Thread && obj->type != ObjectType::ProcessThread)) {
 		setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
@@ -1045,8 +1065,18 @@ BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode) {
 		setLastError(ERROR_ACCESS_DENIED);
 		return FALSE;
 	}
-	std::lock_guard lk(obj->m);
-	*lpExitCode = obj->signaled ? obj->exitCode : STILL_ACTIVE;
+	if (auto *processThread = detail::castTo<ProcessThreadObject>(obj.get())) {
+		std::lock_guard lock(processThread->m);
+		if (processThread->signaled && !processThread->exitCodeKnown) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+		*lpExitCode = processThread->signaled ? processThread->exitCode : STILL_ACTIVE;
+	} else {
+		auto *thread = detail::castTo<ThreadObject>(obj.get());
+		std::lock_guard lock(thread->m);
+		*lpExitCode = thread->signaled ? thread->exitCode : STILL_ACTIVE;
+	}
 	return TRUE;
 }
 
@@ -1133,7 +1163,7 @@ BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *l
 	}
 
 #ifdef __linux__
-	struct rusage usage {};
+	struct rusage usage{};
 	if (getrusage(RUSAGE_THREAD, &usage) == 0) {
 		*lpKernelTime = fileTimeFromTimeval(usage.ru_stime);
 		*lpUserTime = fileTimeFromTimeval(usage.ru_utime);
@@ -1141,7 +1171,7 @@ BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *l
 	}
 #endif
 
-	struct timespec cpuTime {};
+	struct timespec cpuTime{};
 	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuTime) == 0) {
 		*lpKernelTime = fileTimeFromDuration(0);
 		*lpUserTime = fileTimeFromTimespec(cpuTime);
@@ -1164,21 +1194,89 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 			  dwCreationFlags, lpEnvironment, lpCurrentDirectory ? lpCurrentDirectory : "<none>", lpStartupInfo,
 			  lpProcessInformation);
 
-	bool useSearchPath = lpApplicationName == nullptr;
+	if (!lpStartupInfo || !lpProcessInformation ||
+		lpStartupInfo->cb !=
+			((dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ? sizeof(STARTUPINFOEXA) : sizeof(STARTUPINFOA))) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	constexpr DWORD supportedFlags =
+		CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
+	if (dwCreationFlags & ~supportedFlags) {
+		DEBUG_LOG("Unsupported process creation flags: 0x%x\n", dwCreationFlags & ~supportedFlags);
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const bool useSearchPath = lpApplicationName == nullptr;
+	wibo::SpawnOptions options;
+	options.suspended = (dwCreationFlags & CREATE_SUSPENDED) != 0;
+	DWORD error = snapshotChildEnvironment(lpEnvironment, (dwCreationFlags & CREATE_UNICODE_ENVIRONMENT) != 0,
+										   options.environment);
+	if (error) {
+		setLastError(error);
+		return FALSE;
+	}
+	std::optional<std::span<const HANDLE>> selection;
 	if (dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT) {
-		if (!lpStartupInfo || lpStartupInfo->cb != sizeof(STARTUPINFOEXA)) {
-			setLastError(ERROR_INVALID_PARAMETER);
-			return FALSE;
-		}
 		auto *extended = reinterpret_cast<STARTUPINFOEXA *>(lpStartupInfo);
 		if (extended->lpAttributeList) {
 			auto *list = reinterpret_cast<ProcessAttributeList *>(static_cast<uintptr_t>(extended->lpAttributeList));
-			if (list->count) {
-				// Guest handles cannot yet be transferred to an exec-created process.
-				setLastError(ERROR_NOT_SUPPORTED);
+			if (list->count > list->capacity || list->count > 1) {
+				setLastError(ERROR_INVALID_PARAMETER);
 				return FALSE;
 			}
+			if (list->count) {
+				const auto *attribute = reinterpret_cast<ProcessAttribute *>(list + 1);
+				if (attribute->key != PROC_THREAD_ATTRIBUTE_HANDLE_LIST || !bInheritHandles || !attribute->value ||
+					!attribute->size || attribute->size % sizeof(HANDLE) ||
+					attribute->size / sizeof(HANDLE) > MAX_HANDLES) {
+					setLastError(ERROR_INVALID_PARAMETER);
+					return FALSE;
+				}
+				selection = std::span(reinterpret_cast<const HANDLE *>(static_cast<uintptr_t>(attribute->value)),
+									  attribute->size / sizeof(HANDLE));
+			}
 		}
+	}
+	if (bInheritHandles) {
+		error = wibo::handles().snapshotInherited(selection, options.handles);
+		if (error) {
+			setLastError(error);
+			return FALSE;
+		}
+	}
+	if (lpStartupInfo->dwFlags & STARTF_USESTDHANDLES) {
+		if (!bInheritHandles) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+		options.standardHandles =
+			files::StandardHandles{lpStartupInfo->hStdInput, lpStartupInfo->hStdOutput, lpStartupInfo->hStdError};
+	} else {
+		files::StandardHandles standard{files::getStdHandle(STD_INPUT_HANDLE), files::getStdHandle(STD_OUTPUT_HANDLE),
+										files::getStdHandle(STD_ERROR_HANDLE), false};
+		if (!bInheritHandles) {
+			// Default standard streams have separate child handles when the handle table is not inherited.
+			const std::array<HANDLE, 3> sourceIds = {standard.input, standard.output, standard.error};
+			std::vector<HandleTransferEntry> snapshot;
+			error = wibo::handles().snapshotSelected(sourceIds, snapshot);
+			if (error) {
+				setLastError(error);
+				return FALSE;
+			}
+			const std::array<HANDLE *, 3> destinations = {&standard.input, &standard.output, &standard.error};
+			for (unsigned index = 0; index < sourceIds.size(); ++index) {
+				if (sourceIds[index] == NO_HANDLE || sourceIds[index] == static_cast<HANDLE>(-1))
+					continue;
+				const auto source = std::find_if(snapshot.begin(), snapshot.end(),
+												 [&](const auto &entry) { return entry.handle == sourceIds[index]; });
+				assert(source != snapshot.end());
+				const HANDLE childId = (static_cast<HANDLE>(index) + 1) * 4;
+				options.handles.push_back({childId, source->object.clone(), source->grantedAccess, source->flags});
+				*destinations[index] = childId;
+			}
+		}
+		options.standardHandles = standard;
 	}
 	wibo::SpawnDirectory directory;
 	if (lpCurrentDirectory) {
@@ -1210,25 +1308,21 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 	}
 
 	Pin<ProcessObject> obj;
-	int spawnResult = wibo::spawnWithCommandLine(*resolved, commandLine, obj, directory.nativeFd());
+	DWORD bootstrapError = 0;
+	const int spawnResult =
+		wibo::spawnWithCommandLine(*resolved, commandLine, obj, directory.nativeFd(), &options, &bootstrapError);
 	if (spawnResult != 0) {
-		setLastError(wibo::winErrorFromErrno(spawnResult));
+		setLastError(bootstrapError ? bootstrapError : wibo::winErrorFromErrno(spawnResult));
 		return FALSE;
 	}
-
-	if (lpProcessInformation) {
-		lpProcessInformation->dwProcessId = static_cast<DWORD>(obj->pid);
-		lpProcessInformation->dwThreadId = static_cast<DWORD>(obj->pid); // Use the process ID as the thread ID
-		lpProcessInformation->hProcess = wibo::handles().alloc(obj.clone(), PROCESS_ALL_ACCESS, 0);
-		// Give hThread a process handle for now
-		lpProcessInformation->hThread = wibo::handles().alloc(std::move(obj), PROCESS_ALL_ACCESS, 0);
-	}
-	(void)lpProcessAttributes;
-	(void)lpThreadAttributes;
-	(void)bInheritHandles;
-	(void)dwCreationFlags;
-	(void)lpEnvironment;
-	(void)lpStartupInfo;
+	lpProcessInformation->dwProcessId = static_cast<DWORD>(obj->pid);
+	lpProcessInformation->dwThreadId = obj->primaryThread->threadId;
+	lpProcessInformation->hProcess =
+		wibo::handles().alloc(obj.clone(), PROCESS_ALL_ACCESS,
+							  lpProcessAttributes && lpProcessAttributes->bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
+	lpProcessInformation->hThread =
+		allocateProcessThreadHandle(obj->primaryThread.clone(), THREAD_ALL_ACCESS,
+									lpThreadAttributes && lpThreadAttributes->bInheritHandle ? HANDLE_FLAG_INHERIT : 0);
 	return TRUE;
 }
 
@@ -1239,11 +1333,20 @@ BOOL WINAPI CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSE
 	HOST_CONTEXT_GUARD();
 	std::string applicationUtf8;
 	if (lpApplicationName) {
-		applicationUtf8 = wideStringToString(lpApplicationName);
+		if (!utf16ToUtf8(
+				std::u16string_view(reinterpret_cast<const char16_t *>(lpApplicationName), wstrlen(lpApplicationName)),
+				applicationUtf8)) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
 	}
 	std::string commandUtf8;
 	if (lpCommandLine) {
-		commandUtf8 = wideStringToString(lpCommandLine);
+		if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpCommandLine), wstrlen(lpCommandLine)),
+						 commandUtf8)) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
 	}
 	std::string directoryUtf8;
 	if (lpCurrentDirectory) {
@@ -1275,13 +1378,13 @@ BOOL WINAPI CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSE
 void WINAPI GetStartupInfoA(LPSTARTUPINFOA lpStartupInfo) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetStartupInfoA(%p)\n", lpStartupInfo);
-	populateStartupInfo(lpStartupInfo);
+	populateStartupInfo(lpStartupInfo, true);
 }
 
 void WINAPI GetStartupInfoW(LPSTARTUPINFOW lpStartupInfo) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetStartupInfoW(%p)\n", lpStartupInfo);
-	populateStartupInfo(lpStartupInfo);
+	populateStartupInfo(lpStartupInfo, false);
 }
 
 BOOL WINAPI SetThreadStackGuarantee(PULONG StackSizeInBytes) {

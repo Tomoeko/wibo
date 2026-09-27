@@ -317,9 +317,7 @@ int CDECL __wine_dbg_header(WINE_DEBUG_CLASS debugClass, WINE_DEBUG_CHANNEL *cha
 	return -1;
 }
 
-int CDECL __wine_dbg_output(const char *str) {
-	return str ? static_cast<int>(std::strlen(str)) : 0;
-}
+int CDECL __wine_dbg_output(const char *str) { return str ? static_cast<int>(std::strlen(str)) : 0; }
 
 const char *CDECL __wine_dbg_strdup(const char *str) {
 	if (!str) {
@@ -351,11 +349,16 @@ NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcR
 	}
 	IoStatusBlock->Information = 0;
 
-	auto file = wibo::handles().getAs<FileObject>(FileHandle);
+	HandleMeta metadata{};
+	auto file = wibo::handles().getAs<FileObject>(FileHandle, &metadata);
 	if (!file || !file->valid()) {
 		IoStatusBlock->Status = STATUS_INVALID_HANDLE;
 		IoStatusBlock->Information = 0;
 		return STATUS_INVALID_HANDLE;
+	}
+	if (!(metadata.grantedAccess & FILE_READ_DATA)) {
+		IoStatusBlock->Status = STATUS_ACCESS_DENIED;
+		return STATUS_ACCESS_DENIED;
 	}
 
 	bool useOverlapped = file->overlapped;
@@ -423,10 +426,19 @@ NTSTATUS WINAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE Apc
 	}
 	IoStatusBlock->Information = 0;
 
-	auto file = wibo::handles().getAs<FileObject>(FileHandle);
+	HandleMeta metadata{};
+	auto file = wibo::handles().getAs<FileObject>(FileHandle, &metadata);
 	if (!file || !file->valid()) {
 		IoStatusBlock->Status = STATUS_INVALID_HANDLE;
 		return STATUS_INVALID_HANDLE;
+	}
+	if (!(metadata.grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA))) {
+		IoStatusBlock->Status = STATUS_ACCESS_DENIED;
+		return STATUS_ACCESS_DENIED;
+	}
+	if (!(metadata.grantedAccess & FILE_WRITE_DATA) && !file->appendOnly && !file->isPipe) {
+		IoStatusBlock->Status = STATUS_NOT_SUPPORTED;
+		return STATUS_NOT_SUPPORTED;
 	}
 
 	bool useOverlapped = file->overlapped;
@@ -748,7 +760,7 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 		break;
 	}
 	case FilePositionInformation: {
-		auto file = std::move(obj).downcast<kernel32::FileObject>();
+		auto file = obj.clone().downcast<kernel32::FileObject>();
 		if (!file) {
 			status = STATUS_INVALID_PARAMETER;
 			break;
@@ -758,7 +770,15 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			break;
 		}
 		auto info = reinterpret_cast<PFILE_POSITION_INFORMATION>(FileInformation);
-		info->CurrentByteOffset.QuadPart = static_cast<LONGLONG>(file->filePos);
+		off_t position = 0;
+		if (!file->isPipe) {
+			const DWORD error = files::queryPositionLocked(*file, position);
+			if (error) {
+				status = wibo::statusFromWinError(error);
+				break;
+			}
+		}
+		info->CurrentByteOffset.QuadPart = static_cast<LONGLONG>(position);
 		IoStatusBlock->Information = sizeof(FILE_POSITION_INFORMATION);
 		break;
 	}
@@ -788,7 +808,15 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 		info.AccessFlags = metadata.grantedAccess;
 		if (obj->flags & Of_File) {
 			auto file = obj.clone().downcast<kernel32::FileObject>();
-			info.PositionInformation.CurrentByteOffset.QuadPart = file->filePos;
+			off_t position = 0;
+			if (!file->isPipe) {
+				const DWORD error = files::queryPositionLocked(*file, position);
+				if (error) {
+					status = wibo::statusFromWinError(error);
+					break;
+				}
+			}
+			info.PositionInformation.CurrentByteOffset.QuadPart = position;
 		}
 		info.Mode = (obj->openFlags & FILE_FLAG_OVERLAPPED) ? 0 : 0x20; // FILE_SYNCHRONOUS_IO_NONALERT
 		if (obj->openFlags & FILE_FLAG_WRITE_THROUGH)
