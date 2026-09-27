@@ -1017,6 +1017,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_init_once SOURCES test/test_init_once.c)
         wibo_add_fixture_bin(NAME test_wait_on_address SOURCES test/test_wait_on_address.c COMPILE_OPTIONS -lsynchronization)
         wibo_add_fixture_bin(NAME test_env_strings SOURCES test/test_env_strings.c)
+        wibo_add_fixture_bin(NAME test_load_library_ex SOURCES test/test_load_library_ex.c)
+        set_tests_properties(wibo.test_load_library_ex PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
 
         # DLLs for fixture tests
         wibo_add_fixture_dll(NAME external_exports SOURCES test/external_exports.c)

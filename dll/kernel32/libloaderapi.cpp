@@ -313,6 +313,36 @@ HMODULE WINAPI LoadLibraryW(LPCWSTR lpLibFileName) {
 	return LoadLibraryA(filename.c_str());
 }
 
+HMODULE WINAPI LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LoadLibraryExA(%s, %llx, %x)\n", lpLibFileName ? lpLibFileName : "", static_cast<ULONGLONG>(hFile),
+			  dwFlags);
+	// The reserved handle does not select a file or change the load mode.
+	(void)hFile;
+	if (dwFlags != 0) {
+		DEBUG_LOG("LoadLibraryExA: unsupported load mode\n");
+		setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	}
+	if (!lpLibFileName) {
+		setLastError(ERROR_MOD_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	std::string filename = lpLibFileName;
+	while (!filename.empty() && filename.back() == ' ')
+		filename.pop_back();
+	const size_t lastSeparator = filename.find_last_of("\\/");
+	const size_t baseStart = lastSeparator == std::string::npos ? 0 : lastSeparator + 1;
+	const size_t lastCharacter = filename.find_last_not_of('.');
+	if (lastCharacter != std::string::npos && filename.find('.', baseStart) < lastCharacter)
+		filename.resize(lastCharacter + 1);
+	if (filename.empty()) {
+		setLastError(ERROR_MOD_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	return LoadLibraryA(filename.c_str());
+}
+
 HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
 	(void)hFile;
