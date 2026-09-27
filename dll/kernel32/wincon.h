@@ -42,6 +42,8 @@ BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode);
 UINT WINAPI GetConsoleCP();
 UINT WINAPI GetConsoleOutputCP();
 BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add);
+bool isConsoleControlCIgnored();
+void initializeConsoleControlCIgnore(bool ignore);
 BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE hConsoleOutput, CONSOLE_SCREEN_BUFFER_INFO *lpConsoleScreenBufferInfo);
 BOOL WINAPI SetConsoleTextAttribute(HANDLE hConsoleOutput, WORD wAttributes);
 BOOL WINAPI WriteConsoleW(HANDLE hConsoleOutput, LPCWSTR lpBuffer, DWORD nNumberOfCharsToWrite,

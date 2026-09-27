@@ -3,6 +3,7 @@
 #include "test_assert.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #ifndef _WIN64
 #error This fixture requires the x64 exception ABI
@@ -71,6 +72,7 @@ struct HandlerObservation {
 static struct HandlerObservation observations[2];
 static unsigned handler_count;
 static BOOL extra_handler;
+static BOOL change_scope_index;
 
 static void observe_handler(unsigned index, EXCEPTION_RECORD *record, PVOID establisher, CONTEXT *context,
 							PVOID dispatcher_pointer) {
@@ -104,12 +106,16 @@ static void observe_handler(unsigned index, EXCEPTION_RECORD *record, PVOID esta
 EXCEPTION_DISPOSITION NTAPI frame_inner_handler(EXCEPTION_RECORD *record, PVOID establisher, CONTEXT *context,
 												PVOID dispatcher) {
 	observe_handler(1, record, establisher, context, dispatcher);
+	if (change_scope_index && dispatcher)
+		((struct FixtureDispatcherContext *)dispatcher)->ScopeIndex = 73;
 	return ExceptionContinueSearch;
 }
 
 EXCEPTION_DISPOSITION NTAPI frame_outer_handler(EXCEPTION_RECORD *record, PVOID establisher, CONTEXT *context,
 												PVOID dispatcher) {
 	observe_handler(2, record, establisher, context, dispatcher);
+	if (change_scope_index && dispatcher)
+		((struct FixtureDispatcherContext *)dispatcher)->ScopeIndex = MAXDWORD;
 	return ExceptionContinueExecution;
 }
 
@@ -157,7 +163,10 @@ static void check_observation(unsigned slot, ULONG_PTR image_base) {
 		   (unsigned long long)dispatcher->TargetIp, (unsigned long)dispatcher->ScopeIndex);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	change_scope_index = argc == 2 && strcmp(argv[1], "--scope-index") == 0;
+	if (argc != 1 && !change_scope_index)
+		return 2;
 	HMODULE kernel = GetModuleHandleA("kernel32.dll");
 	TEST_CHECK(kernel != NULL);
 	FARPROC exported = GetProcAddress(kernel, "RaiseException");

@@ -149,6 +149,7 @@ ModuleInfo *findLoadedModule(const char *name);
 // Return a loaded image handle without acquiring a reference or loading its file.
 HMODULE findLoadedModuleHandle(const char *name);
 HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool unchanged);
+bool addModuleReference(HMODULE module, bool pin);
 void notifyDllThreadAttach();
 void notifyDllThreadDetach();
 BOOL disableThreadNotifications(HMODULE module);

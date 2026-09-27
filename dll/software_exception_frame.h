@@ -44,6 +44,30 @@ struct alignas(16) SoftwareExceptionFrameActivation64 {
 static_assert(sizeof(SoftwareExceptionFrameActivation64) == 2640);
 
 namespace wibo {
+constexpr DWORD kSoftwareDispatcherScopeIndexMutation64 = 1u << 9;
+
+inline DWORD softwareDispatcherMutationMask64(const SoftwareDispatcherContext64 &actual,
+											  const SoftwareDispatcherContext64 &expected) {
+	return (actual.ControlPc != expected.ControlPc ? 1u << 0 : 0) |
+		   (actual.ImageBase != expected.ImageBase ? 1u << 1 : 0) |
+		   (actual.FunctionEntry != expected.FunctionEntry ? 1u << 2 : 0) |
+		   (actual.EstablisherFrame != expected.EstablisherFrame ? 1u << 3 : 0) |
+		   (actual.TargetIp != expected.TargetIp ? 1u << 4 : 0) |
+		   (actual.ContextRecord != expected.ContextRecord ? 1u << 5 : 0) |
+		   (actual.LanguageHandler != expected.LanguageHandler ? 1u << 6 : 0) |
+		   (actual.HandlerData != expected.HandlerData ? 1u << 7 : 0) |
+		   (actual.HistoryTable != expected.HistoryTable ? 1u << 8 : 0) |
+		   (actual.ScopeIndex != expected.ScopeIndex ? kSoftwareDispatcherScopeIndexMutation64 : 0) |
+		   (actual.Fill0 != expected.Fill0 ? 1u << 10 : 0);
+}
+
+inline bool softwareDispatcherControlUnchanged64(const SoftwareDispatcherContext64 &actual,
+												 const SoftwareDispatcherContext64 &expected) {
+	// Language handlers advance this scope cursor before invoking cleanup.
+	// Every control address and ownership pointer remains part of the contract.
+	return (softwareDispatcherMutationMask64(actual, expected) & ~kSoftwareDispatcherScopeIndexMutation64) == 0;
+}
+
 bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType,
 									 PVOID historyTable = nullptr);
 LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,

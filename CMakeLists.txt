@@ -766,6 +766,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_console_code_pages SOURCES test/test_console_code_pages.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_code_pages PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_console_control SOURCES test/test_console_control.c
+            COMPILE_OPTIONS -municode)
+        set_tests_properties(wibo.test_console_control PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_unhandled_filter_registration SOURCES test/test_unhandled_filter_registration.c)
+        set_tests_properties(wibo.test_unhandled_filter_registration PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_reg_enum_keys SOURCES test/test_reg_enum_keys.c
             COMPILE_OPTIONS -ladvapi32)
         set_tests_properties(wibo.test_reg_enum_keys PROPERTIES TIMEOUT 20)
@@ -886,6 +891,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 SOURCES test/test_target_unwind_ex.c test/test_target_unwind_ex.S
                 DEPENDS test/test_target_unwind.S)
             set_tests_properties(wibo.test_target_unwind_ex PROPERTIES TIMEOUT 15)
+            foreach(_scope_fixture test_software_frame_dispatch test_target_unwind test_target_unwind_ex)
+                add_test(NAME wibo.${_scope_fixture}_scope_index
+                    COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/${_scope_fixture}.exe --scope-index)
+                set_tests_properties(wibo.${_scope_fixture}_scope_index PROPERTIES TIMEOUT 15
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+            endforeach()
             wibo_add_fixture_bin(NAME test_software_unwind_restore
                 SOURCES test/test_software_unwind_restore.c test/test_software_unwind_restore.S)
             set_tests_properties(wibo.test_software_unwind_restore PROPERTIES TIMEOUT 15)
@@ -1620,6 +1631,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_module_lifetime SOURCES test/test_module_lifetime.c)
         set_tests_properties(wibo.test_module_lifetime PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_loader_add_reference SOURCES test/test_loader_add_reference.c
+            DEPENDS ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.dll)
+        set_tests_properties(wibo.test_loader_add_reference PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_library_search_flags SOURCES test/test_library_search_flags.c)
         set_tests_properties(wibo.test_library_search_flags PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_dll_directory_query SOURCES test/test_dll_directory_query.c)

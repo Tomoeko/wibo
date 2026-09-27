@@ -169,6 +169,13 @@ uint64_t g_initializationOrder = 0;
 bool g_collectingModules = false;
 std::vector<wibo::ModulePtr> g_failedModuleLeases;
 
+void retainModuleReference(wibo::ModuleInfo &module, bool pin) {
+	if (pin)
+		module.refCount = UINT_MAX;
+	else if (module.refCount != UINT_MAX)
+		++module.refCount;
+}
+
 std::string makeStubKey(const char *dllName, const char *funcName) {
 	std::string key;
 	if (dllName) {
@@ -1741,11 +1748,21 @@ HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool u
 	ModuleInfo *info = fromAddress ? moduleInfoFromAddress(const_cast<char *>(name)) : findLoadedModule(name);
 	if (!info)
 		return NO_HANDLE;
-	if (pin)
-		info->refCount = UINT_MAX;
-	else if (!unchanged && info->refCount != UINT_MAX)
-		++info->refCount;
+	if (pin || !unchanged)
+		retainModuleReference(*info, pin);
 	return info->handle;
+}
+
+bool addModuleReference(HMODULE module, bool pin) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (!module)
+		return false;
+	auto reg = registry();
+	ModuleInfo *info = moduleInfoFromHandle(module);
+	if (!info)
+		return false;
+	retainModuleReference(*info, pin);
+	return true;
 }
 
 static ModuleInfo *loadModuleInternal(const std::string &dllName, const ModuleSearch &search, bool explicitReference) {

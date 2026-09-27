@@ -184,8 +184,13 @@ DWORD prepareTargetUnwind(const SoftwareExceptionCapture64 *entry, TargetUnwindP
 																			&dispatcher, &frames.activation);
 			DEBUG_LOG("target unwind handler: pc=%llx frame=%llx flags=%x result=%d\n", expected.ControlPc,
 					  expected.EstablisherFrame, output->record->ExceptionFlags, result);
-			if (result != kContinueSearch || std::memcmp(&dispatcher, &expected, sizeof(dispatcher)) != 0)
-				return unsupported(*output, "handler disposition or dispatcher mutation");
+			if (result != kContinueSearch)
+				return unsupported(*output, "handler disposition");
+			if (!wibo::softwareDispatcherControlUnchanged64(dispatcher, expected)) {
+				DEBUG_LOG("target unwind: unsupported dispatcher mutation mask=%x\n",
+						  wibo::softwareDispatcherMutationMask64(dispatcher, expected));
+				return unsupported(*output, "dispatcher control mutation");
+			}
 		}
 		if (target) {
 			output->resumeContext = *context;

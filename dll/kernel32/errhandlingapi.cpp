@@ -12,7 +12,7 @@ namespace {
 constexpr DWORD kMsVcThreadNameException = 0x406D1388;
 constexpr DWORD kExceptionNoncontinuable = 0x1;
 
-LPTOP_LEVEL_EXCEPTION_FILTER g_topLevelExceptionFilter = nullptr;
+std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_topLevelExceptionFilter{nullptr};
 std::atomic<UINT> g_processErrorMode{0};
 thread_local DWORD g_threadErrorMode = 0;
 
@@ -60,10 +60,8 @@ void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD 
 LPTOP_LEVEL_EXCEPTION_FILTER WINAPI
 SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetUnhandledExceptionFilter(%p)\n", lpTopLevelExceptionFilter);
-	LPTOP_LEVEL_EXCEPTION_FILTER previous = g_topLevelExceptionFilter;
-	g_topLevelExceptionFilter = lpTopLevelExceptionFilter;
-	return previous;
+	DEBUG_LOG("SetUnhandledExceptionFilter(%p)\n", lpTopLevelExceptionFilter);
+	return g_topLevelExceptionFilter.exchange(lpTopLevelExceptionFilter, std::memory_order_acq_rel);
 }
 
 LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo) {

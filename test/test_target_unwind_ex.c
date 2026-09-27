@@ -72,6 +72,8 @@ struct Observation {
 static struct Observation observations[2];
 static unsigned handler_count;
 static BOOL bad_handler;
+static BOOL change_scope_index;
+static unsigned scope_changes;
 
 static void observe(unsigned index, EXCEPTION_RECORD *record, PVOID frame, CONTEXT *context, PVOID dispatcher_pointer) {
 	unsigned slot = handler_count++;
@@ -87,6 +89,10 @@ static void observe(unsigned index, EXCEPTION_RECORD *record, PVOID frame, CONTE
 	observation->argument = context;
 	observation->dispatcher = *(DISPATCHER_CONTEXT *)dispatcher_pointer;
 	observation->context = *context;
+	if (change_scope_index) {
+		((DISPATCHER_CONTEXT *)dispatcher_pointer)->ScopeIndex = index == 1 ? 73 : MAXDWORD;
+		++scope_changes;
+	}
 }
 
 EXCEPTION_DISPOSITION NTAPI target_unwind_inner_handler(EXCEPTION_RECORD *record, PVOID frame, CONTEXT *context,
@@ -133,6 +139,7 @@ static void run(BOOL with_history) {
 	memset(&target_unwind_record, 0, sizeof(target_unwind_record));
 	memset(observations, 0, sizeof(observations));
 	handler_count = 0;
+	scope_changes = 0;
 	bad_handler = FALSE;
 	target_unwind_returned = target_unwind_inner_returned = target_unwind_landed = 0;
 	target_unwind_ex_context = &guarded_context.context;
@@ -148,6 +155,7 @@ static void run(BOOL with_history) {
 	TEST_CHECK_EQ(1, target_unwind_landed);
 	TEST_CHECK_EQ(2, handler_count);
 	TEST_CHECK(!bad_handler);
+	TEST_CHECK_EQ(change_scope_index ? 2 : 0, scope_changes);
 	TEST_CHECK(filled_with(guarded_context.before, sizeof(guarded_context.before), 0xa5));
 	TEST_CHECK(filled_with(guarded_context.after, sizeof(guarded_context.after), 0xa5));
 	TEST_CHECK(filled_with(guarded_history.before, sizeof(guarded_history.before), 0xa5));
@@ -207,9 +215,13 @@ static void run(BOOL with_history) {
 		   (unsigned long long)context->Rax, (unsigned long long)target_unwind_landed_rax,
 		   (unsigned long)guarded_history.history.Count, (unsigned)history_unchanged);
 	log_context_groups(with_history, 3, context);
+	printf("history=%u scope-index writes=%u\n", (unsigned)with_history, scope_changes);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	change_scope_index = argc == 2 && strcmp(argv[1], "--scope-index") == 0;
+	if (argc != 1 && !change_scope_index)
+		return 2;
 	HMODULE kernel = GetModuleHandleA("kernel32.dll");
 	TEST_CHECK(kernel != NULL);
 	FARPROC exported = GetProcAddress(kernel, "RtlUnwindEx");

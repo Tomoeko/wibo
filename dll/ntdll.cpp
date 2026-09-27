@@ -1235,10 +1235,13 @@ NTSTATUS WINAPI LdrGetDllHandle(LPCWSTR loadPath, ULONG flags, const UNICODE_STR
 }
 
 NTSTATUS WINAPI LdrAddRefDll(ULONG Flags, HMODULE Module) {
-	DEBUG_LOG("STUB: LdrAddRefDll(%x, %p)\n", Flags, Module);
-	(void)Flags;
-	(void)Module;
-	return STATUS_SUCCESS;
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("LdrAddRefDll(%x, %p)\n", Flags, Module);
+	constexpr ULONG pinFlag = 1;
+	const DWORD error = kernel32::getLastError();
+	const bool retained = wibo::addModuleReference(Module, (Flags & pinFlag) != 0);
+	kernel32::setLastError(error);
+	return retained ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
 } // namespace ntdll

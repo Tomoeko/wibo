@@ -5,14 +5,38 @@
 #include "files.h"
 #include "handles.h"
 
+#include <atomic>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <utility>
 
 namespace kernel32 {
 
 namespace {
+struct ConsoleControlHandler {
+	PHANDLER_ROUTINE routine;
+	std::unique_ptr<ConsoleControlHandler> next;
+};
+
+struct ConsoleControlHandlers {
+	std::mutex mutex;
+	std::unique_ptr<ConsoleControlHandler> first;
+	~ConsoleControlHandlers() {
+		while (first) {
+			auto removed = std::move(first);
+			first = std::move(removed->next);
+		}
+	}
+};
+
+ConsoleControlHandlers g_consoleControlHandlers;
+std::atomic_bool g_consoleControlCIgnore{false};
+
 BOOL rejectUnavailableConsole(HANDLE handle) {
 	auto file = wibo::handles().getAs<FileObject>(handle);
 	if (!file || !file->valid() || !isatty(file->fd)) {
@@ -74,11 +98,39 @@ UINT WINAPI GetConsoleOutputCP() {
 
 BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetConsoleCtrlHandler(%p, %u)\n", reinterpret_cast<const void *>(HandlerRoutine), Add);
-	(void)HandlerRoutine;
-	(void)Add;
+	DEBUG_LOG("SetConsoleCtrlHandler(%p, %u)\n", reinterpret_cast<const void *>(HandlerRoutine), Add);
+	if (!HandlerRoutine) {
+		g_consoleControlCIgnore.store(Add != FALSE, std::memory_order_relaxed);
+		return TRUE;
+	}
+	if (Add) {
+		auto handler =
+			std::unique_ptr<ConsoleControlHandler>(new (std::nothrow) ConsoleControlHandler{HandlerRoutine, nullptr});
+		if (!handler) {
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return FALSE;
+		}
+		std::lock_guard lock(g_consoleControlHandlers.mutex);
+		handler->next = std::move(g_consoleControlHandlers.first);
+		g_consoleControlHandlers.first = std::move(handler);
+		return TRUE;
+	}
+	std::lock_guard lock(g_consoleControlHandlers.mutex);
+	auto *entry = &g_consoleControlHandlers.first;
+	while (*entry && (*entry)->routine != HandlerRoutine)
+		entry = &(*entry)->next;
+	if (!*entry) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	auto removed = std::move(*entry);
+	*entry = std::move(removed->next);
 	return TRUE;
 }
+
+bool isConsoleControlCIgnored() { return g_consoleControlCIgnore.load(std::memory_order_relaxed); }
+
+void initializeConsoleControlCIgnore(bool ignore) { g_consoleControlCIgnore.store(ignore, std::memory_order_relaxed); }
 
 BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE hConsoleOutput, CONSOLE_SCREEN_BUFFER_INFO *lpConsoleScreenBufferInfo) {
 	HOST_CONTEXT_GUARD();

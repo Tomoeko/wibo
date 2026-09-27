@@ -1,6 +1,7 @@
 #include "common.h"
 #include "setup.h"
 #include "software_exception_dispatch.h"
+#include "software_exception_frame.h"
 #include "test_assert.h"
 
 #include <cstring>
@@ -26,6 +27,67 @@ void debug_log(const char *, ...) {}
 } // namespace wibo
 
 namespace {
+LONG GUEST_STDCALL comparisonHandler(EXCEPTION_RECORD *, ULONGLONG, CONTEXT64 *, SoftwareDispatcherContext64 *) {
+	return 1;
+}
+
+void checkDispatcherMutationPolicy() {
+	SoftwareDispatcherContext64 expected{};
+	CONTEXT64 context{};
+	RUNTIME_FUNCTION function{};
+	TEST_CHECK_EQ(0, wibo::softwareDispatcherMutationMask64(expected, expected));
+	TEST_CHECK(wibo::softwareDispatcherControlUnchanged64(expected, expected));
+	for (unsigned bit = 0; bit < 11; ++bit) {
+		auto actual = expected;
+		switch (bit) {
+		case 0:
+			actual.ControlPc = 1;
+			break;
+		case 1:
+			actual.ImageBase = 1;
+			break;
+		case 2:
+			actual.FunctionEntry = &function;
+			break;
+		case 3:
+			actual.EstablisherFrame = 1;
+			break;
+		case 4:
+			actual.TargetIp = 1;
+			break;
+		case 5:
+			actual.ContextRecord = &context;
+			break;
+		case 6:
+			actual.LanguageHandler = comparisonHandler;
+			break;
+		case 7:
+			actual.HandlerData = &context;
+			break;
+		case 8:
+			actual.HistoryTable = &function;
+			break;
+		case 9:
+			actual.ScopeIndex = 73;
+			break;
+		case 10:
+			actual.Fill0 = 1;
+			break;
+		default:
+			TEST_CHECK(false);
+			break;
+		}
+		TEST_CHECK_EQ(1u << bit, wibo::softwareDispatcherMutationMask64(actual, expected));
+		TEST_CHECK(wibo::softwareDispatcherControlUnchanged64(actual, expected) == (bit == 9));
+	}
+	auto combined = expected;
+	combined.ScopeIndex = 0xffffffffu;
+	TEST_CHECK(wibo::softwareDispatcherControlUnchanged64(combined, expected));
+	combined.ContextRecord = &context;
+	TEST_CHECK_EQ((1u << 5) | (1u << 9), wibo::softwareDispatcherMutationMask64(combined, expected));
+	TEST_CHECK(!wibo::softwareDispatcherControlUnchanged64(combined, expected));
+}
+
 struct ProbeState {
 	DispatchExpected64 expected{};
 	CONTEXT64 selected[2]{};
@@ -312,6 +374,7 @@ extern "C" void wiboConsumeSoftwareExceptionCapture64(const SoftwareExceptionCap
 }
 
 int main() {
+	checkDispatcherMutationPolicy();
 #ifdef WIBO_SOFTWARE_DISPATCH_REAL_TEB
 	pthread_t worker;
 	TEST_CHECK_EQ(0, pthread_create(&worker, nullptr, checkThread, nullptr));

@@ -191,9 +191,10 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 			}
 			DEBUG_LOG("software frame handler: pc=%llx frame=%llx result=%d\n", expectedDispatcher.ControlPc,
 					  expectedDispatcher.EstablisherFrame, result);
-			if (std::memcmp(&dispatcher, &expectedDispatcher, sizeof(dispatcher)) != 0 ||
+			if (!wibo::softwareDispatcherControlUnchanged64(dispatcher, expectedDispatcher) ||
 				activation->walkingContext.Rip != expectedRip || activation->walkingContext.Rsp != expectedRsp) {
-				DEBUG_LOG("software frame search: unsupported dispatcher or walking-context mutation\n");
+				DEBUG_LOG("software frame search: unsupported dispatcher or walking-context mutation mask=%x\n",
+						  wibo::softwareDispatcherMutationMask64(dispatcher, expectedDispatcher));
 				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
 				return;
 			}

@@ -2,6 +2,7 @@
 
 #include "errors.h"
 #include "kernel32/processenv.h"
+#include "kernel32/wincon.h"
 #include "processes.h"
 
 #include <algorithm>
@@ -20,7 +21,7 @@
 namespace {
 
 constexpr uint32_t kBootstrapMagic = 0x57425031;
-constexpr uint32_t kBootstrapVersion = 2;
+constexpr uint32_t kBootstrapVersion = 3;
 constexpr size_t kMaximumBootstrap = 16 * 1024 * 1024;
 constexpr uint32_t kReadyMessage = 1;
 constexpr uint32_t kThreadExitMessage = 2;
@@ -174,6 +175,7 @@ DWORD ProcessBootstrap::prepare(const SpawnOptions &options) {
 	Writer writer;
 	writer.number(kBootstrapMagic);
 	writer.number(kBootstrapVersion);
+	writer.number(kernel32::isConsoleControlCIgnored());
 	writer.number(options.standardHandles.has_value());
 	if (options.standardHandles) {
 		writer.number(static_cast<uint32_t>(options.standardHandles->input));
@@ -293,9 +295,9 @@ DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files:
 		return ERROR_INVALID_DATA;
 	close(manifestFd);
 	Reader reader{bytes};
-	uint32_t magic, version, standard;
+	uint32_t magic, version, ignoreControlC, standard;
 	if (!reader.number(magic) || magic != kBootstrapMagic || !reader.number(version) || version != kBootstrapVersion ||
-		!reader.number(standard) || standard > 1)
+		!reader.number(ignoreControlC) || ignoreControlC > 1 || !reader.number(standard) || standard > 1)
 		return ERROR_INVALID_DATA;
 	if (standard) {
 		uint32_t input, output, error, explicitStartup;
@@ -384,6 +386,8 @@ DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files:
 		error = wibo::handles().importExact(importedHandles);
 	if (error)
 		return error;
+	// Handler registrations belong to the new process; only the ignore attribute is inherited.
+	kernel32::initializeConsoleControlCIgnore(ignoreControlC != 0);
 	gChildControl = controlFd;
 	gPrimaryThreadId = getThreadId();
 	const ControlMessage ready{kBootstrapMagic, kReadyMessage, gPrimaryThreadId};

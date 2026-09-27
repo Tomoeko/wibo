@@ -78,6 +78,8 @@ struct HandlerObservation {
 static struct HandlerObservation observations[2];
 static unsigned handler_count;
 static BOOL extra_handler;
+static BOOL change_scope_index;
+static unsigned scope_changes;
 
 static void observe_handler(unsigned index, EXCEPTION_RECORD *record, PVOID establisher, CONTEXT *context,
 							PVOID dispatcher_pointer) {
@@ -107,6 +109,10 @@ static void observe_handler(unsigned index, EXCEPTION_RECORD *record, PVOID esta
 		return;
 	memcpy(&observed->marker, (const BYTE *)establisher + 32, sizeof(observed->marker));
 	observed->complete = TRUE;
+	if (change_scope_index) {
+		((struct FixtureDispatcherContext *)dispatcher_pointer)->ScopeIndex = index == 1 ? 73 : MAXDWORD;
+		++scope_changes;
+	}
 }
 
 EXCEPTION_DISPOSITION NTAPI target_unwind_inner_handler(EXCEPTION_RECORD *record, PVOID establisher, CONTEXT *context,
@@ -174,7 +180,10 @@ static void check_observation(unsigned slot, ULONG_PTR image_base) {
 		   (unsigned long long)observed->argument_context.Xmm6.Low);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	change_scope_index = argc == 2 && strcmp(argv[1], "--scope-index") == 0;
+	if (argc != 1 && !change_scope_index)
+		return 2;
 	HMODULE kernel = GetModuleHandleA("kernel32.dll");
 	TEST_CHECK(kernel != NULL);
 	FARPROC exported = GetProcAddress(kernel, "RtlUnwind");
@@ -198,6 +207,7 @@ int main(void) {
 	TEST_CHECK_EQ(1, target_unwind_landed);
 	TEST_CHECK_EQ(2, handler_count);
 	TEST_CHECK(!extra_handler);
+	TEST_CHECK_EQ(change_scope_index ? 2 : 0, scope_changes);
 	TEST_CHECK_EQ(EXCEPTION_UNWINDING | EXCEPTION_TARGET_UNWIND, target_unwind_record.ExceptionFlags);
 	TEST_CHECK_U64_EQ(target_unwind_outer_rsp, target_unwind_landed_rsp);
 	TEST_CHECK_U64_EQ(target_unwind_value, target_unwind_landed_rax);
@@ -215,5 +225,6 @@ int main(void) {
 		   (unsigned long long)target_unwind_landed_xmm6[0],
 		   (unsigned long long)((ULONG_PTR)target_unwind_inner_after_call - image_base),
 		   (unsigned long long)((ULONG_PTR)target_unwind_outer_after_inner - image_base));
+	printf("scope-index writes=%u\n", scope_changes);
 	return 0;
 }
