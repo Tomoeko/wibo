@@ -1076,14 +1076,6 @@ BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode) {
 	return TRUE;
 }
 
-BOOL WINAPI SetThreadPriority(HANDLE hThread, int nPriority) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetThreadPriority(%p, %d)\n", hThread, nPriority);
-	(void)hThread;
-	(void)nPriority;
-	return TRUE;
-}
-
 BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetThreadPriorityBoost(%p, %d)\n", hThread, bDisablePriorityBoost);
@@ -1094,13 +1086,6 @@ BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost) {
 	}
 	setLastError(ERROR_SUCCESS);
 	return TRUE;
-}
-
-int WINAPI GetThreadPriority(HANDLE hThread) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetThreadPriority(%p)\n", hThread);
-	(void)hThread;
-	return 0;
 }
 
 DWORD WINAPI GetPriorityClass(HANDLE hProcess) {

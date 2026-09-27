@@ -315,7 +315,7 @@ constexpr DWORD kMaximumAllowed = 0x02000000;
 constexpr DWORD kMutexQueryState = 1;
 constexpr size_t kMaxMutexNameUnits = 260;
 
-bool mapMutexAccess(DWORD requested, DWORD &mapped) {
+bool mapMutexAccess(DWORD requested, DWORD &mapped, bool rejectUnknown = true) {
 	mapped = requested & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | kMaximumAllowed);
 	if (requested & GENERIC_READ)
 		mapped |= STANDARD_RIGHTS_READ | kMutexQueryState;
@@ -325,7 +325,7 @@ bool mapMutexAccess(DWORD requested, DWORD &mapped) {
 		mapped |= STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE;
 	if (requested & (GENERIC_ALL | kMaximumAllowed))
 		mapped |= MUTEX_ALL_ACCESS;
-	if (mapped & ~MUTEX_ALL_ACCESS) {
+	if (rejectUnknown && (mapped & ~MUTEX_ALL_ACCESS)) {
 		kernel32::setLastError(ERROR_NOT_SUPPORTED);
 		return false;
 	}
@@ -347,6 +347,57 @@ bool readMutexName(LPCWSTR source, std::u16string &name) {
 		return false;
 	}
 	return true;
+}
+
+bool readMutexName(LPCSTR source, std::u16string &name) {
+	if (!source)
+		return true;
+	const size_t length = strnlen(source, kMaxMutexNameUnits);
+	if (length == kMaxMutexNameUnits) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	name.reserve(length);
+	for (size_t index = 0; index < length; ++index) {
+		const unsigned char character = static_cast<unsigned char>(source[index]);
+		if (character >= 0x80) {
+			// Non-ASCII names require conversion using the process ANSI code page.
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+			return false;
+		}
+		name.push_back(static_cast<char16_t>(character));
+	}
+	if (name.find(u'\\') != std::u16string::npos) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return false;
+	}
+	return true;
+}
+
+HANDLE openMutex(const std::u16string &name, DWORD requestedAccess, BOOL inheritHandle) {
+	if (name.empty()) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return NO_HANDLE;
+	}
+	DWORD access = 0;
+	if (!mapMutexAccess(requestedAccess, access, false))
+		return NO_HANDLE;
+	if (!access) {
+		kernel32::setLastError(ERROR_ACCESS_DENIED);
+		return NO_HANDLE;
+	}
+	auto object = wibo::g_namespace.get(name);
+	if (!object) {
+		kernel32::setLastError(ERROR_FILE_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	auto mutex = std::move(object).downcast<kernel32::MutexObject>();
+	if (!mutex) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return NO_HANDLE;
+	}
+	const DWORD handleFlags = inheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	return wibo::handles().alloc(std::move(mutex), access, handleFlags);
 }
 
 HANDLE createMutex(LPSECURITY_ATTRIBUTES attributes, const std::u16string &name, DWORD flags, DWORD requestedAccess,
@@ -579,28 +630,35 @@ HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES attributes, LPCSTR sourceName
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CreateMutexExA(%p, %p, 0x%x, 0x%x)\n", attributes, sourceName, flags, access);
 	std::u16string name;
-	if (sourceName) {
-		const size_t length = strnlen(sourceName, kMaxMutexNameUnits);
-		if (length == kMaxMutexNameUnits) {
-			setLastError(ERROR_NOT_SUPPORTED);
-			return NO_HANDLE;
-		}
-		name.reserve(length);
-		for (size_t index = 0; index < length; ++index) {
-			const unsigned char character = static_cast<unsigned char>(sourceName[index]);
-			if (character >= 0x80) {
-				// Non-ASCII names require genuine conversion using the process ANSI code page.
-				setLastError(ERROR_NOT_SUPPORTED);
-				return NO_HANDLE;
-			}
-			name.push_back(static_cast<char16_t>(character));
-		}
-		if (name.find(u'\\') != std::u16string::npos) {
-			setLastError(ERROR_NOT_SUPPORTED);
-			return NO_HANDLE;
-		}
-	}
+	if (!readMutexName(sourceName, name))
+		return NO_HANDLE;
 	return createMutex(attributes, name, flags, access, true);
+}
+
+HANDLE WINAPI OpenMutexW(DWORD access, BOOL inheritHandle, LPCWSTR sourceName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenMutexW(0x%x, %d, %p)\n", access, static_cast<int>(inheritHandle), sourceName);
+	if (!sourceName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	std::u16string name;
+	if (!readMutexName(sourceName, name))
+		return NO_HANDLE;
+	return openMutex(name, access, inheritHandle);
+}
+
+HANDLE WINAPI OpenMutexA(DWORD access, BOOL inheritHandle, LPCSTR sourceName) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenMutexA(0x%x, %d, %p)\n", access, static_cast<int>(inheritHandle), sourceName);
+	if (!sourceName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	std::u16string name;
+	if (!readMutexName(sourceName, name))
+		return NO_HANDLE;
+	return openMutex(name, access, inheritHandle);
 }
 
 HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName) {

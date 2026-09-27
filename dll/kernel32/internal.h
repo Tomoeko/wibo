@@ -191,6 +191,8 @@ struct ThreadObject final : WaitableObject {
 	DWORD threadId = 0;
 	bool initialized = false;
 	DWORD exitCode = STILL_ACTIVE;
+	// Protected by m and retained after the native thread has exited.
+	int priority = 0;
 	unsigned int suspendCount = 0;
 	bool hostSuspended = false;
 	WORD entryCs = 0;

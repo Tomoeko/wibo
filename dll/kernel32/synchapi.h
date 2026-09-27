@@ -102,6 +102,8 @@ BOOL WINAPI SetWaitableTimer(HANDLE handle, const LARGE_INTEGER *dueTime, LONG p
 BOOL WINAPI CancelWaitableTimer(HANDLE handle);
 HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES attributes, LPCSTR name, DWORD flags, DWORD access);
 HANDLE WINAPI CreateMutexExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access);
+HANDLE WINAPI OpenMutexA(DWORD access, BOOL inheritHandle, LPCSTR name);
+HANDLE WINAPI OpenMutexW(DWORD access, BOOL inheritHandle, LPCWSTR name);
 HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCSTR lpName);
 HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName);
 BOOL WINAPI ReleaseMutex(HANDLE hMutex);

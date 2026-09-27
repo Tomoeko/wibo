@@ -41,6 +41,8 @@ BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode);
 BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode);
 UINT WINAPI GetConsoleCP();
 UINT WINAPI GetConsoleOutputCP();
+BOOL WINAPI SetConsoleCP(UINT codePage);
+BOOL WINAPI SetConsoleOutputCP(UINT codePage);
 BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add);
 bool isConsoleControlCIgnored();
 void initializeConsoleControlCIgnore(bool ignore);

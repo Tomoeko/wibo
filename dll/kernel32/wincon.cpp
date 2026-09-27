@@ -96,6 +96,21 @@ UINT WINAPI GetConsoleOutputCP() {
 	return 0;
 }
 
+BOOL WINAPI SetConsoleCP(UINT codePage) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetConsoleCP(%u)\n", codePage);
+	// A console code page belongs to a console session, not to the standard streams.
+	setLastError(ERROR_INVALID_HANDLE);
+	return FALSE;
+}
+
+BOOL WINAPI SetConsoleOutputCP(UINT codePage) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetConsoleOutputCP(%u)\n", codePage);
+	setLastError(ERROR_INVALID_HANDLE);
+	return FALSE;
+}
+
 BOOL WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetConsoleCtrlHandler(%p, %u)\n", reinterpret_cast<const void *>(HandlerRoutine), Add);

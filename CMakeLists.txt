@@ -311,6 +311,7 @@ add_executable(wibo
     dll/kernel32/namedpipeapi.cpp
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
+    dll/kernel32/thread_priority.cpp
     dll/kernel32/ideal_processor.cpp
     dll/kernel32/thread_description.cpp
     dll/kernel32/thread_control.cpp
@@ -766,6 +767,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_console_code_pages SOURCES test/test_console_code_pages.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_code_pages PROPERTIES TIMEOUT 25)
+        wibo_add_fixture_bin(NAME test_console_set_code_pages SOURCES test/test_console_set_code_pages.c
+            COMPILE_OPTIONS -municode)
+        set_tests_properties(wibo.test_console_set_code_pages PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_console_control SOURCES test/test_console_control.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_control PROPERTIES TIMEOUT 25)
@@ -1219,6 +1223,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_process_write_buffers SOURCES test/test_process_write_buffers.c)
         set_tests_properties(wibo.test_process_write_buffers PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_thread_yield SOURCES test/test_thread_yield.c)
+        wibo_add_fixture_bin(NAME test_thread_priority SOURCES test/test_thread_priority.c)
+        set_tests_properties(wibo.test_thread_priority PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_thread_priority_boost SOURCES test/test_thread_priority_boost.c)
         wibo_add_fixture_bin(NAME test_thread_ideal_processor SOURCES test/test_thread_ideal_processor.c)
         set_tests_properties(wibo.test_thread_ideal_processor PROPERTIES TIMEOUT 15)
@@ -1627,6 +1633,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_srw_lock SOURCES test/test_srw_lock.c)
         wibo_add_fixture_bin(NAME test_mutex_ex SOURCES test/test_mutex_ex.c)
         set_tests_properties(wibo.test_mutex_ex PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_open_mutex SOURCES test/test_open_mutex.c)
+        set_tests_properties(wibo.test_open_mutex PROPERTIES TIMEOUT 15)
         add_test(NAME wibo.test_mutex_ex_unsupported
             COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_mutex_ex.exe --unsupported)
         set_tests_properties(wibo.test_mutex_ex_unsupported PROPERTIES TIMEOUT 15
