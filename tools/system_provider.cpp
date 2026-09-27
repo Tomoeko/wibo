@@ -2,6 +2,7 @@
 // The build target supplies the compiler and system libraries.
 #define CINTERFACE
 #define COBJMACROS
+#include "../src/message_format.h"
 #include "../src/security_descriptor.h"
 #include "../src/token_identity.h"
 #include <winsock2.h>
@@ -2277,6 +2278,213 @@ bool registrySubkeys(const WCHAR *pathText, const WCHAR *view) {
 	return response.write();
 }
 
+bool formatMessageString(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	const bool wide = wcscmp(parameters[0], L"w") == 0;
+	uint32_t flags = 0, capacity = 0, incomingError = 0;
+	if ((!wide && wcscmp(parameters[0], L"a") != 0) || !parseUnsignedDecimal(parameters[1], UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, capacity) ||
+		!parseUnsignedDecimal(parameters[6], UINT32_MAX, incomingError) || !(flags & FORMAT_MESSAGE_FROM_STRING) ||
+		(flags & ~(FORMAT_MESSAGE_FROM_STRING | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER |
+				   FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_ARGUMENT_ARRAY | FORMAT_MESSAGE_MAX_WIDTH_MASK)))
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kMaximumHex = 64 * 1024 - 256;
+	size_t totalHex = 0;
+	for (unsigned index : {3u, 4u, 5u}) {
+		const size_t size = wcsnlen(parameters[index], kMaximumHex + 1);
+		if (size > kMaximumHex - totalHex)
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		totalHex += size;
+	}
+	std::string sourceBytes, argumentBytes, initial;
+	const auto decode = [](const WCHAR *text, std::string &bytes) {
+		return wcscmp(text, L"-") == 0 || decodeHex(text, bytes, true);
+	};
+	const size_t unit = wide ? sizeof(WCHAR) : 1;
+	const bool allocated = flags & FORMAT_MESSAGE_ALLOCATE_BUFFER;
+	if (!decode(parameters[3], sourceBytes) || !decode(parameters[4], argumentBytes) ||
+		!decode(parameters[5], initial) || sourceBytes.size() % unit || sourceBytes.size() / unit >= 4096 ||
+		(allocated ? !initial.empty() : initial.size() != uint64_t(capacity) * unit))
+		return fail(ERROR_INVALID_PARAMETER);
+	if (capacity > 1024 * 1024 / unit)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	std::vector<WCHAR> wideSource(sourceBytes.size() / sizeof(WCHAR) + 1);
+	std::vector<char> narrowSource(sourceBytes.begin(), sourceBytes.end());
+	if (wide) {
+		if (!sourceBytes.empty())
+			std::memcpy(wideSource.data(), sourceBytes.data(), sourceBytes.size());
+		if (std::find(wideSource.begin(), wideSource.end() - 1, WCHAR(0)) != wideSource.end() - 1)
+			return fail(ERROR_INVALID_PARAMETER);
+	} else {
+		if (sourceBytes.find('\0') != std::string::npos)
+			return fail(ERROR_INVALID_PARAMETER);
+		narrowSource.push_back(0);
+	}
+	struct Argument {
+		uint32_t kind = 0, number = 0;
+		std::vector<WCHAR> wideText;
+		std::vector<char> narrowText;
+	};
+	size_t position = 0;
+	const auto number = [&](uint32_t &value) {
+		if (argumentBytes.size() - position < 4)
+			return false;
+		const auto *bytes = reinterpret_cast<const BYTE *>(argumentBytes.data() + position);
+		value = bytes[0] | (uint32_t(bytes[1]) << 8) | (uint32_t(bytes[2]) << 16) | (uint32_t(bytes[3]) << 24);
+		position += 4;
+		return true;
+	};
+	uint32_t count = 0;
+	if (!number(count) || count > 99)
+		return fail(ERROR_INVALID_PARAMETER);
+	std::vector<Argument> arguments(count);
+	for (auto &argument : arguments) {
+		uint32_t bytes = 0;
+		if (!number(argument.kind) || argument.kind > 2 || !number(bytes))
+			return fail(ERROR_INVALID_PARAMETER);
+		if (!argument.kind) {
+			argument.number = bytes;
+			continue;
+		}
+		if (bytes > argumentBytes.size() - position || bytes >= 4096 * (argument.kind == 1 ? sizeof(WCHAR) : 1))
+			return fail(ERROR_INVALID_PARAMETER);
+		if (argument.kind == 1) {
+			if (bytes % sizeof(WCHAR))
+				return fail(ERROR_INVALID_PARAMETER);
+			argument.wideText.resize(bytes / sizeof(WCHAR) + 1);
+			if (bytes)
+				std::memcpy(argument.wideText.data(), argumentBytes.data() + position, bytes);
+			if (std::find(argument.wideText.begin(), argument.wideText.end() - 1, WCHAR(0)) !=
+				argument.wideText.end() - 1)
+				return fail(ERROR_INVALID_PARAMETER);
+		} else {
+			argument.narrowText.assign(argumentBytes.begin() + position, argumentBytes.begin() + position + bytes);
+			if (std::find(argument.narrowText.begin(), argument.narrowText.end(), '\0') != argument.narrowText.end())
+				return fail(ERROR_INVALID_PARAMETER);
+			argument.narrowText.push_back(0);
+		}
+		position += bytes;
+	}
+	if (position != argumentBytes.size())
+		return fail(ERROR_INVALID_PARAMETER);
+	// Validate every pointer-consuming field before constructing native argument pointers.
+	const auto character = [&](size_t index) {
+		return wide ? wideSource[index] : WCHAR(static_cast<BYTE>(narrowSource[index]));
+	};
+	const size_t sourceUnits = sourceBytes.size() / unit;
+	size_t projectedUnits = sourceUnits * 3;
+	std::vector<bool> used(arguments.size(), false);
+	uint32_t expectedInsertion = 1;
+	for (size_t index = 0; index < sourceUnits && !(flags & FORMAT_MESSAGE_IGNORE_INSERTS);) {
+		if (character(index++) != '%')
+			continue;
+		if (index == sourceUnits)
+			return fail(ERROR_INVALID_PARAMETER);
+		if (character(index) == '0')
+			break;
+		if (character(index) < '1' || character(index) > '9') {
+			++index;
+			continue;
+		}
+		uint32_t insertion = character(index++) - '0';
+		if (index < sourceUnits && character(index) >= '0' && character(index) <= '9')
+			insertion = insertion * 10 + character(index++) - '0';
+		std::string specification = "s";
+		if (index < sourceUnits && character(index) == '!') {
+			specification.clear();
+			++index;
+			while (index < sourceUnits && character(index) != '!') {
+				if (character(index) >= 128 || specification.size() >= 30)
+					return fail(ERROR_NOT_SUPPORTED);
+				specification.push_back(static_cast<char>(character(index++)));
+			}
+			if (index == sourceUnits)
+				return fail(ERROR_INVALID_PARAMETER);
+			++index;
+		}
+		wibo::message::Field field;
+		if (!wibo::message::parseField(specification, field))
+			return fail(ERROR_NOT_SUPPORTED);
+		const unsigned stars = field.stars();
+		if (insertion != expectedInsertion || insertion + stars > arguments.size())
+			return fail(ERROR_INVALID_PARAMETER);
+		expectedInsertion += stars + 1;
+		uint32_t dimensions[2]{};
+		for (unsigned star = 0; star < stars; ++star) {
+			const auto &argument = arguments[insertion - 1 + star];
+			if (argument.kind)
+				return fail(ERROR_INVALID_PARAMETER);
+			dimensions[star] = argument.number;
+			used[insertion - 1 + star] = true;
+		}
+		const auto &argument = arguments[insertion - 1 + stars];
+		const uint32_t expectedKind = field.string() ? (field.wideString(wide) ? 1 : 2) : 0;
+		if (argument.kind != expectedKind)
+			return fail(ERROR_INVALID_PARAMETER);
+		used[insertion - 1 + stars] = true;
+		const size_t textUnits = argument.kind == 1	  ? argument.wideText.size() - 1
+								 : argument.kind == 2 ? argument.narrowText.size() - 1
+													  : 0;
+		size_t extent = 0;
+		if (!wibo::message::extent(field, dimensions, textUnits, extent) ||
+			projectedUnits + extent * 3 > 128 * 1024 / (wide ? sizeof(WCHAR) : 4))
+			return fail(ERROR_NOT_SUPPORTED);
+		projectedUnits += extent * 3;
+	}
+	if (std::find(used.begin(), used.end(), false) != used.end())
+		return fail(ERROR_INVALID_PARAMETER);
+	std::vector<DWORD_PTR> nativeArguments;
+	for (const auto &argument : arguments)
+		nativeArguments.push_back(argument.kind == 0   ? argument.number
+								  : argument.kind == 1 ? reinterpret_cast<DWORD_PTR>(argument.wideText.data())
+													   : reinterpret_cast<DWORD_PTR>(argument.narrowText.data()));
+	std::vector<WCHAR> wideOutput(allocated ? 0 : size_t(capacity) + 8, WCHAR(0xa5a5));
+	std::vector<char> narrowOutput(allocated ? 0 : size_t(capacity) + 16, char(0xa5));
+	void *nativeAllocated = nullptr;
+	void *buffer = allocated ? &nativeAllocated : wide ? static_cast<void *>(wideOutput.data()) : narrowOutput.data();
+	if (!allocated && !initial.empty())
+		std::memcpy(buffer, initial.data(), initial.size());
+	SetLastError(incomingError);
+	const DWORD nativeFlags = flags | FORMAT_MESSAGE_ARGUMENT_ARRAY;
+	const DWORD result = wide ? FormatMessageW(nativeFlags, wideSource.data(), 0, 0, static_cast<LPWSTR>(buffer),
+											   capacity, reinterpret_cast<va_list *>(nativeArguments.data()))
+							  : FormatMessageA(nativeFlags, narrowSource.data(), 0, 0, static_cast<LPSTR>(buffer),
+											   capacity, reinterpret_cast<va_list *>(nativeArguments.data()));
+	const DWORD nativeError = GetLastError();
+	DWORD status = ERROR_SUCCESS;
+	std::vector<BYTE> output;
+	if (allocated) {
+		const uint64_t bytes = result ? (uint64_t(result) + 1) * unit : 0;
+		if (bytes > 128 * 1024 || (bytes && (!nativeAllocated || LocalSize(nativeAllocated) < bytes)))
+			status = ERROR_INVALID_DATA;
+		else if (bytes) {
+			const auto *data = static_cast<const BYTE *>(nativeAllocated);
+			output.assign(data, data + static_cast<size_t>(bytes));
+		}
+		if (nativeAllocated && LocalFree(nativeAllocated))
+			status = ERROR_INVALID_DATA;
+	} else {
+		const auto *data = static_cast<const BYTE *>(buffer);
+		const size_t bytes = size_t(capacity) * unit;
+		for (size_t index = bytes; index != bytes + 16; ++index)
+			if (data[index] != BYTE(0xa5))
+				status = ERROR_INVALID_DATA;
+		if (!status)
+			output.assign(data, data + bytes);
+	}
+	Response response;
+	response.header(status);
+	if (!status) {
+		response.number(result);
+		response.number(nativeError);
+		response.bytes(output.data(), output.size());
+	}
+	return response.write();
+}
 bool registryAnsiString(const WCHAR *sourceText) {
 	const auto fail = [](DWORD status) {
 		Response response;
@@ -2498,6 +2706,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = account(argv[2], argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-w") == 0)
 		written = account(argv[2], argv[3], false);
+	else if (argc == 9 && wcscmp(argv[1], L"format-message-string") == 0)
+		written = formatMessageString(argv + 2);
 	else if (argc == 3 && wcscmp(argv[1], L"registry-ansi-string") == 0)
 		written = registryAnsiString(argv[2]);
 	else if (argc == 4 && wcscmp(argv[1], L"registry-subkeys") == 0)

@@ -119,6 +119,7 @@ BOOL WINAPI GetComputerNameW(LPWSTR lpBuffer, LPDWORD nSize);
 HGLOBAL WINAPI GlobalAlloc(UINT uFlags, SIZE_T dwBytes);
 HGLOBAL WINAPI GlobalFree(HGLOBAL hMem);
 HGLOBAL WINAPI GlobalReAlloc(HGLOBAL hMem, SIZE_T dwBytes, UINT uFlags);
+SIZE_T WINAPI GlobalSize(HGLOBAL hMem);
 UINT WINAPI GlobalFlags(HGLOBAL hMem);
 void WINAPI GlobalMemoryStatus(LPMEMORYSTATUS lpBuffer);
 

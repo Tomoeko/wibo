@@ -789,6 +789,7 @@ DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinit
 	// guest TEB installed while the host process exits can strand the translated
 	// process in an uninterruptible exiting state.
 	wibo::uninstallTebForCurrentThread();
+	DEBUG_LOG("exitInternal: native thread state released\n");
 	_exit(static_cast<int>(exitCode));
 }
 

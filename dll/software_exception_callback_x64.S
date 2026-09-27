@@ -69,6 +69,35 @@ LwiboFrameHandlerContinuation:
 	restore_software_callback_context
 	.cfi_endproc
 ASM_END(wiboCallFrameHandler64)
+
+ASM_GLOBAL(wiboCallConsolidationHandler64, @function)
+	.cfi_startproc
+	save_software_callback_context
+#ifdef __APPLE__
+	lea r10, [rip+LwiboConsolidationContinuation]
+#else
+	lea r10, [rip+.LwiboConsolidationContinuation]
+#endif
+	mov qword ptr [rdx+WIBO_SOFTWARE_ACTIVATION_BRIDGE_RIP], r10
+	mov qword ptr [rdx+WIBO_SOFTWARE_ACTIVATION_BRIDGE_RSP], rsp
+	mov qword ptr [rdx+WIBO_SOFTWARE_ACTIVATION_STACK_LOW], rsp
+	mov rax, rdi
+	mov rcx, rsi
+	call rax
+#ifdef __APPLE__
+LwiboConsolidationContinuation:
+#else
+.LwiboConsolidationContinuation:
+#endif
+	restore_software_callback_context
+	.cfi_endproc
+ASM_END(wiboCallConsolidationHandler64)
+	.globl SYMBOL_NAME(wiboConsolidationContinuation64)
+#ifdef __APPLE__
+	.set SYMBOL_NAME(wiboConsolidationContinuation64), LwiboConsolidationContinuation
+#else
+	.set SYMBOL_NAME(wiboConsolidationContinuation64), .LwiboConsolidationContinuation
+#endif
 	.globl SYMBOL_NAME(wiboFrameHandlerContinuation64)
 #ifdef __APPLE__
 	.set SYMBOL_NAME(wiboFrameHandlerContinuation64), LwiboFrameHandlerContinuation

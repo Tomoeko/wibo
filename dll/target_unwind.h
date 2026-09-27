@@ -19,10 +19,12 @@ struct alignas(16) TargetUnwindPreparation64 {
 	ULONGLONG returnValue;
 	TargetUnwindKind64 kind;
 	DWORD status;
+	CONTEXT64 *restoreContext;
 };
 
 static_assert(sizeof(TargetUnwindPreparation64) == WIBO_TARGET_UNWIND_OUTPUT_SIZE);
 static_assert(offsetof(TargetUnwindPreparation64, resumeContext) == WIBO_TARGET_UNWIND_CONTEXT_OFFSET);
+static_assert(offsetof(TargetUnwindPreparation64, restoreContext) == WIBO_TARGET_UNWIND_RESTORE_CONTEXT_OFFSET);
 static_assert(WIBO_TARGET_UNWIND_FRAME_OUTPUT + sizeof(TargetUnwindPreparation64) == WIBO_TARGET_UNWIND_FRAME_SIZE);
 
 extern "C" {

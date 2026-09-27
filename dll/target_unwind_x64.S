@@ -16,8 +16,12 @@
 	# The driver returned. The restore entry snapshots the selected state and
 	# validates activation transfer before any native scope is abandoned.
 	reenter_guest
-	lea rcx, [rsp+WIBO_TARGET_UNWIND_FRAME_OUTPUT+WIBO_TARGET_UNWIND_CONTEXT_OFFSET]
+	mov rcx, qword ptr [rsp+WIBO_TARGET_UNWIND_FRAME_OUTPUT+WIBO_TARGET_UNWIND_RESTORE_CONTEXT_OFFSET]
+	mov rdx, qword ptr [rsp+WIBO_TARGET_UNWIND_FRAME_OUTPUT+WIBO_TARGET_UNWIND_RECORD_OFFSET]
+	cmp dword ptr [rdx], 0x80000029
+	je 2f
 	xor edx, edx
+2:
 	.cfi_remember_state
 	call SYMBOL_NAME(wiboRestoreGuestContext64)
 1:

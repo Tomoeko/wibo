@@ -13,7 +13,23 @@ ASM_GLOBAL(wiboRestoreGuestContext64, @function)
 	lea rsi, [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT]
 	call SYMBOL_NAME(wiboPrepareContextRestore64)
 	test eax, eax
+	je 2f
+	cmp eax, WIBO_CONTEXT_RESTORE_CONSOLIDATE
 	jne 1f
+	reenter_guest
+	mov rdi, qword ptr [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT+WIBO_CONTEXT_RESTORE_CALLBACK_OFFSET]
+	mov rsi, qword ptr [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT+WIBO_CONTEXT_RESTORE_RECORD_OFFSET]
+	lea rdx, [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT+WIBO_CONTEXT_RESTORE_ACTIVATION_OFFSET]
+	call SYMBOL_NAME(wiboCallConsolidationHandler64)
+	mov qword ptr [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT+WIBO_CTX64_RIP], rax
+#ifdef __APPLE__
+	call SYMBOL_NAME(enterHostContext)
+#endif
+	lea rdi, [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT]
+	call SYMBOL_NAME(wiboCompleteContextConsolidation64)
+	test eax, eax
+	jne 1f
+2:
 	# Preparation and activation cleanup returned with no host scope remaining.
 	reenter_guest
 	lea rcx, [rsp+WIBO_CONTEXT_RESTORE_FRAME_OUTPUT]

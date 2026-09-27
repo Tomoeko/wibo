@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 
 namespace {
@@ -105,6 +106,9 @@ bool prepareFrame(SoftwareExceptionFrameActivation64 &activation, DWORD handlerT
 LONG invokeFrameHandler(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,
 						CONTEXT64 *originalContext, SoftwareDispatcherContext64 *dispatcher,
 						SoftwareExceptionActivation64 *activation) {
+	const auto stackLow = activation->stackLow;
+	const auto bridgeRip = activation->bridgeRip;
+	const auto bridgeRsp = activation->bridgeRsp;
 #if defined(__APPLE__)
 	TEB *teb = currentTebForGuestTransition();
 	enterGuestContext(teb);
@@ -113,6 +117,11 @@ LONG invokeFrameHandler(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record
 #if defined(__APPLE__)
 	enterHostContext();
 #endif
+	// A returning callback no longer owns its bridge stack. Nonlocal transfers
+	// leave this plain scope through the assembly activation cleanup gate.
+	activation->stackLow = stackLow;
+	activation->bridgeRip = bridgeRip;
+	activation->bridgeRsp = bridgeRsp;
 	return result;
 }
 } // namespace
@@ -153,6 +162,12 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 	std::memcpy(&activation->walkingContext,
 				capture->callerCapture ? &capture->callerCapture->context : &capture->context, sizeof(CONTEXT64));
 	for (; activation->frameCount < kFrameLimit; ++activation->frameCount) {
+		const auto bridge =
+			wibo::restartSoftwareExceptionAtBridge(activation->walkingContext, std::numeric_limits<ULONGLONG>::max());
+		if (bridge == wibo::SoftwareExceptionBridgeResult64::Unsupported) {
+			decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
+			return;
+		}
 		if (!prepareFrame(*activation, kExceptionHandler))
 			return;
 		auto &dispatcher = activation->dispatcher;

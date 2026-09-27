@@ -68,7 +68,7 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
             -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lshlwapi -lsetupapi -lversion -ladvapi32 -o ${_provider_image}
-        DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h src/token_identity.h VERBATIM)
+        DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h src/token_identity.h src/message_format.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
 set_property(CACHE WIBO_GUEST_ARCH PROPERTY STRINGS x86 x86_64)
@@ -807,6 +807,25 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_process_environment PROPERTIES TIMEOUT 90)
         wibo_add_fixture_bin(NAME test_process_primary_exit SOURCES test/test_process_primary_exit.c)
         set_tests_properties(wibo.test_process_primary_exit PROPERTIES TIMEOUT 25)
+        if(APPLE)
+            wibo_add_fixture_bin(NAME test_suspend_logging SOURCES test/test_suspend_logging.c NO_TEST)
+            set(_suspend_context_option)
+            if(NOT WIBO_GUEST_64)
+                set(_suspend_context_option --context-unavailable)
+            endif()
+            foreach(_suspend_sink file stderr)
+                set(_suspend_sink_option)
+                if(_suspend_sink STREQUAL "stderr")
+                    set(_suspend_sink_option --stderr)
+                endif()
+                add_test(NAME wibo.test_suspend_logging_${_suspend_sink}
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_suspend_logging.py
+                        $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_suspend_logging.exe
+                        ${_suspend_context_option} ${_suspend_sink_option})
+                set_tests_properties(wibo.test_suspend_logging_${_suspend_sink} PROPERTIES TIMEOUT 30
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+            endforeach()
+        endif()
         wibo_add_fixture_bin(NAME test_process_suspended SOURCES test/test_process_suspended.c)
         set_tests_properties(wibo.test_process_suspended PROPERTIES TIMEOUT 25)
         wibo_add_fixture_bin(NAME test_pipe_inherit_flags SOURCES test/test_pipe_inherit_flags.c)
@@ -850,6 +869,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             wibo_add_fixture_bin(NAME test_context_restore
                 SOURCES test/test_context_restore.c test/test_context_restore.S)
             set_tests_properties(wibo.test_context_restore PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_consolidation_restore
+                SOURCES test/test_consolidation_restore.c test/test_consolidation_restore.S)
+            set_tests_properties(wibo.test_consolidation_restore PROPERTIES TIMEOUT 15)
+            add_executable(test_context_restore_preparation
+                test/test_context_restore_preparation.cpp dll/context_restore.cpp)
+            target_compile_definitions(test_context_restore_preparation PRIVATE WIBO_GUEST_64=1)
+            target_compile_features(test_context_restore_preparation PRIVATE cxx_std_20)
+            target_include_directories(test_context_restore_preparation PRIVATE src dll)
+            add_test(NAME wibo.test_context_restore_preparation COMMAND test_context_restore_preparation)
+            set_tests_properties(wibo.test_context_restore_preparation PROPERTIES TIMEOUT 15)
             wibo_add_fixture_bin(NAME test_target_unwind
                 SOURCES test/test_target_unwind.c test/test_target_unwind.S)
             set_tests_properties(wibo.test_target_unwind PROPERTIES TIMEOUT 15)
@@ -1518,6 +1547,18 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_acl_information PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_ip_address_table SOURCES test/test_ip_address_table.c COMPILE_OPTIONS -liphlpapi -lws2_32)
         set_tests_properties(wibo.test_ip_address_table PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        wibo_add_fixture_bin(NAME test_local_global_size SOURCES test/test_local_global_size.c)
+        set_tests_properties(wibo.test_local_global_size PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_format_message_string SOURCES test/test_format_message_string.c NO_TEST)
+        foreach(_message_string_mode all failed truncated trailing bad-magic bad-version status-trailing wrong-size
+                excess-count missing-zero negative-count allocated-size allocated-zero retry unavailable unconfigured
+                local-limits)
+            add_test(NAME wibo.test_format_message_string_${_message_string_mode}
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/format_message_string_provider_fixture.py
+                    $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_format_message_string.exe ${_message_string_mode})
+            set_tests_properties(wibo.test_format_message_string_${_message_string_mode} PROPERTIES TIMEOUT 30
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+        endforeach()
         wibo_add_fixture_bin(NAME test_format_message SOURCES test/test_format_message.c)
         set_tests_properties(wibo.test_format_message PROPERTIES ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_file_security SOURCES test/test_file_security.c)
@@ -1844,6 +1885,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         add_custom_target(wibo_test_fixtures DEPENDS ${WIBO_TEST_FIXTURES})
         add_dependencies(wibo_test_fixtures test_handle_transfer)
         set_tests_properties(wibo.test_handle_transfer PROPERTIES DEPENDS wibo.build_fixtures)
+        if(TARGET test_context_restore_preparation)
+            add_dependencies(wibo_test_fixtures test_context_restore_preparation)
+            set_tests_properties(wibo.test_context_restore_preparation PROPERTIES DEPENDS wibo.build_fixtures)
+        endif()
         if(TARGET test_context_capture_helpers)
             add_dependencies(wibo_test_fixtures test_context_capture_helpers)
             set_tests_properties(wibo.test_context_capture_helpers PROPERTIES DEPENDS wibo.build_fixtures)

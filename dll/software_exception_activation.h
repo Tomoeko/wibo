@@ -7,6 +7,7 @@
 enum class SoftwareExceptionActivationPhase64 : DWORD {
 	FrameSearch = 1,
 	TargetUnwind,
+	Consolidation,
 };
 
 struct SoftwareExceptionActivation64 {
@@ -41,5 +42,7 @@ SoftwareExceptionBridgeResult64 restartSoftwareExceptionAtBridge(CONTEXT64 &cont
 // Native entry, called only after the restore consumer has completed every
 // validation and snapshot. No activation is removed when validation fails.
 extern "C" bool wiboPrepareContextRestoreTransfer64(ULONGLONG targetRsp);
+extern "C" bool wiboValidateContextRestoreTransfer64(ULONGLONG targetRsp);
 extern "C" const BYTE wiboFrameHandlerContinuation64[];
+extern "C" const BYTE wiboConsolidationContinuation64[];
 #endif

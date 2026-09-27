@@ -138,8 +138,7 @@ DWORD prepareTargetUnwind(const SoftwareExceptionCapture64 *entry, TargetUnwindP
 	DEBUG_LOG("target unwind: extended=%u target=%llx ip=%llx record=%p code=%x flags=%x context=%p history=%p\n",
 			  extended, output->targetFrame, output->targetIp, output->record, output->record->ExceptionCode,
 			  output->record->ExceptionFlags, callerContext, historyTable);
-	if (output->record->ExceptionCode == kLongJumpCode || output->record->ExceptionCode == kUnwindConsolidateCode ||
-		(output->record->ExceptionFlags & kCollidedUnwind))
+	if (output->record->ExceptionCode == kLongJumpCode || (output->record->ExceptionFlags & kCollidedUnwind))
 		return unsupported(*output, "special restoration record or collided unwind");
 	output->record->ExceptionFlags |= kUnwinding;
 	if (callerContext) {
@@ -191,9 +190,11 @@ DWORD prepareTargetUnwind(const SoftwareExceptionCapture64 *entry, TargetUnwindP
 		if (target) {
 			output->resumeContext = *context;
 			output->resumeContext.Rax = output->returnValue;
-			output->resumeContext.Rip = output->targetIp;
+			if (output->record->ExceptionCode != kUnwindConsolidateCode)
+				output->resumeContext.Rip = output->targetIp;
 			if (callerContext)
 				*callerContext = output->resumeContext;
+			output->restoreContext = callerContext ? callerContext : &output->resumeContext;
 			output->kind = TargetUnwindKind64::Restore;
 			output->status = 0;
 			return 0;
@@ -209,6 +210,7 @@ DWORD prepareTargetUnwind(const SoftwareExceptionCapture64 *entry, TargetUnwindP
 
 static_assert(std::is_trivially_copyable_v<TargetUnwindPreparation64>);
 static_assert(std::is_trivially_destructible_v<TargetUnwindPreparation64>);
+static_assert(offsetof(TargetUnwindPreparation64, record) == WIBO_TARGET_UNWIND_RECORD_OFFSET);
 
 DWORD wiboPrepareTargetUnwind64(const SoftwareExceptionCapture64 *entry, TargetUnwindPreparation64 *output) {
 	return prepareTargetUnwind(entry, output, false);

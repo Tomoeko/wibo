@@ -25,10 +25,13 @@ bool validActivation(const SoftwareExceptionActivation64 *activation, ULONGLONG 
 		   activation->reserved == 0 &&
 		   ((!activation->bridgeRip && !activation->bridgeRsp &&
 			 activation->phase == SoftwareExceptionActivationPhase64::TargetUnwind) ||
-			(activation->bridgeRip == reinterpret_cast<ULONGLONG>(wiboFrameHandlerContinuation64) &&
+			((activation->bridgeRip == reinterpret_cast<ULONGLONG>(wiboFrameHandlerContinuation64) ||
+			  (activation->phase == SoftwareExceptionActivationPhase64::Consolidation &&
+			   activation->bridgeRip == reinterpret_cast<ULONGLONG>(wiboConsolidationContinuation64))) &&
 			 activation->bridgeRsp == activation->stackLow && !(activation->bridgeRsp & 15))) &&
 		   (activation->phase == SoftwareExceptionActivationPhase64::FrameSearch ||
-			activation->phase == SoftwareExceptionActivationPhase64::TargetUnwind);
+			activation->phase == SoftwareExceptionActivationPhase64::TargetUnwind ||
+			activation->phase == SoftwareExceptionActivationPhase64::Consolidation);
 }
 } // namespace
 
@@ -58,7 +61,8 @@ bool unlinkSoftwareExceptionActivation(SoftwareExceptionActivation64 *activation
 SoftwareExceptionActivation64 *currentSoftwareExceptionActivation() { return g_currentActivation; }
 
 SoftwareExceptionBridgeResult64 restartSoftwareExceptionAtBridge(CONTEXT64 &context, ULONGLONG targetFrame) {
-	if (context.Rip != reinterpret_cast<ULONGLONG>(wiboFrameHandlerContinuation64))
+	if (context.Rip != reinterpret_cast<ULONGLONG>(wiboFrameHandlerContinuation64) &&
+		context.Rip != reinterpret_cast<ULONGLONG>(wiboConsolidationContinuation64))
 		return SoftwareExceptionBridgeResult64::NoMatch;
 #if defined(__APPLE__)
 	const TEB *teb = currentTebForGuestTransition();
@@ -78,7 +82,9 @@ SoftwareExceptionBridgeResult64 restartSoftwareExceptionAtBridge(CONTEXT64 &cont
 			match = activation;
 		previous = activation;
 	}
-	if (!match || match->phase != SoftwareExceptionActivationPhase64::FrameSearch ||
+	if (!match ||
+		(match->phase != SoftwareExceptionActivationPhase64::FrameSearch &&
+		 match->phase != SoftwareExceptionActivationPhase64::Consolidation) ||
 		match->walkStart->Rsp <= context.Rsp || targetFrame < match->walkStart->Rsp)
 		return SoftwareExceptionBridgeResult64::Unsupported;
 	std::memcpy(&context, match->walkStart, sizeof(context));
@@ -86,7 +92,8 @@ SoftwareExceptionBridgeResult64 restartSoftwareExceptionAtBridge(CONTEXT64 &cont
 }
 } // namespace wibo
 
-bool wiboPrepareContextRestoreTransfer64(ULONGLONG targetRsp) {
+namespace {
+bool contextRestoreTransfer(ULONGLONG targetRsp, bool commit) {
 	if (wibo::hasActiveVectoredExceptionTraversal() || wibo::hasActiveFunctionTableCallback())
 		return false;
 #if defined(__APPLE__)
@@ -105,6 +112,8 @@ bool wiboPrepareContextRestoreTransfer64(ULONGLONG targetRsp) {
 			return false;
 		previous = activation;
 	}
+	if (!commit)
+		return true;
 	// Every owned scope was checked before mutating the chain. Only plain
 	// assembly activations are crossed; native registry owners were rejected.
 	while (g_currentActivation && targetRsp >= g_currentActivation->stackHigh) {
@@ -114,4 +123,8 @@ bool wiboPrepareContextRestoreTransfer64(ULONGLONG targetRsp) {
 	}
 	return true;
 }
+} // namespace
+
+bool wiboValidateContextRestoreTransfer64(ULONGLONG targetRsp) { return contextRestoreTransfer(targetRsp, false); }
+bool wiboPrepareContextRestoreTransfer64(ULONGLONG targetRsp) { return contextRestoreTransfer(targetRsp, true); }
 #endif

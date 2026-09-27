@@ -16,6 +16,8 @@
 namespace {
 constexpr DWORD kInvalidParameter = 0xc000000d;
 constexpr DWORD kNotSupported = 0xc00000bb;
+constexpr DWORD kConsolidate = 0x80000029;
+constexpr DWORD kCollidedUnwind = 0x40;
 constexpr DWORD kMutableArithmeticFlags = 0x8d5;
 constexpr WORD kX87ExceptionMasks = 0x3f;
 constexpr DWORD kSseExceptionMasks = 0x1f80;
@@ -84,14 +86,24 @@ DWORD wiboPrepareContextRestore64(const SoftwareExceptionCapture64 *entry, Conte
 	*output = {};
 	if (!entry)
 		return fail(*output, ContextRestoreKind64::InvalidContext, kInvalidParameter);
-	if (entry->context.Rdx)
-		return fail(*output, ContextRestoreKind64::UnsupportedExceptionRecord);
 	if (wibo::hasActiveVectoredExceptionTraversal())
 		return fail(*output, ContextRestoreKind64::UnsupportedActivationTransfer);
 	const ULONGLONG source = entry->context.Rcx;
 	if (!accessibleRange(source, sizeof(CONTEXT64), false))
 		return fail(*output, ContextRestoreKind64::InvalidContext, kInvalidParameter);
 	std::memcpy(&output->context, reinterpret_cast<const void *>(source), sizeof(CONTEXT64));
+	if (entry->context.Rdx) {
+		if (!accessibleRange(entry->context.Rdx, sizeof(EXCEPTION_RECORD), false))
+			return fail(*output, ContextRestoreKind64::UnsupportedExceptionRecord);
+		auto *record = reinterpret_cast<EXCEPTION_RECORD *>(entry->context.Rdx);
+		if (record->ExceptionCode != kConsolidate || record->NumberParameters < 1 || record->NumberParameters > 15 ||
+			(record->ExceptionFlags & kCollidedUnwind) || !executableTarget(record->ExceptionInformation[0]) ||
+			!accessibleRange(source, sizeof(CONTEXT64), true))
+			return fail(*output, ContextRestoreKind64::UnsupportedExceptionRecord);
+		output->record = record;
+		output->sourceContext = reinterpret_cast<CONTEXT64 *>(source);
+		output->callback = reinterpret_cast<PVOID>(record->ExceptionInformation[0]);
+	}
 	const auto &selected = output->context;
 	if (!supportedLegacyState(selected, entry->context))
 		return fail(*output, ContextRestoreKind64::UnsupportedContextState);
@@ -107,8 +119,37 @@ DWORD wiboPrepareContextRestore64(const SoftwareExceptionCapture64 *entry, Conte
 		return fail(*output, ContextRestoreKind64::UnsupportedControlTransfer);
 	// All range queries have returned and released their ownership scopes.
 	// The required gate validates the full activation chain before unlinking it.
+	if (output->record) {
+		const auto stackLow = reinterpret_cast<ULONGLONG>(output) - WIBO_CONTEXT_RESTORE_FRAME_OUTPUT;
+		if (!wiboValidateContextRestoreTransfer64(selected.Rsp) ||
+			!wibo::linkSoftwareExceptionActivation(&output->activation, &output->context, stackLow, entry->context.Rsp,
+												   SoftwareExceptionActivationPhase64::Consolidation))
+			return fail(*output, ContextRestoreKind64::UnsupportedActivationTransfer);
+		return fail(*output, ContextRestoreKind64::Consolidate, 0);
+	}
 	if (!wiboPrepareContextRestoreTransfer64(selected.Rsp))
 		return fail(*output, ContextRestoreKind64::UnsupportedActivationTransfer);
+	output->kind = ContextRestoreKind64::Restore;
+	output->status = 0;
+	return 0;
+}
+
+DWORD wiboCompleteContextConsolidation64(ContextRestorePreparation64 *output) {
+	if (!output->sourceContext || !wibo::unlinkSoftwareExceptionActivation(&output->activation))
+		return fail(*output, ContextRestoreKind64::UnsupportedActivationTransfer);
+	if (!executableTarget(output->context.Rip) ||
+		!accessibleRange(reinterpret_cast<ULONGLONG>(output->sourceContext), sizeof(CONTEXT64), true))
+		return fail(*output, ContextRestoreKind64::UnsupportedControlTransfer);
+	// The callback may select a continuation, but mutation of other selected
+	// context fields requires a separate restoration contract.
+	CONTEXT64 original{};
+	std::memcpy(&original, output->sourceContext, sizeof(original));
+	original.Rip = output->context.Rip;
+	if (std::memcmp(&original, &output->context, sizeof(original)) != 0)
+		return fail(*output, ContextRestoreKind64::UnsupportedContextState);
+	if (!wiboPrepareContextRestoreTransfer64(output->context.Rsp))
+		return fail(*output, ContextRestoreKind64::UnsupportedActivationTransfer);
+	output->sourceContext->Rip = output->context.Rip;
 	output->kind = ContextRestoreKind64::Restore;
 	output->status = 0;
 	return 0;

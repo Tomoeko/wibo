@@ -7,7 +7,6 @@
 #include "files.h"
 #include "heap.h"
 #include "internal.h"
-#include "mimalloc/types.h"
 #include "modules.h"
 #include "strutil.h"
 #include "types.h"
@@ -20,7 +19,6 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
-#include <mimalloc.h>
 #include <mutex>
 #include <string>
 #include <sys/mman.h>
@@ -646,6 +644,19 @@ namespace kernel32 {
 
 namespace {
 
+SIZE_T fixedAllocationSize(GUEST_PTR memory) {
+	if (memory == GUEST_NULL) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	const size_t size = wibo::heap::guestSize(reinterpret_cast<const void *>(memory));
+	if (size == SIZE_MAX) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	return static_cast<SIZE_T>(size);
+}
+
 // Match the existing fixed-locale CompareStringA facade without routing UTF-16
 // through CompareStringW's current byte conversion. Every code unit participates
 // in equality/order; insensitive comparisons fold ASCII only. This is not the
@@ -1176,17 +1187,21 @@ void tryMarkExecutable(void *mem) {
 	if (!mem) {
 		return;
 	}
-	size_t usable = mi_usable_size(mem);
-	if (usable == 0) {
+	const size_t usable = wibo::heap::guestSize(mem);
+	if (usable == 0 || usable == SIZE_MAX) {
 		return;
 	}
 	long pageSize = sysconf(_SC_PAGESIZE);
 	if (pageSize <= 0) {
 		return;
 	}
-	uintptr_t start = reinterpret_cast<uintptr_t>(mem);
-	uintptr_t alignedStart = start & ~static_cast<uintptr_t>(pageSize - 1);
-	uintptr_t end = (start + usable + pageSize - 1) & ~static_cast<uintptr_t>(pageSize - 1);
+	const uintptr_t start = reinterpret_cast<uintptr_t>(mem);
+	const uintptr_t pageMask = static_cast<uintptr_t>(pageSize - 1);
+	if (usable > UINTPTR_MAX - start || start + usable > UINTPTR_MAX - pageMask) {
+		return;
+	}
+	const uintptr_t alignedStart = start & ~pageMask;
+	const uintptr_t end = (start + usable + pageMask) & ~pageMask;
 	size_t length = static_cast<size_t>(end - alignedStart);
 	if (length == 0) {
 		return;
@@ -1290,6 +1305,9 @@ HGLOBAL WINAPI GlobalAlloc(UINT uFlags, SIZE_T dwBytes) {
 HGLOBAL WINAPI GlobalFree(HGLOBAL hMem) {
 	HOST_CONTEXT_GUARD();
 	VERBOSE_LOG("GlobalFree(%p)\n", hMem);
+	if (hMem == GUEST_NULL) {
+		return GUEST_NULL;
+	}
 	if (wibo::heap::guestFree(reinterpret_cast<void *>(hMem))) {
 		VERBOSE_LOG("-> success\n");
 		return GUEST_NULL;
@@ -1314,6 +1332,12 @@ HGLOBAL WINAPI GlobalReAlloc(HGLOBAL hMem, SIZE_T dwBytes, UINT uFlags) {
 		return GUEST_NULL;
 	}
 	return toGuestPtr(ret);
+}
+
+SIZE_T WINAPI GlobalSize(HGLOBAL hMem) {
+	HOST_CONTEXT_GUARD();
+	VERBOSE_LOG("GlobalSize(%p)\n", hMem);
+	return fixedAllocationSize(hMem);
 }
 
 UINT WINAPI GlobalFlags(HGLOBAL hMem) {
@@ -1392,6 +1416,9 @@ HLOCAL WINAPI LocalAlloc(UINT uFlags, SIZE_T uBytes) {
 HLOCAL WINAPI LocalFree(HLOCAL hMem) {
 	HOST_CONTEXT_GUARD();
 	VERBOSE_LOG("LocalFree(%p)\n", hMem);
+	if (hMem == GUEST_NULL) {
+		return GUEST_NULL;
+	}
 	if (wibo::heap::guestFree(reinterpret_cast<void *>(hMem))) {
 		VERBOSE_LOG("-> success\n");
 		return GUEST_NULL;
@@ -1442,7 +1469,7 @@ BOOL WINAPI LocalUnlock(HLOCAL hMem) {
 SIZE_T WINAPI LocalSize(HLOCAL hMem) {
 	HOST_CONTEXT_GUARD();
 	VERBOSE_LOG("LocalSize(%p)\n", hMem);
-	return hMem ? mi_usable_size(reinterpret_cast<void *>(hMem)) : 0;
+	return fixedAllocationSize(hMem);
 }
 
 UINT WINAPI LocalFlags(HLOCAL hMem) {
