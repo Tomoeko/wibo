@@ -181,6 +181,11 @@ bool validResolvedLocale(uint32_t result, const std::vector<uint8_t> &output) {
 	return true;
 }
 
+bool matchesSnapshot(const std::vector<uint8_t> &output, std::string_view initial) {
+	return output.size() == initial.size() &&
+		   (initial.empty() || std::memcmp(output.data(), initial.data(), initial.size()) == 0);
+}
+
 int compareStrings(const std::string &a, const std::string &b, DWORD dwCmpFlags) {
 	for (size_t i = 0;; ++i) {
 		if (i == a.size()) {
@@ -261,6 +266,99 @@ LANGID WINAPI GetUserDefaultUILanguage() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("STUB: GetUserDefaultUILanguage()\n");
 	return 0;
+}
+
+BOOL WINAPI GetFileMUIPath(DWORD dwFlags, LPCWSTR pcwszFilePath, LPWSTR pwszLanguage, PULONG pcchLanguage,
+						   LPWSTR pwszFileMUIPath, PULONG pcchFileMUIPath, ULONGLONG *pululEnumerator) {
+	HOST_CONTEXT_GUARD();
+	const DWORD incomingError = getLastError();
+	DEBUG_LOG("GetFileMUIPath(0x%x, %p, %p, %p, %p, %p, %p)\n", dwFlags, pcwszFilePath, pwszLanguage, pcchLanguage,
+			  pwszFileMUIPath, pcchFileMUIPath, pululEnumerator);
+	if (!pcwszFilePath || !pcchLanguage || !pcchFileMUIPath || !pululEnumerator) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	static_assert(sizeof(ULONG) == 4 && sizeof(ULONGLONG) == 8 && sizeof(WCHAR) == 2);
+	ULONG languageCapacity = 0, pathCapacity = 0;
+	std::memcpy(&languageCapacity, pcchLanguage, sizeof(languageCapacity));
+	std::memcpy(&pathCapacity, pcchFileMUIPath, sizeof(pathCapacity));
+	DEBUG_LOG("GetFileMUIPath capacities: language=%u, path=%u\n", languageCapacity, pathCapacity);
+	if ((!pwszLanguage && languageCapacity) || (pwszLanguage && !languageCapacity) ||
+		(!pwszFileMUIPath && pathCapacity) || !wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	constexpr size_t kRequestOverhead = 256;
+	const uint64_t bufferHexSize = (uint64_t(languageCapacity) + pathCapacity) * 2 * sizeof(WCHAR);
+	if (bufferHexSize >= kMaxNlsRequest - kRequestOverhead) {
+		// Reject oversized extents before reading either caller buffer.
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	const size_t nameLimit = (kMaxNlsRequest - kRequestOverhead - static_cast<size_t>(bufferHexSize)) / 4;
+	const size_t nameUnits = wstrnlen(pcwszFilePath, nameLimit);
+	if (nameUnits == nameLimit) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	const auto capture = [](LPWSTR buffer, ULONG capacity, std::string &snapshot) {
+		const size_t bytes = static_cast<size_t>(capacity) * sizeof(WCHAR);
+		if (bytes > std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(buffer)) {
+			setLastError(ERROR_INVALID_PARAMETER);
+			return false;
+		}
+		if (bytes)
+			snapshot.assign(reinterpret_cast<const char *>(buffer), bytes);
+		return true;
+	};
+	std::string languageBefore, pathBefore, enumeratorBefore(sizeof(ULONGLONG), '\0');
+	if (!capture(pwszLanguage, languageCapacity, languageBefore) || !capture(pwszFileMUIPath, pathCapacity, pathBefore))
+		return FALSE;
+	if (pwszLanguage) {
+		bool terminated = false;
+		for (size_t offset = 0; offset < languageBefore.size(); offset += sizeof(WCHAR))
+			if (!languageBefore[offset] && !languageBefore[offset + 1]) {
+				terminated = true;
+				break;
+			}
+		if (!terminated) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+	}
+	std::memcpy(enumeratorBefore.data(), pululEnumerator, enumeratorBefore.size());
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request(
+			{"file-mui-path", std::to_string(dwFlags), encodeWideBytes(pcwszFilePath, nameUnits),
+			 std::to_string(languageCapacity), pwszLanguage ? wibo::provider::encodeBytes(languageBefore) : "-",
+			 std::to_string(pathCapacity), pwszFileMUIPath ? wibo::provider::encodeBytes(pathBefore) : "-",
+			 wibo::provider::encodeBytes(enumeratorBefore), std::to_string(incomingError)},
+			response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return FALSE;
+	uint32_t result = 0, nativeError = 0, languageCount = 0, pathCount = 0;
+	std::vector<uint8_t> enumeratorAfter, languageAfter, pathAfter;
+	if (!reader.number(result) || result > 1 || !reader.number(nativeError) || !reader.number(languageCount) ||
+		!reader.number(pathCount) || !reader.bytes(enumeratorAfter) || enumeratorAfter.size() != sizeof(ULONGLONG) ||
+		!reader.bytes(languageAfter) || languageAfter.size() != languageBefore.size() || !reader.bytes(pathAfter) ||
+		pathAfter.size() != pathBefore.size() || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	// Only a genuine unavailable-service receipt is supported. Successful discovery
+	// would also require namespace translation and persistent enumeration ownership.
+	if (result || nativeError != ERROR_CALL_NOT_IMPLEMENTED || languageCount != languageCapacity ||
+		pathCount != pathCapacity || !matchesSnapshot(enumeratorAfter, enumeratorBefore) ||
+		!matchesSnapshot(languageAfter, languageBefore) || !matchesSnapshot(pathAfter, pathBefore)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	setLastError(nativeError);
+	return FALSE;
 }
 
 BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,

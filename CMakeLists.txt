@@ -882,6 +882,25 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             SOURCES test/test_file_version_info_ex.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o NO_TEST)
         wibo_add_fixture_bin(NAME test_locale_info_ex SOURCES test/test_locale_info_ex.c NO_TEST)
         wibo_add_fixture_bin(NAME test_resolve_locale SOURCES test/test_resolve_locale.c NO_TEST)
+        wibo_add_fixture_bin(NAME test_file_mui_path SOURCES test/test_file_mui_path.c NO_TEST)
+        foreach(mode unchanged query long-filename changed-size changed-language changed-path changed-enumerator
+            true other-error bad-bool enum-width blob-width truncated trailing failed failed-with-data)
+            add_test(NAME wibo.test_file_mui_path_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_mui_path.exe)
+            set_tests_properties(wibo.test_file_mui_path_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/file_mui_path_provider_fixture.py;WIBO_FIXTURE_FILE_MUI_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_file_mui_path_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_mui_path.exe)
+        set_tests_properties(wibo.test_file_mui_path_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_FILE_MUI_RESPONSE=unavailable")
+        add_test(NAME wibo.test_file_mui_path_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_file_mui_path.exe)
+        set_tests_properties(wibo.test_file_mui_path_local PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/file_mui_path_provider_fixture.py;WIBO_FIXTURE_FILE_MUI_LOCAL=1")
         foreach(mode success null-name invariant success-cleared short-mutated false-zero failed
             truncated trailing wrong-size overflow-result unterminated early-null query-data query-overflow failed-with-data)
             add_test(NAME wibo.test_resolve_locale_${mode}

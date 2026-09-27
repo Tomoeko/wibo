@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -781,6 +782,109 @@ bool localeInfoEx(WCHAR **parameters) {
 	return localeBufferSnapshot(parameters + 1, LocaleSnapshotOperation::Information, type);
 }
 
+struct MuiBufferSnapshot {
+	static constexpr size_t kGuardUnits = 8;
+	static constexpr WCHAR kGuardValue = 0xa5a5;
+	bool present = false;
+	ULONG capacity = 0;
+	std::string initial;
+	std::vector<WCHAR> buffer;
+
+	DWORD capture(const WCHAR *seed, ULONG units, bool language) {
+		present = wcscmp(seed, L"-") != 0;
+		capacity = units;
+		if ((!present && capacity) || (language && present && !capacity))
+			return ERROR_NOT_SUPPORTED;
+		if (!present)
+			return ERROR_SUCCESS;
+		const size_t bytes = static_cast<size_t>(capacity) * sizeof(WCHAR);
+		if (wcslen(seed) != bytes * 2 || !decodeHex(seed, initial, true) || initial.size() != bytes)
+			return ERROR_INVALID_PARAMETER;
+		buffer.assign(static_cast<size_t>(capacity) + kGuardUnits, kGuardValue);
+		if (bytes)
+			std::memcpy(buffer.data(), initial.data(), bytes);
+		if (language && std::find(buffer.begin(), buffer.begin() + capacity, WCHAR(0)) == buffer.begin() + capacity)
+			return ERROR_NOT_SUPPORTED;
+		return ERROR_SUCCESS;
+	}
+
+	WCHAR *data() { return present ? buffer.data() : nullptr; }
+
+	[[nodiscard]] bool unchanged() const {
+		return !present ||
+			   ((initial.empty() || std::memcmp(buffer.data(), initial.data(), initial.size()) == 0) &&
+				std::all_of(buffer.begin() + capacity, buffer.end(), [](WCHAR value) { return value == kGuardValue; }));
+	}
+};
+
+bool fileMuiPath(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	static_assert(sizeof(ULONG) == 4 && sizeof(ULONGLONG) == 8 && sizeof(WCHAR) == 2);
+	uint32_t flags = 0, languageCapacity = 0, pathCapacity = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, languageCapacity) ||
+		!parseUnsignedDecimal(parameters[4], UINT32_MAX, pathCapacity) ||
+		!parseUnsignedDecimal(parameters[7], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kRequestLimit = 64 * 1024;
+	constexpr size_t kRequestOverhead = 256;
+	const uint64_t bufferHexSize = (uint64_t(languageCapacity) + pathCapacity) * 2 * sizeof(WCHAR);
+	if (bufferHexSize >= kRequestLimit - kRequestOverhead)
+		return fail(ERROR_NOT_ENOUGH_MEMORY);
+	size_t remaining = kRequestLimit - kRequestOverhead;
+	for (size_t index : {size_t(1), size_t(3), size_t(5)}) {
+		const size_t length = wcslen(parameters[index]);
+		if (length > remaining)
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		remaining -= length;
+	}
+	if (wcscmp(parameters[1], L"-") == 0)
+		return fail(ERROR_NOT_SUPPORTED);
+	std::vector<WCHAR> filename;
+	if (!decodeMappingString(parameters[1], filename) ||
+		std::find(filename.begin(), filename.end(), WCHAR(0)) != filename.end())
+		return fail(ERROR_INVALID_PARAMETER);
+	filename.push_back(0);
+	MuiBufferSnapshot language, path;
+	DWORD status = language.capture(parameters[3], languageCapacity, true);
+	if (status != ERROR_SUCCESS)
+		return fail(status);
+	status = path.capture(parameters[5], pathCapacity, false);
+	if (status != ERROR_SUCCESS)
+		return fail(status);
+	std::string enumeratorBytes;
+	if (wcslen(parameters[6]) != sizeof(ULONGLONG) * 2 || !decodeHex(parameters[6], enumeratorBytes, true) ||
+		enumeratorBytes.size() != sizeof(ULONGLONG))
+		return fail(ERROR_INVALID_PARAMETER);
+	ULONGLONG enumerator = 0;
+	std::memcpy(&enumerator, enumeratorBytes.data(), sizeof(enumerator));
+	ULONG languageCount = languageCapacity, pathCount = pathCapacity;
+	SetLastError(incomingError);
+	const BOOL result =
+		GetFileMUIPath(flags, filename.data(), language.data(), &languageCount, path.data(), &pathCount, &enumerator);
+	const DWORD nativeError = GetLastError();
+	// Only forward a native unavailable-service result with unchanged snapshots.
+	// Successful resource paths and opaque enumeration state need separate ownership.
+	if (result || nativeError != ERROR_CALL_NOT_IMPLEMENTED || languageCount != languageCapacity ||
+		pathCount != pathCapacity || std::memcmp(&enumerator, enumeratorBytes.data(), sizeof(enumerator)) != 0 ||
+		!language.unchanged() || !path.unchanged())
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(0);
+	response.number(nativeError);
+	response.number(languageCount);
+	response.number(pathCount);
+	response.bytes(&enumerator, sizeof(enumerator));
+	response.bytes(language.data(), language.initial.size());
+	response.bytes(path.data(), path.initial.size());
+	return response.write();
+}
+
 bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
 	uint32_t flags = 0, capacity = 0, mode = 0;
 	const auto write = [](DWORD status, BOOL result, bool countPresent, ULONG count, ULONG units,
@@ -1496,6 +1600,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = localeInfoEx(argv + 2);
 	else if (argc == 6 && wcscmp(argv[1], L"resolve-locale-name") == 0)
 		written = localeBufferSnapshot(argv + 2, LocaleSnapshotOperation::ResolveName);
+	else if (argc == 10 && wcscmp(argv[1], L"file-mui-path") == 0)
+		written = fileMuiPath(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)

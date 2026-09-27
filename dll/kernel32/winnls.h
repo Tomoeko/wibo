@@ -48,6 +48,8 @@ LANGID WINAPI GetSystemDefaultLangID();
 LANGID WINAPI GetUserDefaultUILanguage();
 BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,
 										PULONG pcchLanguagesBuffer);
+BOOL WINAPI GetFileMUIPath(DWORD dwFlags, LPCWSTR pcwszFilePath, LPWSTR pwszLanguage, PULONG pcchLanguage,
+						   LPWSTR pwszFileMUIPath, PULONG pcchFileMUIPath, ULONGLONG *pululEnumerator);
 int WINAPI GetUserDefaultLocaleName(LPWSTR lpLocaleName, int cchLocaleName);
 LCID WINAPI LocaleNameToLCID(LPCWSTR lpName, DWORD dwFlags);
 BOOL WINAPI GetCPInfo(UINT CodePage, LPCPINFO lpCPInfo);
