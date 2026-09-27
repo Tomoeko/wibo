@@ -3,6 +3,10 @@
 #include "common.h"
 #include "strutil.h"
 
+#ifdef __APPLE__
+#include "processes.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -94,7 +98,13 @@ class PersistentProvider {
 		posix_spawnattr_setpgroup(&attributes, 0);
 		char serve[] = "--serve";
 		char *argv[] = {const_cast<char *>(executable), serve, nullptr};
-		const int error = posix_spawn(&child, executable, &actions, &attributes, argv, environ);
+		int error;
+		{
+#ifdef __APPLE__
+			std::lock_guard lock(wibo::detail::nativeProcessOperationMutex());
+#endif
+			error = posix_spawn(&child, executable, &actions, &attributes, argv, environ);
+		}
 		posix_spawnattr_destroy(&attributes);
 		posix_spawn_file_actions_destroy(&actions);
 		close(incoming[0]);
@@ -255,7 +265,13 @@ bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &re
 	posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
 	posix_spawnattr_setpgroup(&attributes, 0);
 	pid_t child = 0;
-	const int spawnError = posix_spawn(&child, path, &actions, &attributes, argv.data(), environ);
+	int spawnError;
+	{
+#ifdef __APPLE__
+		std::lock_guard lock(wibo::detail::nativeProcessOperationMutex());
+#endif
+		spawnError = posix_spawn(&child, path, &actions, &attributes, argv.data(), environ);
+	}
 	posix_spawnattr_destroy(&attributes);
 	posix_spawn_file_actions_destroy(&actions);
 	close(descriptors[1]);

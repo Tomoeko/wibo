@@ -107,6 +107,11 @@ void completeProcess(Pin<ProcessObject> process, int status, bool statusKnown = 
 
 namespace wibo::detail {
 
+std::mutex &nativeProcessOperationMutex() {
+	static std::mutex mutex;
+	return mutex;
+}
+
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl() { return std::make_unique<DarwinProcessManager>(); }
 
 int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info) {
@@ -137,6 +142,7 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 	}
 	pid_t pid = -1;
 	if (rc == 0) {
+		std::lock_guard lock(nativeProcessOperationMutex());
 		rc = posix_spawn(&pid, path.c_str(), &actions, &attr, argv, envp);
 	}
 	posix_spawnattr_destroy(&attr);

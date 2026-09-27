@@ -19,6 +19,7 @@
 #include "types.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <csignal>
@@ -40,7 +41,12 @@
 
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
+#include <mach/mach.h>
+extern "C" {
+#include <mach/thread_state.h>
+}
 #elif defined(__linux__)
+#include <linux/membarrier.h>
 #include <sched.h>
 #endif
 
@@ -60,6 +66,110 @@ constexpr WORD SW_SHOWNORMAL = 1;
 
 constexpr DWORD EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 constexpr DWORD_PTR PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
+
+#ifdef __APPLE__
+bool threadHasLeftSnapshot(task_t task, thread_t thread) {
+	thread_act_array_t current = nullptr;
+	mach_msg_type_number_t count = 0;
+	kern_return_t failure = task_threads(task, &current, &count);
+	if (failure != KERN_SUCCESS) {
+		std::fprintf(stderr, "Process write barrier thread reconciliation failed: %d\n", failure);
+		return false;
+	}
+	bool present = false;
+	for (mach_msg_type_number_t index = 0; index < count; ++index) {
+		present |= current[index] == thread;
+		if (!MACH_PORT_VALID(current[index]))
+			continue;
+		const kern_return_t released = mach_port_deallocate(task, current[index]);
+		if (failure == KERN_SUCCESS && released != KERN_SUCCESS) {
+			std::fprintf(stderr, "Process write barrier reconciliation right release failed: %d\n", released);
+			failure = released;
+		}
+	}
+	const kern_return_t released =
+		vm_deallocate(task, reinterpret_cast<vm_address_t>(current), static_cast<vm_size_t>(count) * sizeof(*current));
+	if (failure == KERN_SUCCESS && released != KERN_SUCCESS) {
+		std::fprintf(stderr, "Process write barrier reconciliation list release failed: %d\n", released);
+		failure = released;
+	}
+	// Retaining the original send right keeps its IPC name stable across snapshots.
+	// An absent name identifies a vanished thread, not an arbitrary state-query error.
+	return failure == KERN_SUCCESS && !present;
+}
+#endif
+
+bool nativeProcessWriteBarrier() {
+#ifdef __APPLE__
+	if (__builtin_available(macOS 10.14, *)) {
+		// Keep process creation disjoint from synchronous thread-state requests,
+		// which can contend on kernel task locks.
+		std::lock_guard lock(wibo::detail::nativeProcessOperationMutex());
+		const task_t task = mach_task_self();
+		thread_act_array_t threads = nullptr;
+		mach_msg_type_number_t count = 0;
+		kern_return_t failure = task_threads(task, &threads, &count);
+		if (failure != KERN_SUCCESS) {
+			std::fprintf(stderr, "Process write barrier thread enumeration failed: %d\n", failure);
+			return false;
+		}
+		for (mach_msg_type_number_t index = 0; index < count; ++index) {
+			// A thread can finish after the snapshot but before its reference is
+			// converted into a port. Such slots do not contain a retained right.
+			if (!MACH_PORT_VALID(threads[index]))
+				continue;
+			if (failure == KERN_SUCCESS) {
+				size_t length = 0;
+				const kern_return_t result =
+					thread_get_register_pointer_values(threads[index], nullptr, &length, nullptr);
+				bool terminated = false;
+				if (result == KERN_INVALID_ARGUMENT) {
+					mach_port_type_t type = MACH_PORT_TYPE_NONE;
+					const kern_return_t queried = mach_port_type(task, threads[index], &type);
+					if (queried == KERN_SUCCESS) {
+						// A dead name establishes termination independently of the
+						// otherwise ambiguous state-query error.
+						terminated = (type & MACH_PORT_TYPE_DEAD_NAME) != 0;
+						if (!terminated && (type & MACH_PORT_TYPE_SEND))
+							terminated = threadHasLeftSnapshot(task, threads[index]);
+						if (!terminated)
+							std::fprintf(stderr, "Process write barrier failed named thread port type: %u\n", type);
+					} else {
+						std::fprintf(stderr, "Process write barrier named thread-port query failed: %d\n", queried);
+					}
+				}
+				// The size query reads and synchronizes thread state before reporting
+				// insufficient output storage. No register values are needed here.
+				if (result != KERN_SUCCESS && result != KERN_INSUFFICIENT_BUFFER_SIZE && result != KERN_TERMINATED &&
+					result != MACH_SEND_INVALID_DEST && !terminated) {
+					std::fprintf(stderr, "Process write barrier thread synchronization failed: %d\n", result);
+					failure = result;
+				}
+			}
+			const kern_return_t released = mach_port_deallocate(task, threads[index]);
+			if (failure == KERN_SUCCESS && released != KERN_SUCCESS) {
+				std::fprintf(stderr, "Process write barrier thread-right release failed: %d\n", released);
+				failure = released;
+			}
+		}
+		const kern_return_t released = vm_deallocate(task, reinterpret_cast<vm_address_t>(threads),
+													 static_cast<vm_size_t>(count) * sizeof(*threads));
+		if (failure == KERN_SUCCESS && released != KERN_SUCCESS) {
+			std::fprintf(stderr, "Process write barrier thread-list release failed: %d\n", released);
+			failure = released;
+		}
+		return failure == KERN_SUCCESS;
+	}
+#elif defined(__linux__) && defined(SYS_membarrier)
+	static const bool registered = [] {
+		const long supported = syscall(SYS_membarrier, MEMBARRIER_CMD_QUERY, 0, 0);
+		return supported >= 0 && (supported & MEMBARRIER_CMD_PRIVATE_EXPEDITED) &&
+			   syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0) == 0;
+	}();
+	return registered && syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) == 0;
+#endif
+	return false;
+}
 
 struct ProcessAttribute {
 	DWORD_PTR key;
@@ -293,6 +403,19 @@ void *threadTrampoline(void *param) {
 } // namespace
 
 namespace kernel32 {
+
+void WINAPI FlushProcessWriteBuffers() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FlushProcessWriteBuffers()\n");
+	const DWORD lastError = getLastError();
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+	if (!nativeProcessWriteBarrier()) {
+		std::fputs("Process-wide write barrier is unavailable\n", stderr);
+		exitInternal(ERROR_NOT_SUPPORTED);
+	}
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+	setLastError(lastError);
+}
 
 BOOL WINAPI FlushInstructionCache(HANDLE process, LPCVOID address, SIZE_T size) {
 	HOST_CONTEXT_GUARD();

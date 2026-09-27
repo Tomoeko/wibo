@@ -46,6 +46,11 @@ std::string snapshotProcessName(const std::string &hostImage, const std::string 
 std::unique_ptr<ProcessManagerImpl> createProcessManagerImpl();
 int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnProcessInfo &info);
 
+#ifdef __APPLE__
+// Serialize process creation with operations that synchronously inspect running threads.
+std::mutex &nativeProcessOperationMutex();
+#endif
+
 } // namespace detail
 
 class ProcessManager {
