@@ -19,6 +19,7 @@
 #include <wbemcli.h>
 #include <winternl.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -661,6 +662,35 @@ bool compareStringEx(WCHAR **parameters) {
 	return response.write();
 }
 
+bool cpInfoExW(const WCHAR *codePageText, const WCHAR *flagsText) {
+	static_assert(sizeof(CPINFOEXW) == 544 && alignof(CPINFOEXW) == 4);
+	static_assert(offsetof(CPINFOEXW, MaxCharSize) == 0 && offsetof(CPINFOEXW, DefaultChar) == 4 &&
+				  offsetof(CPINFOEXW, LeadByte) == 6 && offsetof(CPINFOEXW, UnicodeDefaultChar) == 18 &&
+				  offsetof(CPINFOEXW, CodePage) == 20 && offsetof(CPINFOEXW, CodePageName) == 24);
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		response.number(0);
+		return response.write();
+	};
+	uint32_t codePage, flags;
+	if (!parseUnsignedDecimal(codePageText, UINT32_MAX, codePage) ||
+		!parseUnsignedDecimal(flagsText, UINT32_MAX, flags) || flags)
+		return fail(ERROR_INVALID_PARAMETER);
+	CPINFOEXW information{};
+	static_assert(sizeof(information.DefaultChar) == 2 && sizeof(information.LeadByte) == 12 &&
+				  sizeof(information.CodePageName) == 520);
+	SetLastError(ERROR_SUCCESS);
+	const BOOL succeeded = GetCPInfoExW(codePage, flags, &information);
+	const DWORD status = succeeded ? ERROR_SUCCESS : GetLastError();
+	Response response;
+	response.header(status);
+	response.number(succeeded ? 1 : 0);
+	if (succeeded)
+		response.bytes(&information, sizeof(information));
+	return response.write();
+}
+
 bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
 	std::string classBytes, enumerator;
 	GUID classGuid{};
@@ -1220,6 +1250,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = lcMapStringEx(argv + 2);
 	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)
 		written = compareStringEx(argv + 2);
+	else if (argc == 4 && wcscmp(argv[1], L"cp-info-ex-w") == 0)
+		written = cpInfoExW(argv[2], argv[3]);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)

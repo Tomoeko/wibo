@@ -107,6 +107,40 @@ elif operation == 'compare-string-ex':
     elif fault == 'invalid-result-high':
         response = header() + number(4)
 
+elif operation == 'cp-info-ex-w':
+    code_page, flags = map(int, arguments)
+    value = bytearray(544)
+    struct.pack_into('<I', value, 0, 4)
+    value[4] = ord('?')
+    struct.pack_into('<HI', value, 18, 0xfffd, 65001)
+    name = 'Fixture Code Page\0'.encode('utf-16-le')
+    value[24:24 + len(name)] = name
+    response = header() + number(1) + blob(value) if code_page == 65001 and flags == 0 else header(87) + number(0)
+    fault = os.environ.get('WIBO_FIXTURE_CP_INFO_RESPONSE')
+    if fault == 'failed':
+        response = header(87) + number(0)
+    elif fault == 'failed-zero':
+        response = header() + number(0)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'wrong-size':
+        response = header() + number(1) + blob(value[:-1])
+    elif fault == 'unterminated-name':
+        value[24:] = b'A\0' * 260
+        response = header() + number(1) + blob(value)
+    elif fault == 'mismatched-code-page':
+        struct.pack_into('<I', value, 20, 1252)
+        response = header() + number(1) + blob(value)
+    elif fault == 'zero-char-size':
+        struct.pack_into('<I', value, 0, 0)
+        response = header() + number(1) + blob(value)
+    elif fault == 'invalid-result':
+        response = header() + number(2) + blob(value)
+    elif fault == 'success-error':
+        response = header(87) + number(1) + blob(value)
+
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)

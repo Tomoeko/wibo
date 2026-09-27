@@ -242,6 +242,59 @@ BOOL WINAPI GetCPInfo(UINT CodePage, LPCPINFO lpCPInfo) {
 	return TRUE;
 }
 
+BOOL WINAPI GetCPInfoExW(UINT CodePage, DWORD dwFlags, LPCPINFOEXW lpCPInfoEx) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetCPInfoExW(%u, 0x%x, %p)\n", CodePage, dwFlags, lpCPInfoEx);
+	if (!lpCPInfoEx || dwFlags) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (CodePage == 3) {
+		// The provider does not receive the guest thread's locale state.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	// ANSI metadata must describe the code page exposed by the existing facade.
+	const UINT resolvedCodePage = CodePage == 0 ? GetACP() : CodePage;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"cp-info-ex-w", std::to_string(resolvedCodePage), std::to_string(dwFlags)},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	uint32_t result = 0;
+	if (!reader.header(status) || !reader.number(result) || result > 1) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (!result) {
+		if (!reader.done()) {
+			setLastError(ERROR_INVALID_DATA);
+			return FALSE;
+		}
+		// Some code pages can fail with ERROR_SUCCESS; retain the separate result.
+		setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+		return FALSE;
+	}
+	std::vector<uint8_t> output;
+	if (status != ERROR_SUCCESS || !reader.bytes(output) || output.size() != sizeof(CPINFOEXW) || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	CPINFOEXW information{};
+	std::memcpy(&information, output.data(), sizeof(information));
+	if (!information.MaxCharSize || information.CodePage <= 3 ||
+		(resolvedCodePage > 3 && information.CodePage != resolvedCodePage) ||
+		wstrnlen(information.CodePageName, MAX_PATH) == MAX_PATH) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	std::memcpy(lpCPInfoEx, &information, sizeof(information));
+	return TRUE;
+}
+
 int WINAPI CompareStringA(LCID Locale, DWORD dwCmpFlags, LPCSTR lpString1, int cchCount1, LPCSTR lpString2,
 						  int cchCount2) {
 	HOST_CONTEXT_GUARD();

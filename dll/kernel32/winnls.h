@@ -1,6 +1,9 @@
 #pragma once
 
+#include "minwinbase.h"
 #include "types.h"
+
+#include <cstddef>
 
 constexpr UINT MAX_DEFAULTCHAR = 2;
 constexpr UINT MAX_LEADBYTES = 12;
@@ -12,6 +15,27 @@ struct CPINFO {
 };
 
 using LPCPINFO = CPINFO *;
+
+struct CPINFOEXW {
+	UINT MaxCharSize;
+	BYTE DefaultChar[MAX_DEFAULTCHAR];
+	BYTE LeadByte[MAX_LEADBYTES];
+	WCHAR UnicodeDefaultChar;
+	UINT CodePage;
+	WCHAR CodePageName[MAX_PATH];
+};
+
+using LPCPINFOEXW = CPINFOEXW *;
+
+static_assert(sizeof(CPINFOEXW) == 544);
+static_assert(alignof(CPINFOEXW) == 4);
+static_assert(offsetof(CPINFOEXW, MaxCharSize) == 0);
+static_assert(offsetof(CPINFOEXW, DefaultChar) == 4);
+static_assert(offsetof(CPINFOEXW, LeadByte) == 6);
+static_assert(offsetof(CPINFOEXW, UnicodeDefaultChar) == 18);
+static_assert(offsetof(CPINFOEXW, CodePage) == 20);
+static_assert(offsetof(CPINFOEXW, CodePageName) == 24);
+
 typedef BOOL(_CC_STDCALL *LOCALE_ENUMPROCA)(LPSTR);
 
 struct NLSVERSIONINFO;
@@ -25,6 +49,7 @@ LANGID WINAPI GetUserDefaultUILanguage();
 int WINAPI GetUserDefaultLocaleName(LPWSTR lpLocaleName, int cchLocaleName);
 LCID WINAPI LocaleNameToLCID(LPCWSTR lpName, DWORD dwFlags);
 BOOL WINAPI GetCPInfo(UINT CodePage, LPCPINFO lpCPInfo);
+BOOL WINAPI GetCPInfoExW(UINT CodePage, DWORD dwFlags, LPCPINFOEXW lpCPInfoEx);
 int WINAPI CompareStringA(LCID Locale, DWORD dwCmpFlags, LPCSTR lpString1, int cchCount1, LPCSTR lpString2,
 						  int cchCount2);
 int WINAPI CompareStringW(LCID Locale, DWORD dwCmpFlags, LPCWCH lpString1, int cchCount1, LPCWCH lpString2,
