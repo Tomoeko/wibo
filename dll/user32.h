@@ -29,6 +29,7 @@ BOOL WINAPI GetClassInfoExW(HINSTANCE instance, LPCWSTR name, WNDCLASSEXW *defin
 BOOL WINAPI UnregisterClassW(LPCWSTR name, HINSTANCE instance);
 
 void WINAPI DisableProcessWindowsGhosting();
+BOOL WINAPI IsCharAlphaW(WCHAR character);
 int WINAPI GetSystemMetrics(int index);
 int WINAPI LoadStringA(HMODULE hInstance, UINT uID, LPSTR lpBuffer, int cchBufferMax);
 int WINAPI LoadStringW(HMODULE hInstance, UINT uID, LPWSTR lpBuffer, int cchBufferMax);

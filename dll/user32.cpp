@@ -10,17 +10,58 @@
 #include "modules.h"
 #include "resources.h"
 #include "strutil.h"
+#include "system_provider.h"
 
+#include <array>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
 std::atomic<bool> g_ghostingDisabled = false;
 std::mutex g_atomMutex;
 std::unordered_map<std::u16string, UINT> g_registeredAtoms;
+constexpr size_t kAlphaTableBytes = 0x10000 / 8;
+std::mutex g_alphaTableMutex;
+std::array<uint8_t, kAlphaTableBytes> g_alphaTable{};
+bool g_alphaTableLoaded = false;
+
+bool classifyAlphabetic(WCHAR character, BOOL &result) {
+	std::lock_guard lock(g_alphaTableMutex);
+	if (!g_alphaTableLoaded) {
+		std::vector<uint8_t> response;
+		if (!wibo::provider::request({"is-char-alpha-w-table"}, response)) {
+			kernel32::setLastError(ERROR_NOT_SUPPORTED);
+			return false;
+		}
+		wibo::provider::Reader reader(response);
+		int32_t status;
+		if (!reader.header(status)) {
+			kernel32::setLastError(ERROR_INVALID_DATA);
+			return false;
+		}
+		if (status) {
+			if (!reader.done())
+				kernel32::setLastError(ERROR_INVALID_DATA);
+			else
+				kernel32::setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED
+																			  : static_cast<DWORD>(status));
+			return false;
+		}
+		std::vector<uint8_t> table;
+		if (!reader.bytes(table) || !reader.done() || table.size() != g_alphaTable.size()) {
+			kernel32::setLastError(ERROR_INVALID_DATA);
+			return false;
+		}
+		std::memcpy(g_alphaTable.data(), table.data(), table.size());
+		g_alphaTableLoaded = true;
+	}
+	result = (g_alphaTable[character / 8] & (1u << (character % 8))) != 0;
+	return true;
+}
 
 UINT registerAtom(LPCWSTR lpString) {
 	if (!lpString || !*lpString) {
@@ -57,6 +98,20 @@ bool ghostingDisabled() { return g_ghostingDisabled.load(); }
 } // namespace user32::detail
 
 namespace user32 {
+
+BOOL WINAPI IsCharAlphaW(WCHAR character) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsCharAlphaW(0x%04x)\n", static_cast<unsigned int>(character));
+	const DWORD lastError = kernel32::getLastError();
+	BOOL result;
+	if (character < 0x80) {
+		result = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+	} else if (!classifyAlphabetic(character, result)) {
+		return FALSE;
+	}
+	kernel32::setLastError(lastError);
+	return result;
+}
 
 void WINAPI DisableProcessWindowsGhosting() {
 	HOST_CONTEXT_GUARD();

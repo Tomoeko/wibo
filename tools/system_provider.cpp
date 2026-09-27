@@ -503,6 +503,27 @@ bool parseUnsignedDecimal(const WCHAR *text, uint32_t maximum, uint32_t &value) 
 	return true;
 }
 
+bool alphabeticCharacterTable() {
+	static_assert(sizeof(WCHAR) == 2);
+	BYTE table[0x10000 / 8]{};
+	for (uint32_t code = 0; code < 0x10000; ++code) {
+		SetLastError(ERROR_SUCCESS);
+		const BOOL alphabetic = IsCharAlphaW(static_cast<WCHAR>(code));
+		if (GetLastError() != ERROR_SUCCESS) {
+			// A classification table cannot represent character-specific API errors.
+			Response response;
+			response.header(ERROR_NOT_SUPPORTED);
+			return response.write();
+		}
+		if (alphabetic)
+			table[code / 8] |= static_cast<BYTE>(1u << (code % 8));
+	}
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.bytes(table, sizeof(table));
+	return response.write();
+}
+
 bool parseMappingCount(const WCHAR *text, int &value) {
 	const bool negative = *text == L'-';
 	uint32_t magnitude;
@@ -1654,6 +1675,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
 	else if (argc == 8 && wcscmp(argv[1], L"lc-map-string-ex") == 0)
 		written = lcMapStringEx(argv + 2);
+	else if (argc == 2 && wcscmp(argv[1], L"is-char-alpha-w-table") == 0)
+		written = alphabeticCharacterTable();
 	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)
 		written = compareStringEx(argv + 2);
 	else if (argc == 10 && wcscmp(argv[1], L"find-nls-string-ex") == 0)

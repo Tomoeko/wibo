@@ -1104,6 +1104,19 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_findfile SOURCES test/test_findfile.c)
         wibo_add_fixture_bin(NAME test_getfileattributesex SOURCES test/test_getfileattributesex.c)
         wibo_add_fixture_bin(NAME test_locale SOURCES test/test_locale.c)
+        wibo_add_fixture_bin(NAME test_is_char_alpha SOURCES test/test_is_char_alpha.c NO_TEST)
+        foreach(mode success failed truncated trailing wrong-size)
+            add_test(NAME wibo.test_is_char_alpha_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_is_char_alpha.exe)
+            set_tests_properties(wibo.test_is_char_alpha_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_SYSTEM_PROVIDER_PERSISTENT=0;WIBO_FIXTURE_ALPHA_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_is_char_alpha_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_is_char_alpha.exe)
+        set_tests_properties(wibo.test_is_char_alpha_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_ALPHA_RESPONSE=unavailable")
         wibo_add_fixture_bin(NAME test_lc_map_string_ex SOURCES test/test_lc_map_string_ex.c NO_TEST)
         foreach(mode success failed truncated trailing wrong-length oversized-count query-data large-query)
             add_test(NAME wibo.test_lc_map_string_ex_${mode}
@@ -1603,7 +1616,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             get_property(_wibo_test_environment TEST ${_wibo_test} PROPERTY ENVIRONMENT)
             if(_wibo_test_environment MATCHES "WIBO_SYSTEM_PROVIDER=")
                 set_property(TEST ${_wibo_test} APPEND PROPERTY ENVIRONMENT
-                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
+                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_ALPHA_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
             endif()
         endforeach()
         set_property(TEST wibo.test_load_cursor APPEND PROPERTY ENVIRONMENT

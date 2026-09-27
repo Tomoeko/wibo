@@ -57,6 +57,26 @@ elif operation == 'api-set-host':
     elif fault == 'contract-host':
         response = header() + text(arguments[0])
 
+elif operation == 'is-char-alpha-w-table':
+    assert not arguments
+    table = bytearray(8192)
+    characters = list(range(ord('A'), ord('Z') + 1)) + list(range(ord('a'), ord('z') + 1))
+    characters += [0x00aa, 0x00ba, 0x00c0, 0x00df, 0x00e9, 0x0100, 0x0130, 0x0178,
+                   0x03a9, 0x03c0, 0x0416, 0x05d0, 0x0627, 0x0905, 0x0e01, 0x3042,
+                   0x30a2, 0x4e2d, 0xac00, 0xff21, 0xff41]
+    for character in characters:
+        table[character // 8] |= 1 << (character % 8)
+    response = header() + blob(table)
+    fault = os.environ.get('WIBO_FIXTURE_ALPHA_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'wrong-size':
+        response = header() + blob(table[:-1])
+
 elif operation == 'numa-highest-node-number':
     response = header() + number(3)
     fault = os.environ.get('WIBO_FIXTURE_NUMA_RESPONSE')
