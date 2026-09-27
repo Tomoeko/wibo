@@ -31,11 +31,16 @@ from clang.cindex import (
     Index,
     StorageClass,
     TranslationUnit,
+    TranslationUnitLoadError,
     Type,
     TypeKind,
     conf,
 )
 from clang.cindex import Type as CXType
+
+# The pinned Python bindings omit the concept declaration kind exposed by libclang.
+if not hasattr(CursorKind, "CONCEPT_DECL"):
+    CursorKind.CONCEPT_DECL = CursorKind(604)
 
 # Allow libclang path to be specified via environment variable
 if "LIBCLANG_PATH" in os.environ:
@@ -151,7 +156,11 @@ class VarInfo:
 
 
 def parse_tu(
-    headers: List[str], include_dirs: List[str], target: str, defines: List[str]
+    headers: List[str],
+    include_dirs: List[str],
+    target: str,
+    defines: List[str],
+    clang_args: Optional[List[str]] = None,
 ) -> TranslationUnit:
     # Construct a tiny TU that includes the requested headers
     tu_source = "\n".join([f'#include "{h}"' for h in headers]) + "\n"
@@ -161,21 +170,27 @@ def parse_tu(
         args = [
             "-x",
             "c++",
-            "-std=c++17",
+            "-std=c++20",
             "-target",
             target,
             "-DWIBO_CODEGEN=1",
         ] + [f"-D{define}" for define in defines] + [
             arg for inc in include_dirs for arg in ("-I", inc)
         ]
+        args.extend(clang_args or [])
 
         index = Index.create()
         tu = index.parse(
             tf.name, args=args, options=TranslationUnit.PARSE_SKIP_FUNCTION_BODIES
         )
+        failed = False
         for d in tu.diagnostics:
             if d.severity >= d.Warning:
                 sys.stderr.write(str(d) + "\n")
+            if d.severity >= d.Error:
+                failed = True
+        if failed:
+            raise TranslationUnitLoadError("Cannot generate trampolines from a translation unit containing errors.")
         return tu
 
 
@@ -1175,6 +1190,13 @@ def main() -> int:
         "--out-hdr", type=Path, required=True, help="Output header file (.h)"
     )
     ap.add_argument("-I", dest="incs", action="append", default=[])
+    ap.add_argument(
+        "--clang-arg",
+        dest="clang_args",
+        action="append",
+        default=[],
+        help="Additional parser argument; use --clang-arg=-option for values beginning with a dash",
+    )
     args = ap.parse_args()
 
     if args.arch == "x86":
@@ -1191,7 +1213,11 @@ def main() -> int:
 
     guest_arch = Arch(args.guest_arch)
     defines = ["WIBO_GUEST_64=1"] if guest_arch == Arch.X86_64 else []
-    tu = parse_tu(args.headers, args.incs, target, defines)
+    try:
+        tu = parse_tu(args.headers, args.incs, target, defines, args.clang_args)
+    except TranslationUnitLoadError as error:
+        sys.stderr.write(f"{error}\n")
+        return 1
     funcs = collect_functions(tu, args.ns, arch)
     typedefs = collect_typedefs(tu, arch)
     variables = collect_variables(tu, args.ns)

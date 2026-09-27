@@ -492,6 +492,11 @@ function(wibo_codegen_module)
     set(multiValueArgs HEADERS)
     cmake_parse_arguments(PARSE_ARGV 0 module "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
+    set(codegen_system_arguments)
+    foreach(directory IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        list(APPEND codegen_system_arguments --clang-arg=-isystem --clang-arg=${directory})
+    endforeach()
+
     set(out_asm ${WIBO_GENERATED_HEADER_DIR}/${module_NAME}_trampolines.S)
     set(out_hdr ${WIBO_GENERATED_HEADER_DIR}/${module_NAME}_trampolines.h)
     add_custom_command(
@@ -506,6 +511,7 @@ function(wibo_codegen_module)
                 --namespace ${module_NAME}
                 --arch $<IF:$<BOOL:${WIBO_64}>,x86_64,x86>
                 --guest-arch ${WIBO_GUEST_ARCH}
+                ${codegen_system_arguments}
                 --out-asm ${out_asm}
                 --out-hdr ${out_hdr}
                 -I ${CMAKE_CURRENT_SOURCE_DIR}
@@ -513,6 +519,7 @@ function(wibo_codegen_module)
                 -I ${CMAKE_CURRENT_SOURCE_DIR}/src
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_trampolines.py
                 ${module_HEADERS}
+        VERBATIM
     )
     target_sources(wibo PRIVATE ${out_asm})
 endfunction()
@@ -579,6 +586,10 @@ wibo_codegen_module(NAME kernel32 HEADERS
 
 if (WIBO_ENABLE_FIXTURE_TESTS)
     include(CTest)
+    add_test(NAME wibo.test_codegen_diagnostics
+        COMMAND ${CMAKE_COMMAND} -E env LIBCLANG_PATH=${LIBCLANG_LIBRARY}
+            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_codegen_diagnostics.py)
+    set_tests_properties(wibo.test_codegen_diagnostics PROPERTIES TIMEOUT 30)
 
     if(WIBO_GUEST_64)
         find_program(WIBO_MINGW_CC x86_64-w64-mingw32-gcc)
