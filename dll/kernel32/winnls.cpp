@@ -34,6 +34,44 @@ constexpr DWORD kMapHash = 0x00040000;
 constexpr DWORD kMapSortHandle = 0x20000000;
 constexpr size_t kMaxLocaleNameUnits = 85;
 constexpr size_t kMaxNlsRequest = 64 * 1024;
+constexpr DWORD kMuiLanguageId = 0x4;
+constexpr DWORD kMuiLanguageName = 0x8;
+constexpr size_t kMaxUiLanguageUnits = (wibo::provider::kMaxResponse - 32) / sizeof(WCHAR);
+
+bool validUiLanguageCount(uint32_t count, uint32_t units, DWORD flags) {
+	if (units < 2 || units > kMaxUiLanguageUnits || count > (units - 1) / 2 || (!count && units != 2))
+		return false;
+	return !(flags & kMuiLanguageId) || !count || uint64_t(count) * 5 + 1 == units;
+}
+
+bool validUiLanguageList(const std::vector<uint8_t> &bytes, uint32_t count, DWORD flags) {
+	if (bytes.size() % sizeof(WCHAR))
+		return false;
+	const size_t units = bytes.size() / sizeof(WCHAR);
+	const auto character = [&bytes](size_t index) {
+		return uint16_t(bytes[index * 2]) | (uint16_t(bytes[index * 2 + 1]) << 8);
+	};
+	if (units < 2 || character(units - 1) || character(units - 2))
+		return false;
+	if (!count)
+		return units == 2;
+	uint32_t actualCount = 0;
+	for (size_t cursor = 0; cursor < units - 1;) {
+		const size_t start = cursor;
+		while (cursor < units - 1 && character(cursor)) {
+			const auto value = character(cursor);
+			if ((flags & kMuiLanguageId) &&
+				!((value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') || (value >= 'a' && value <= 'f')))
+				return false;
+			++cursor;
+		}
+		if (cursor == start || ((flags & kMuiLanguageId) && cursor - start != 4))
+			return false;
+		++actualCount;
+		++cursor;
+	}
+	return actualCount == count;
+}
 
 std::string encodeWideBytes(const uint16_t *text, size_t units) {
 	std::string bytes(units * 2, '\0');
@@ -179,6 +217,71 @@ LANGID WINAPI GetUserDefaultUILanguage() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("STUB: GetUserDefaultUILanguage()\n");
 	return 0;
+}
+
+BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,
+										PULONG pcchLanguagesBuffer) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetUserPreferredUILanguages(0x%x, %p, %p, %p)\n", dwFlags, pulNumLanguages, pwszLanguagesBuffer,
+			  pcchLanguagesBuffer);
+	if (!pulNumLanguages || !pcchLanguagesBuffer || (dwFlags & ~(kMuiLanguageId | kMuiLanguageName)) ||
+		(dwFlags & (kMuiLanguageId | kMuiLanguageName)) == (kMuiLanguageId | kMuiLanguageName)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const ULONG capacity = *pcchLanguagesBuffer;
+	if (pwszLanguagesBuffer && capacity > kMaxUiLanguageUnits) {
+		setLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"user-preferred-ui-languages", std::to_string(dwFlags), std::to_string(capacity),
+								  pwszLanguagesBuffer ? "1" : "0"},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	wibo::provider::Reader reader(response);
+	int32_t status = 0;
+	uint32_t result = 0, countPresent = 0, count = 0, units = 0;
+	if (!reader.header(status) || !reader.number(result) || result > 1 || !reader.number(countPresent) ||
+		countPresent > 1 || !reader.number(count) || !reader.number(units) || (!countPresent && count) ||
+		(countPresent && !validUiLanguageCount(count, units, dwFlags))) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (!result) {
+		const bool insufficientBuffer = status == ERROR_INSUFFICIENT_BUFFER;
+		bool invalidSizeOutput = units != capacity;
+		if (insufficientBuffer)
+			invalidSizeOutput = units < 2 || units > kMaxUiLanguageUnits || (pwszLanguagesBuffer && units <= capacity);
+		if (!reader.done() || invalidSizeOutput || (!insufficientBuffer && countPresent)) {
+			setLastError(ERROR_INVALID_DATA);
+			return FALSE;
+		}
+		if (units != capacity)
+			*pcchLanguagesBuffer = units;
+		if (countPresent)
+			*pulNumLanguages = count;
+		setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+		return FALSE;
+	}
+	std::vector<uint8_t> output;
+	const bool filling = pwszLanguagesBuffer && capacity;
+	if (status != ERROR_SUCCESS || !countPresent || (!filling && (pwszLanguagesBuffer || capacity)) ||
+		!reader.bytes(output) || !reader.done() ||
+		(filling ? units > capacity || output.size() != uint64_t(units) * sizeof(WCHAR) ||
+					   !validUiLanguageList(output, count, dwFlags)
+				 : !output.empty())) {
+		setLastError(ERROR_INVALID_DATA);
+		return FALSE;
+	}
+	if (filling)
+		std::memcpy(pwszLanguagesBuffer, output.data(), output.size());
+	if (units != capacity)
+		*pcchLanguagesBuffer = units;
+	*pulNumLanguages = count;
+	return TRUE;
 }
 
 int WINAPI GetUserDefaultLocaleName(LPWSTR lpLocaleName, int cchLocaleName) {

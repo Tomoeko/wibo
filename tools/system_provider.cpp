@@ -691,6 +691,59 @@ bool cpInfoExW(const WCHAR *codePageText, const WCHAR *flagsText) {
 	return response.write();
 }
 
+bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
+	uint32_t flags = 0, capacity = 0, mode = 0;
+	const auto write = [](DWORD status, BOOL result, bool countPresent, ULONG count, ULONG units,
+						  const std::vector<WCHAR> &languages) {
+		Response response;
+		response.header(status);
+		response.number(result ? 1 : 0);
+		response.number(countPresent ? 1 : 0);
+		response.number(countPresent ? count : 0);
+		response.number(units);
+		if (result)
+			response.bytes(languages.data(), languages.size() * sizeof(WCHAR));
+		return response.write();
+	};
+	if (!parseUnsignedDecimal(flagsText, UINT32_MAX, flags) ||
+		!parseUnsignedDecimal(capacityText, UINT32_MAX, capacity) || !parseUnsignedDecimal(modeText, 1, mode) ||
+		(flags & ~(MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME)) ||
+		(flags & (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME)) == (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME))
+		return write(ERROR_INVALID_PARAMETER, FALSE, false, 0, capacity, {});
+	constexpr size_t kMaxLanguageUnits = (kMaxResponse - 32) / sizeof(WCHAR);
+	if (mode && capacity > kMaxLanguageUnits)
+		return write(ERROR_NOT_ENOUGH_MEMORY, FALSE, false, 0, capacity, {});
+	std::vector<WCHAR> languages;
+	if (mode)
+		languages.resize(capacity ? capacity : 1);
+	// A valid list cannot contain ULONG_MAX entries within a ULONG character count.
+	constexpr ULONG kUnwrittenCount = UINT32_MAX;
+	ULONG count = kUnwrittenCount, units = capacity;
+	SetLastError(ERROR_SUCCESS);
+	const BOOL result = GetUserPreferredUILanguages(flags, &count, mode ? languages.data() : nullptr, &units);
+	const DWORD status = result ? ERROR_SUCCESS : GetLastError();
+	if (!result && status != ERROR_INSUFFICIENT_BUFFER)
+		return write(status, FALSE, false, 0, capacity, {});
+	const bool countPresent = count != kUnwrittenCount;
+	if (countPresent && (units < 2 || units > kMaxLanguageUnits || count > (units - 1) / 2 || (!count && units != 2) ||
+						 ((flags & MUI_LANGUAGE_ID) && count && uint64_t(count) * 5 + 1 != units)))
+		return write(ERROR_INVALID_DATA, FALSE, false, 0, capacity, {});
+	if (result) {
+		const bool filling = mode && capacity;
+		if (!countPresent || (!filling && (mode || capacity)) || (filling && units > capacity))
+			return write(ERROR_INVALID_DATA, FALSE, false, 0, capacity, {});
+		if (mode && capacity)
+			languages.resize(units);
+		else
+			languages.clear();
+	} else {
+		if (units < 2 || units > kMaxLanguageUnits || (mode && units <= capacity))
+			return write(ERROR_INVALID_DATA, FALSE, false, 0, capacity, {});
+		languages.clear();
+	}
+	return write(status, result, countPresent, count, units, languages);
+}
+
 bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
 	std::string classBytes, enumerator;
 	GUID classGuid{};
@@ -1252,6 +1305,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = compareStringEx(argv + 2);
 	else if (argc == 4 && wcscmp(argv[1], L"cp-info-ex-w") == 0)
 		written = cpInfoExW(argv[2], argv[3]);
+	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
+		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)

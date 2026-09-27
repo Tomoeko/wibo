@@ -982,6 +982,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_cp_info_ex_w_local PROPERTIES TIMEOUT 15
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_CP_INFO_LOCAL=1")
+        wibo_add_fixture_bin(NAME test_user_preferred_ui_languages SOURCES test/test_user_preferred_ui_languages.c NO_TEST)
+        foreach(mode success short-size short-count failed failed-zero truncated trailing invalid-result invalid-presence absent-count count-mismatch unterminated wrong-length oversized invalid-identifier present-zero-success null-positive-success zero-required-size huge-required-size non-growing-short null-positive-short query-huge-size)
+            add_test(NAME wibo.test_user_preferred_ui_languages_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_user_preferred_ui_languages.exe)
+            set_tests_properties(wibo.test_user_preferred_ui_languages_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/ui_languages_provider_fixture.py;WIBO_FIXTURE_UI_LANGUAGES_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_user_preferred_ui_languages_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_user_preferred_ui_languages.exe)
+        set_tests_properties(wibo.test_user_preferred_ui_languages_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_UI_LANGUAGES_RESPONSE=unavailable")
+        add_test(NAME wibo.test_user_preferred_ui_languages_local
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_user_preferred_ui_languages.exe)
+        set_tests_properties(wibo.test_user_preferred_ui_languages_local PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_UI_LANGUAGES_LOCAL=1")
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_global_atoms SOURCES test/test_global_atoms.c)
         wibo_add_fixture_bin(NAME test_system_random SOURCES test/test_system_random.c)
