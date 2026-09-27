@@ -4,6 +4,15 @@
 
 using REGHANDLE = ULONGLONG;
 
+enum EVENT_INFO_CLASS : ULONG {
+	EventProviderBinaryTrackInfo = 0,
+	EventProviderSetReserved1 = 1,
+	EventProviderSetTraits = 2,
+	EventProviderUseDescriptorType = 3,
+	EventProviderSetReserved2 = 4,
+	MaxEventInfo = 5,
+};
+
 struct EVENT_FILTER_DESCRIPTOR {
 	ULONGLONG Ptr;
 	ULONG Size;
@@ -19,5 +28,7 @@ namespace advapi32 {
 ULONG WINAPI EventRegister(const GUID *ProviderId, PENABLECALLBACK EnableCallback, PVOID CallbackContext,
 						   REGHANDLE *RegHandle);
 ULONG WINAPI EventUnregister(REGHANDLE RegHandle);
+ULONG WINAPI EventSetInformation(REGHANDLE RegHandle, EVENT_INFO_CLASS InformationClass, PVOID EventInformation,
+								 ULONG InformationLength);
 
 } // namespace advapi32
