@@ -36,6 +36,7 @@ void WINAPI SetLastError(DWORD dwErrCode);
 void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD nNumberOfArguments,
 						   const ULONG_PTR *lpArguments);
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
+ULONG WINAPI RemoveVectoredExceptionHandler(PVOID Handle);
 LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter);
 LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo);
 UINT WINAPI SetErrorMode(UINT uMode);
