@@ -21,6 +21,12 @@ std::mutex g_vectoredExceptionMutex;
 VectoredExceptionRegistration *g_vectoredExceptionFirst = nullptr;
 VectoredExceptionRegistration *g_vectoredExceptionLast = nullptr;
 ULONG_PTR g_nextVectoredExceptionToken = 1;
+thread_local size_t g_vectoredExceptionTraversalDepth = 0;
+
+struct VectoredExceptionTraversalScope {
+	VectoredExceptionTraversalScope() { ++g_vectoredExceptionTraversalDepth; }
+	~VectoredExceptionTraversalScope() { --g_vectoredExceptionTraversalDepth; }
+};
 
 // All list links and reference counts are protected by the registry mutex.
 void releaseVectoredExceptionRegistration(VectoredExceptionRegistration *entry) {
@@ -45,6 +51,7 @@ void releaseVectoredExceptionRegistration(VectoredExceptionRegistration *entry) 
 namespace wibo {
 
 LONG invokeVectoredExceptionHandlers(PEXCEPTION_POINTERS exceptionInfo, VectoredExceptionInvoker invoke) {
+	const VectoredExceptionTraversalScope traversal;
 	std::unique_lock lock(g_vectoredExceptionMutex);
 	auto *entry = g_vectoredExceptionFirst;
 	while (entry) {
@@ -64,6 +71,8 @@ LONG invokeVectoredExceptionHandlers(PEXCEPTION_POINTERS exceptionInfo, Vectored
 	}
 	return EXCEPTION_CONTINUE_SEARCH;
 }
+
+bool hasActiveVectoredExceptionTraversal() noexcept { return g_vectoredExceptionTraversalDepth != 0; }
 
 } // namespace wibo
 

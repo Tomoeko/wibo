@@ -4,6 +4,7 @@
 #include "common.h"
 #include "heap.h"
 #include "setup.h"
+#include "software_exception_dispatch_offsets.h"
 #include "virtual_unwind.h"
 
 #include <algorithm>
@@ -46,7 +47,7 @@ bool guestExecutableAddress(ULONGLONG address) {
 
 // Lookup callbacks and the unwinder finish their native ownership scopes
 // before this step returns. No registry lock survives a personality call.
-bool prepareFrame(SoftwareExceptionFrameActivation64 &activation) {
+bool prepareFrame(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType) {
 	auto &context = activation.walkingContext;
 	const ULONGLONG previousRsp = context.Rsp;
 	if ((previousRsp & 7) || !readableStack(previousRsp, sizeof(ULONGLONG), activation)) {
@@ -73,7 +74,7 @@ bool prepareFrame(SoftwareExceptionFrameActivation64 &activation) {
 			return false;
 		}
 		PVOID handler = nullptr;
-		if (!wibo::virtualUnwindWithStackBounds(kExceptionHandler, dispatcher.ImageBase, dispatcher.ControlPc,
+		if (!wibo::virtualUnwindWithStackBounds(handlerType, dispatcher.ImageBase, dispatcher.ControlPc,
 												&activation.function, &context, &dispatcher.HandlerData,
 												&dispatcher.EstablisherFrame, activation.stackLimit,
 												activation.stackBase, &handler)) {
@@ -89,7 +90,9 @@ bool prepareFrame(SoftwareExceptionFrameActivation64 &activation) {
 		std::memcpy(&context.Rip, reinterpret_cast<const void *>(previousRsp), sizeof(context.Rip));
 		context.Rsp += sizeof(ULONGLONG);
 	}
-	const bool valid = dispatcher.EstablisherFrame >= activation.stackLimit &&
+	const bool knownHandler =
+		!dispatcher.LanguageHandler || guestExecutableAddress(reinterpret_cast<ULONGLONG>(dispatcher.LanguageHandler));
+	const bool valid = knownHandler && dispatcher.EstablisherFrame >= activation.stackLimit &&
 					   dispatcher.EstablisherFrame < activation.stackBase && !(dispatcher.EstablisherFrame & 7) &&
 					   context.Rsp > previousRsp && context.Rsp <= activation.stackBase && !(context.Rsp & 7);
 	DEBUG_LOG("software frame search: pc=%llx base=%llx frame=%llx handler=%p next-rip=%llx next-rsp=%llx valid=%u\n",
@@ -99,12 +102,13 @@ bool prepareFrame(SoftwareExceptionFrameActivation64 &activation) {
 }
 
 LONG invokeFrameHandler(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,
-						CONTEXT64 *originalContext, SoftwareDispatcherContext64 *dispatcher) {
+						CONTEXT64 *originalContext, SoftwareDispatcherContext64 *dispatcher,
+						SoftwareExceptionActivation64 *activation) {
 #if defined(__APPLE__)
 	TEB *teb = currentTebForGuestTransition();
 	enterGuestContext(teb);
 #endif
-	const LONG result = wiboCallFrameHandler64(handler, record, frame, originalContext, dispatcher);
+	const LONG result = wiboCallFrameHandler64(handler, record, frame, originalContext, dispatcher, activation);
 #if defined(__APPLE__)
 	enterHostContext();
 #endif
@@ -114,6 +118,18 @@ LONG invokeFrameHandler(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record
 
 static_assert(std::is_trivially_copyable_v<SoftwareExceptionFrameActivation64>);
 static_assert(std::is_trivially_destructible_v<SoftwareExceptionFrameActivation64>);
+
+namespace wibo {
+bool prepareSoftwareExceptionFrame64(SoftwareExceptionFrameActivation64 &activation, DWORD handlerType) {
+	return prepareFrame(activation, handlerType);
+}
+
+LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,
+										   CONTEXT64 *context, SoftwareDispatcherContext64 *dispatcher,
+										   SoftwareExceptionActivation64 *activation) {
+	return invokeFrameHandler(handler, record, frame, context, dispatcher, activation);
+}
+} // namespace wibo
 
 void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *capture,
 										 SoftwareExceptionDecision64 *decision,
@@ -135,17 +151,27 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 	std::memcpy(&activation->walkingContext,
 				capture->callerCapture ? &capture->callerCapture->context : &capture->context, sizeof(CONTEXT64));
 	for (; activation->frameCount < kFrameLimit; ++activation->frameCount) {
-		if (!prepareFrame(*activation))
+		if (!prepareFrame(*activation, kExceptionHandler))
 			return;
 		auto &dispatcher = activation->dispatcher;
 		if (dispatcher.LanguageHandler) {
-			if (!guestExecutableAddress(reinterpret_cast<ULONGLONG>(dispatcher.LanguageHandler)))
-				return;
 			const auto expectedDispatcher = dispatcher;
 			const ULONGLONG expectedRip = activation->walkingContext.Rip;
 			const ULONGLONG expectedRsp = activation->walkingContext.Rsp;
-			const LONG result = invokeFrameHandler(dispatcher.LanguageHandler, capture->record,
-												   dispatcher.EstablisherFrame, &decision->resumeContext, &dispatcher);
+			const auto stackLow = reinterpret_cast<ULONGLONG>(activation) - WIBO_SOFTWARE_DISPATCH_FRAME_ACTIVATION;
+			const auto *walkStart = capture->callerCapture ? &capture->callerCapture->context : &capture->context;
+			if (!wibo::linkSoftwareExceptionActivation(&activation->activation, walkStart, stackLow, walkStart->Rsp,
+													   SoftwareExceptionActivationPhase64::FrameSearch)) {
+				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
+				return;
+			}
+			const LONG result =
+				invokeFrameHandler(dispatcher.LanguageHandler, capture->record, dispatcher.EstablisherFrame,
+								   &decision->resumeContext, &dispatcher, &activation->activation);
+			if (!wibo::unlinkSoftwareExceptionActivation(&activation->activation)) {
+				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
+				return;
+			}
 			DEBUG_LOG("software frame handler: pc=%llx frame=%llx result=%d\n", expectedDispatcher.ControlPc,
 					  expectedDispatcher.EstablisherFrame, result);
 			if (std::memcmp(&dispatcher, &expectedDispatcher, sizeof(dispatcher)) != 0 ||

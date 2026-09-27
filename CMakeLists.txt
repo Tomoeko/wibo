@@ -394,7 +394,9 @@ if(WIBO_GUEST_64)
         dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
         dll/software_exception_decision.cpp dll/software_exception_dispatch.cpp
         dll/software_exception_dispatch_x64.S dll/software_exception_failure.cpp
-        dll/software_exception_frame.cpp)
+        dll/software_exception_frame.cpp dll/software_exception_activation.cpp
+        dll/context_restore.cpp dll/context_restore_x64.S
+        dll/target_unwind.cpp dll/target_unwind_x64.S)
     target_compile_definitions(wibo PRIVATE WIBO_GUEST_64=1)
     set_target_properties(wibo PROPERTIES OUTPUT_NAME wibo64)
 endif()
@@ -713,6 +715,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             wibo_add_fixture_bin(NAME test_software_frame_dispatch
                 SOURCES test/test_software_frame_dispatch.c test/test_software_frame_dispatch.S)
             set_tests_properties(wibo.test_software_frame_dispatch PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_context_restore
+                SOURCES test/test_context_restore.c test/test_context_restore.S)
+            set_tests_properties(wibo.test_context_restore PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_target_unwind
+                SOURCES test/test_target_unwind.c test/test_target_unwind.S)
+            set_tests_properties(wibo.test_target_unwind PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_software_unwind_restore
+                SOURCES test/test_software_unwind_restore.c test/test_software_unwind_restore.S)
+            set_tests_properties(wibo.test_software_unwind_restore PROPERTIES TIMEOUT 15)
             wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
             wibo_add_fixture_bin(NAME test_function_table_callback SOURCES test/test_function_table_callback.c)
             set_tests_properties(wibo.test_function_table_callback PROPERTIES TIMEOUT 15)

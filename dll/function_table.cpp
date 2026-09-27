@@ -3,6 +3,7 @@
 #include "common.h"
 #include "context.h"
 #include "errors.h"
+#include "function_table.h"
 #include "modules.h"
 
 #ifdef WIBO_GUEST_64
@@ -29,6 +30,13 @@ struct DynamicFunctionTable {
 
 std::recursive_mutex g_functionTableMutex;
 DynamicFunctionTable *g_functionTables = nullptr;
+thread_local unsigned g_activeFunctionTableCallbacks;
+
+class FunctionTableCallbackScope {
+  public:
+	FunctionTableCallbackScope() { ++g_activeFunctionTableCallbacks; }
+	~FunctionTableCallbackScope() { --g_activeFunctionTableCallbacks; }
+};
 
 // The registry mutex guards the list's ownership and references held by callback lookups.
 void releaseTable(DynamicFunctionTable *table) {
@@ -74,6 +82,10 @@ RUNTIME_FUNCTION *findEntry(RUNTIME_FUNCTION *entries, size_t count, ULONGLONG o
 	return nullptr;
 }
 } // namespace
+
+namespace wibo {
+bool hasActiveFunctionTableCallback() noexcept { return g_activeFunctionTableCallbacks != 0; }
+} // namespace wibo
 
 namespace ntdll {
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
@@ -219,6 +231,7 @@ RUNTIME_FUNCTION *WINAPI RtlLookupFunctionEntry(ULONGLONG controlPc, ULONGLONG *
 	}
 	if (callbackTable) {
 		CallbackTableReference reference(callbackTable);
+		FunctionTableCallbackScope callbackScope;
 		// A callback may delete or replace its registration and perform another lookup.
 		auto *entry = call_PGET_RUNTIME_FUNCTION_CALLBACK(callbackTable->callback, controlPc, callbackTable->context);
 		*imageBase = entry ? callbackTable->base : 0;

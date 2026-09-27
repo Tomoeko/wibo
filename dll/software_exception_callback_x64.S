@@ -1,4 +1,5 @@
 #include "macros.S"
+#include "software_exception_activation_offsets.h"
 
 #if defined(__x86_64__) && defined(WIBO_GUEST_64)
 .text
@@ -47,12 +48,31 @@ ASM_END(wiboCallVectoredHandler64)
 ASM_GLOBAL(wiboCallFrameHandler64, @function)
 	.cfi_startproc
 	save_software_callback_context
+#ifdef __APPLE__
+	lea r10, [rip+LwiboFrameHandlerContinuation]
+#else
+	lea r10, [rip+.LwiboFrameHandlerContinuation]
+#endif
+	mov qword ptr [r9+WIBO_SOFTWARE_ACTIVATION_BRIDGE_RIP], r10
+	mov qword ptr [r9+WIBO_SOFTWARE_ACTIVATION_BRIDGE_RSP], rsp
+	mov qword ptr [r9+WIBO_SOFTWARE_ACTIVATION_STACK_LOW], rsp
 	mov rax, rdi
 	mov r9, r8
 	mov r8, rcx
 	mov rcx, rsi
 	call rax
+#ifdef __APPLE__
+LwiboFrameHandlerContinuation:
+#else
+.LwiboFrameHandlerContinuation:
+#endif
 	restore_software_callback_context
 	.cfi_endproc
 ASM_END(wiboCallFrameHandler64)
+	.globl SYMBOL_NAME(wiboFrameHandlerContinuation64)
+#ifdef __APPLE__
+	.set SYMBOL_NAME(wiboFrameHandlerContinuation64), LwiboFrameHandlerContinuation
+#else
+	.set SYMBOL_NAME(wiboFrameHandlerContinuation64), .LwiboFrameHandlerContinuation
+#endif
 #endif

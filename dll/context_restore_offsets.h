@@ -1,0 +1,7 @@
+#pragma once
+
+#include "software_exception_capture_offsets.h"
+
+#define WIBO_CONTEXT_RESTORE_FRAME_OUTPUT WIBO_SOFTWARE_FRAME_SIZE
+#define WIBO_CONTEXT_RESTORE_OUTPUT_SIZE 1248
+#define WIBO_CONTEXT_RESTORE_FRAME_SIZE 2704

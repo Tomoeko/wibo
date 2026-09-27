@@ -10,4 +10,7 @@ using VectoredExceptionInvoker = LONG (*)(PVECTORED_EXCEPTION_HANDLER handler, P
 // Any context restoration must happen after the registry releases its references.
 LONG invokeVectoredExceptionHandlers(PEXCEPTION_POINTERS exceptionInfo, VectoredExceptionInvoker invoke);
 
+// Nonreturning transfers must not abandon a traversal's retained entry.
+bool hasActiveVectoredExceptionTraversal() noexcept;
+
 } // namespace wibo

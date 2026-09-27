@@ -60,6 +60,8 @@ namespace ntdll {
 
 #ifdef WIBO_GUEST_64
 void WINAPI RtlCaptureContext(CONTEXT64 *context) WIBO_ANNOTATE("GUEST_ENTRY:wiboCaptureContext64");
+void CDECL RtlRestoreContext(CONTEXT64 *context, EXCEPTION_RECORD *record)
+	WIBO_ANNOTATE("GUEST_ENTRY:wiboRestoreGuestContext64");
 void WINAPI RtlRaiseException(EXCEPTION_RECORD *record) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRtlRaiseException64");
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
