@@ -26,8 +26,9 @@
 namespace {
 
 constexpr NTSTATUS kStatusNoMemory = static_cast<NTSTATUS>(0xc0000017);
+constexpr NTSTATUS kStatusBufferTooSmall = static_cast<NTSTATUS>(0xc0000023);
 constexpr ULONG kKnownOpenFlags = 0x1 | 0x8 | 0x20; // Dispatch, HMAC, and reusable hashing.
-constexpr size_t kMaxAlgorithmNameUnits = 256;
+constexpr size_t kMaxIdentifierNameUnits = 256;
 
 struct HashImplementation {
 	size_t contextSize;
@@ -79,13 +80,13 @@ std::unordered_map<BCRYPT_ALG_HANDLE, std::shared_ptr<const AlgorithmProvider>> 
 // Tokens are opaque and never reused, including after an algorithm is closed.
 BCRYPT_ALG_HANDLE g_nextAlgorithmHandle = 0x10000;
 
-bool readAlgorithmName(LPCWSTR name, std::u16string &value) {
-	const size_t units = wstrnlen(name, kMaxAlgorithmNameUnits);
+bool readIdentifierName(LPCWSTR name, std::u16string &value) {
+	const size_t units = wstrnlen(name, kMaxIdentifierNameUnits);
 	value.assign(name, name + units);
-	return units != kMaxAlgorithmNameUnits;
+	return units != kMaxIdentifierNameUnits;
 }
 
-std::string displayAlgorithmName(const std::u16string &value) {
+std::string displayIdentifierName(const std::u16string &value) {
 	std::string display;
 	return utf16ToUtf8(value, display) ? display : "<invalid UTF-16>";
 }
@@ -126,11 +127,11 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *phAlgorithm, LPCW
 		return STATUS_INVALID_PARAMETER;
 	}
 	std::u16string identifier, provider;
-	const bool hasIdentifier = readAlgorithmName(pszAlgId, identifier);
-	const bool hasProvider = !pszImplementation || readAlgorithmName(pszImplementation, provider);
+	const bool hasIdentifier = readIdentifierName(pszAlgId, identifier);
+	const bool hasProvider = !pszImplementation || readIdentifierName(pszImplementation, provider);
 	DEBUG_LOG("BCryptOpenAlgorithmProvider(%p, '%s', '%s', 0x%x)\n", phAlgorithm,
-			  displayAlgorithmName(identifier).c_str(),
-			  pszImplementation ? displayAlgorithmName(provider).c_str() : "<default>", dwFlags);
+			  displayIdentifierName(identifier).c_str(),
+			  pszImplementation ? displayIdentifierName(provider).c_str() : "<default>", dwFlags);
 	if (dwFlags & ~kKnownOpenFlags)
 		return STATUS_NOT_IMPLEMENTED;
 	if (dwFlags)
@@ -168,6 +169,38 @@ NTSTATUS WINAPI BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE hAlgorithm, ULONG
 		return STATUS_NOT_SUPPORTED;
 	std::lock_guard lock(g_algorithmMutex);
 	return g_algorithms.erase(hAlgorithm) ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
+}
+
+NTSTATUS WINAPI BCryptGetProperty(BCRYPT_HANDLE hObject, LPCWSTR pszProperty, PUCHAR pbOutput, ULONG cbOutput,
+								  ULONG *pcbResult, ULONG dwFlags) {
+	HOST_CONTEXT_GUARD();
+	std::shared_ptr<const AlgorithmProvider> provider;
+	{
+		std::lock_guard lock(g_algorithmMutex);
+		const auto found = g_algorithms.find(hObject);
+		if (found == g_algorithms.end())
+			return STATUS_INVALID_HANDLE;
+		provider = found->second;
+	}
+	if (!pszProperty || !pcbResult) {
+		DEBUG_LOG("BCryptGetProperty(0x%llx, %p, %p, %u, %p, 0x%x) -> invalid parameter\n",
+				  static_cast<unsigned long long>(hObject), pszProperty, pbOutput, cbOutput, pcbResult, dwFlags);
+		return STATUS_INVALID_PARAMETER;
+	}
+	std::u16string property;
+	const bool hasProperty = readIdentifierName(pszProperty, property);
+	DEBUG_LOG("BCryptGetProperty(0x%llx, '%s', %p, %u, %p, 0x%x)\n", static_cast<unsigned long long>(hObject),
+			  displayIdentifierName(property).c_str(), pbOutput, cbOutput, pcbResult, dwFlags);
+	if (dwFlags || !hasProperty || property != u"HashDigestLength")
+		return STATUS_NOT_SUPPORTED;
+	static_assert(sizeof(ULONG) == 4);
+	constexpr ULONG required = sizeof(ULONG);
+	std::memcpy(pcbResult, &required, sizeof(required));
+	if (cbOutput < required)
+		return kStatusBufferTooSmall;
+	if (pbOutput)
+		std::memcpy(pbOutput, &provider->hash->digestSize, sizeof(provider->hash->digestSize));
+	return STATUS_SUCCESS;
 }
 
 NTSTATUS WINAPI BCryptGenRandom(BCRYPT_ALG_HANDLE hAlgorithm, PUCHAR pbBuffer, ULONG cbBuffer, ULONG dwFlags) {
