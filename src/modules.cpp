@@ -1436,6 +1436,13 @@ ModuleInfo *moduleInfoFromAddress(void *addr) {
 	return moduleFromAddress(*reg, addr);
 }
 
+void *loadedImageBaseFromAddress(void *addr) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto reg = registry();
+	ModuleInfo *info = moduleFromAddress(*reg, addr);
+	return info && info->executable ? info->executable->imageBase : nullptr;
+}
+
 bool initializeModuleTls(ModuleInfo &module) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
 	if (module.tlsInfo.hasTls) {

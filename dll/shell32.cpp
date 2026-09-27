@@ -9,12 +9,14 @@
 #include "kernel32/minwinbase.h"
 #include "kernel32/processenv.h"
 #include "kernel32/winbase.h"
+#include "kernel32/winprofile.h"
 #include "modules.h"
 #include "ole32.h"
 #include "strutil.h"
 #include "system_provider.h"
 
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
@@ -64,6 +66,51 @@ std::optional<std::string> specialFolder(int id, bool useDefault) {
 }
 
 bool isArgumentSeparator(uint16_t ch) { return ch == ' ' || ch == '\t'; }
+
+bool supportsShellPath(std::string_view name) {
+	if (name.starts_with("\\") || name.starts_with("//") || name.find_first_of("*?") != std::string_view::npos)
+		return false;
+	const auto colon = name.find(':');
+	if (colon == std::string_view::npos)
+		return true;
+	return colon == 1 && name.size() >= 3 && (name[2] == '/' || name[2] == '\\') &&
+		   (name[0] == 'C' || name[0] == 'c' || name[0] == 'Z' || name[0] == 'z') &&
+		   name.find(':', 2) == std::string_view::npos;
+}
+
+bool isProgramExtension(const std::filesystem::path &path) {
+	std::string extension = path.extension().string();
+	if (extension.empty())
+		return false;
+	extension.erase(0, 1);
+	toLowerInPlace(extension);
+	WCHAR programs[256];
+	const DWORD length =
+		kernel32::GetProfileStringW(reinterpret_cast<LPCWSTR>(u"windows"), reinterpret_cast<LPCWSTR>(u"programs"),
+									reinterpret_cast<LPCWSTR>(u"exe pif bat cmd com"), programs, std::size(programs));
+	if (length >= std::size(programs) - 1)
+		return false;
+	size_t start = 0;
+	while (start < length) {
+		while (start < length && isArgumentSeparator(programs[start]))
+			++start;
+		size_t end = start;
+		while (end < length && !isArgumentSeparator(programs[end]))
+			++end;
+		if (end - start == extension.size() &&
+			std::equal(extension.begin(), extension.end(), programs + start,
+					   [](unsigned char left, WCHAR right) { return left == wcharToLower(right); }))
+			return true;
+		start = end;
+	}
+	return false;
+}
+
+DWORD missingPathError(const std::filesystem::path &path) {
+	std::error_code error;
+	const auto parent = std::filesystem::status(path.parent_path(), error);
+	return !error && std::filesystem::is_directory(parent) ? ERROR_FILE_NOT_FOUND : ERROR_PATH_NOT_FOUND;
+}
 
 std::vector<std::u16string> parseArguments(LPCWSTR command) {
 	std::vector<std::u16string> arguments(1);
@@ -125,6 +172,84 @@ std::vector<std::u16string> parseArguments(LPCWSTR command) {
 } // namespace
 
 namespace shell32 {
+
+HINSTANCE WINAPI FindExecutableW(LPCWSTR file, LPCWSTR directory, LPWSTR result) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FindExecutableW(%p, %p, %p)\n", file, directory, result);
+	const DWORD incomingError = kernel32::getLastError();
+	if (!result) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	*result = 0;
+	if (!file)
+		return ERROR_FILE_NOT_FOUND;
+	// Registered application paths, extension search, and document associations require shell context.
+	const auto unsupported = [] {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	};
+	std::string filename;
+	if (!*file || !utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(file), wstrlen(file)), filename))
+		return unsupported();
+	if (!supportsShellPath(filename) || filename.find_first_of("/\\:") == std::string::npos)
+		return unsupported();
+	std::error_code error;
+	const auto cwd = std::filesystem::current_path(error);
+	if (error) {
+		kernel32::setLastError(wibo::winErrorFromErrno(error.value()));
+		return ERROR_FILE_NOT_FOUND;
+	}
+	auto base = cwd;
+	DWORD successError = incomingError;
+	if (directory) {
+		std::string directoryName;
+		if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(directory), wstrlen(directory)),
+						 directoryName))
+			return unsupported();
+		if (!supportsShellPath(directoryName))
+			return unsupported();
+		if (directoryName.empty()) {
+			successError = ERROR_INVALID_NAME;
+		} else {
+			auto candidate = files::pathFromWindows(directoryName.c_str());
+			if (candidate.is_relative())
+				candidate = cwd / candidate;
+			const auto status = std::filesystem::status(candidate, error);
+			if (!error && std::filesystem::is_directory(status))
+				base = candidate.lexically_normal();
+			else
+				successError = ERROR_FILE_NOT_FOUND;
+		}
+	}
+	auto path = files::pathFromWindows(filename.c_str());
+	if (path.extension().empty())
+		return unsupported();
+	if (path.is_relative()) {
+		if (directory)
+			return unsupported();
+		path = base / path;
+	}
+	path = path.lexically_normal();
+	const auto status = std::filesystem::status(path, error);
+	if (error || !std::filesystem::exists(status)) {
+		if (error && error.value() != ENOENT && error.value() != ENOTDIR) {
+			const DWORD statusError = wibo::winErrorFromErrno(error.value());
+			kernel32::setLastError(statusError);
+			return statusError == ERROR_ACCESS_DENIED ? ERROR_ACCESS_DENIED : ERROR_FILE_NOT_FOUND;
+		}
+		kernel32::setLastError(missingPathError(path));
+		return ERROR_FILE_NOT_FOUND;
+	}
+	if (!std::filesystem::is_regular_file(status) || !isProgramExtension(path))
+		return unsupported();
+	const auto wide = utf8ToUtf16(files::pathToWindows(path));
+	if (!wide || wide->size() >= MAX_PATH)
+		return unsupported();
+	std::memcpy(result, wide->c_str(), (wide->size() + 1) * sizeof(WCHAR));
+	kernel32::setLastError(successError);
+	return 33;
+}
 
 HRESULT WINAPI SHGetFolderPathW(HWND hwnd, int csidl, HANDLE hToken, DWORD dwFlags, LPWSTR pszPath) {
 	HOST_CONTEXT_GUARD();

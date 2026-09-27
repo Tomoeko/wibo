@@ -186,6 +186,7 @@ BOOL WINAPI GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP rela
 void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime);
 void WINAPI GetLocalTime(LPSYSTEMTIME lpSystemTime);
 void WINAPI GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);
+void WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsFileTime);
 DWORD WINAPI GetTickCount();
 ULONGLONG WINAPI GetTickCount64();
 DWORD WINAPI GetVersion();

@@ -31,6 +31,42 @@ constexpr DWORD kMajorVersion = 6;
 constexpr DWORD kMinorVersion = 2;
 constexpr DWORD kBuildNumber = 0;
 
+bool queryCurrentFileTime(FILETIME &result) {
+#if defined(CLOCK_REALTIME)
+	struct timespec ts{};
+	if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+		uint64_t ticks = kUnixTimeZero;
+		ticks += static_cast<uint64_t>(ts.tv_sec) * 10000000ULL;
+		ticks += static_cast<uint64_t>(ts.tv_nsec) / 100ULL;
+		result = fileTimeFromDuration(ticks);
+		return true;
+	}
+#endif
+	struct timeval tv{};
+	if (gettimeofday(&tv, nullptr) == 0) {
+		uint64_t ticks = kUnixTimeZero;
+		ticks += static_cast<uint64_t>(tv.tv_sec) * 10000000ULL;
+		ticks += static_cast<uint64_t>(tv.tv_usec) * 10ULL;
+		result = fileTimeFromDuration(ticks);
+		return true;
+	}
+	return false;
+}
+
+void writeCurrentFileTime(LPFILETIME output) {
+	if (!output) {
+		return;
+	}
+	const DWORD previousError = kernel32::getLastError();
+	FILETIME result{};
+	if (!queryCurrentFileTime(result)) {
+		std::perror("Unable to read system time");
+		std::_Exit(ERROR_NOT_SUPPORTED);
+	}
+	std::memcpy(output, &result, sizeof(result));
+	kernel32::setLastError(previousError);
+}
+
 DWORD_PTR computeSystemProcessorMask(unsigned int cpuCount) {
 	const auto maskWidth = static_cast<unsigned int>(sizeof(DWORD_PTR) * 8);
 	if (cpuCount >= maskWidth) {
@@ -403,33 +439,13 @@ void WINAPI GetLocalTime(LPSYSTEMTIME lpSystemTime) {
 void WINAPI GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetSystemTimeAsFileTime(%p)\n", lpSystemTimeAsFileTime);
-	if (!lpSystemTimeAsFileTime) {
-		return;
-	}
+	writeCurrentFileTime(lpSystemTimeAsFileTime);
+}
 
-#if defined(CLOCK_REALTIME)
-	struct timespec ts{};
-	if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
-		uint64_t ticks = kUnixTimeZero;
-		ticks += static_cast<uint64_t>(ts.tv_sec) * 10000000ULL;
-		ticks += static_cast<uint64_t>(ts.tv_nsec) / 100ULL;
-		*lpSystemTimeAsFileTime = fileTimeFromDuration(ticks);
-		return;
-	}
-#endif
-
-	struct timeval tv{};
-	if (gettimeofday(&tv, nullptr) == 0) {
-		uint64_t ticks = kUnixTimeZero;
-		ticks += static_cast<uint64_t>(tv.tv_sec) * 10000000ULL;
-		ticks += static_cast<uint64_t>(tv.tv_usec) * 10ULL;
-		*lpSystemTimeAsFileTime = fileTimeFromDuration(ticks);
-		return;
-	}
-
-	const FILETIME fallback = {static_cast<DWORD>(kUnixTimeZero & 0xFFFFFFFFULL),
-							   static_cast<DWORD>(kUnixTimeZero >> 32)};
-	*lpSystemTimeAsFileTime = fallback;
+void WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsFileTime) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetSystemTimePreciseAsFileTime(%p)\n", lpSystemTimeAsFileTime);
+	writeCurrentFileTime(lpSystemTimeAsFileTime);
 }
 
 ULONGLONG WINAPI GetTickCount64() {

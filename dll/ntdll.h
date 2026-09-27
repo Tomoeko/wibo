@@ -78,6 +78,7 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 #endif
 
 ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);
+PVOID WINAPI RtlPcToFileHeader(PVOID pcValue, GUEST_PTR *baseOfImage);
 NTSTATUS WINAPI NtQuerySystemInformation(ULONG informationClass, PVOID information, ULONG length,
 										 PULONG returnedLength);
 NTSTATUS WINAPI NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE apcRoutine, PVOID apcContext,

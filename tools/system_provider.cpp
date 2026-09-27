@@ -558,6 +558,73 @@ bool validCountedString(const std::vector<WCHAR> &value, int count) {
 	return true;
 }
 
+bool isValidLocaleName(const WCHAR *nameText, const WCHAR *errorText) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t incomingError = 0;
+	std::vector<WCHAR> name;
+	if (!parseUnsignedDecimal(errorText, UINT32_MAX, incomingError) || !decodeMappingString(nameText, name) ||
+		name.size() >= LOCALE_NAME_MAX_LENGTH || std::find(name.begin(), name.end(), WCHAR{0}) != name.end())
+		return fail(ERROR_INVALID_PARAMETER);
+	name.push_back(0);
+	SetLastError(incomingError);
+	const BOOL result = IsValidLocaleName(name.data());
+	const DWORD nativeError = GetLastError();
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(nativeError);
+	return response.write();
+}
+
+bool stringTypeExA(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	constexpr size_t kMaxSourceBytes = (64 * 1024 - 256) / 6;
+	uint32_t locale = 0, type = 0, incomingError = 0;
+	int count = 0;
+	std::string source, initial;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, locale) ||
+		!parseUnsignedDecimal(parameters[1], UINT32_MAX, type) || !parseMappingCount(parameters[2], count) ||
+		!parseUnsignedDecimal(parameters[5], UINT32_MAX, incomingError))
+		return fail(ERROR_INVALID_PARAMETER);
+	if (count < -1)
+		return fail(ERROR_NOT_SUPPORTED);
+	if (wcslen(parameters[3]) > kMaxSourceBytes * 2 || !decodeHex(parameters[3], source, true) ||
+		(count >= 0 ? source.size() != static_cast<size_t>(count)
+					: source.empty() || source.back() || source.find('\0') != source.size() - 1))
+		return fail(ERROR_INVALID_PARAMETER);
+	const size_t outputBytes = source.size() * sizeof(WORD);
+	if (wcslen(parameters[4]) != outputBytes * 2 || !decodeHex(parameters[4], initial, true) ||
+		initial.size() != outputBytes)
+		return fail(ERROR_INVALID_PARAMETER);
+	constexpr size_t kGuardWords = 8;
+	constexpr WORD kGuardValue = 0xa5a5;
+	std::vector<WORD> output(source.size() + kGuardWords, kGuardValue);
+	if (outputBytes)
+		std::memcpy(output.data(), initial.data(), outputBytes);
+	// Even an empty source retains a valid pointer for the genuine zero-count call.
+	source.push_back(0);
+	SetLastError(incomingError);
+	const BOOL result = GetStringTypeExA(locale, type, source.data(), count, output.data());
+	const DWORD nativeError = GetLastError();
+	if (!std::all_of(output.begin() + outputBytes / sizeof(WORD), output.end(),
+					 [](WORD value) { return value == kGuardValue; }))
+		return fail(ERROR_NOT_SUPPORTED);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result ? 1 : 0);
+	response.number(nativeError);
+	response.bytes(output.data(), outputBytes);
+	return response.write();
+}
+
 bool upperCharacterBuffer(WCHAR **parameters) {
 	const auto fail = [](DWORD status) {
 		Response response;
@@ -1750,6 +1817,10 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = findNlsStringEx(argv + 2);
 	else if (argc == 4 && wcscmp(argv[1], L"cp-info-ex-w") == 0)
 		written = cpInfoExW(argv[2], argv[3]);
+	else if (argc == 4 && wcscmp(argv[1], L"is-valid-locale-name") == 0)
+		written = isValidLocaleName(argv[2], argv[3]);
+	else if (argc == 8 && wcscmp(argv[1], L"string-type-ex-a") == 0)
+		written = stringTypeExA(argv + 2);
 	else if (argc == 7 && wcscmp(argv[1], L"locale-info-ex") == 0)
 		written = localeInfoEx(argv + 2);
 	else if (argc == 6 && wcscmp(argv[1], L"resolve-locale-name") == 0)

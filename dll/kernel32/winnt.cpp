@@ -6,6 +6,8 @@
 #include "internal.h"
 #include "modules.h"
 
+#include <cstring>
+
 namespace kernel32 {
 
 #ifndef WIBO_GUEST_64
@@ -19,10 +21,10 @@ void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD Excep
 PVOID WINAPI RtlPcToFileHeader(PVOID PcValue, GUEST_PTR *BaseOfImage) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RtlPcToFileHeader(%p, %p)\n", PcValue, BaseOfImage);
-	wibo::ModuleInfo *module = wibo::moduleInfoFromAddress(PcValue);
-	PVOID base = module && module->executable ? module->executable->imageBase : nullptr;
+	PVOID base = wibo::loadedImageBaseFromAddress(PcValue);
 	if (BaseOfImage) {
-		*BaseOfImage = base ? toGuestPtr(base) : GUEST_NULL;
+		const GUEST_PTR value = base ? toGuestPtr(base) : GUEST_NULL;
+		std::memcpy(BaseOfImage, &value, sizeof(value));
 	}
 	return base;
 }

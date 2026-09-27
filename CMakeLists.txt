@@ -328,6 +328,7 @@ add_executable(wibo
     dll/kernel32/winprofile.cpp
     dll/kernel32/wincon.cpp
     dll/kernel32/winnls.cpp
+    dll/kernel32/nls_scalar.cpp
     dll/kernel32/winnt.cpp
     dll/kernel32/wow64apiset.cpp
     dll/lmgr.cpp
@@ -1051,7 +1052,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_slist PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_vectored_exception_registration SOURCES test/test_vectored_exception_registration.c)
         set_tests_properties(wibo.test_vectored_exception_registration PROPERTIES TIMEOUT 15)
-        wibo_add_fixture_bin(NAME test_pc_to_file_header SOURCES test/test_pc_to_file_header.c COMPILE_OPTIONS -lkernel32)
+        if(WIBO_GUEST_64)
+            set(_pc_header_entry "-Wl,--entry,DllMain")
+        else()
+            set(_pc_header_entry "-Wl,--entry,_DllMain@12")
+        endif()
+        wibo_add_fixture_dll(NAME pc-header-sample SOURCES test/test_pc_header_sample.c test/fixture_relocation_anchor.c
+            COMPILE_OPTIONS -nostdlib ${_pc_header_entry} -Wl,--kill-at)
+        wibo_add_fixture_bin(NAME test_pc_to_file_header SOURCES test/test_pc_to_file_header.c
+            COMPILE_OPTIONS -lkernel32 DEPENDS ${WIBO_TEST_BIN_DIR}/pc-header-sample.dll)
+        wibo_add_fixture_bin(NAME test_system_time_precise SOURCES test/test_system_time_precise.c)
         wibo_add_fixture_bin(NAME test_wer_set_flags SOURCES test/test_wer_set_flags.c COMPILE_OPTIONS -lkernel32)
         wibo_add_fixture_bin(NAME test_runtime_exception_registration SOURCES test/test_runtime_exception_registration.c)
         set_tests_properties(wibo.test_runtime_exception_registration PROPERTIES
@@ -1107,6 +1117,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_findfile SOURCES test/test_findfile.c)
         wibo_add_fixture_bin(NAME test_getfileattributesex SOURCES test/test_getfileattributesex.c)
         wibo_add_fixture_bin(NAME test_locale SOURCES test/test_locale.c)
+        wibo_add_fixture_bin(NAME test_find_executable SOURCES test/test_find_executable.c COMPILE_OPTIONS -lshell32)
+        add_test(NAME wibo.test_find_executable_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_find_executable.exe unsupported)
+        set_tests_properties(wibo.test_find_executable_unsupported PROPERTIES TIMEOUT 15
+            DEPENDS wibo.build_fixtures)
+        wibo_add_fixture_bin(NAME test_nls_scalar SOURCES test/test_nls_scalar.c NO_TEST)
+        foreach(mode success failed invalid-result wrong-size)
+            add_test(NAME wibo.test_nls_scalar_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_nls_scalar.exe)
+            set_tests_properties(wibo.test_nls_scalar_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_SYSTEM_PROVIDER_PERSISTENT=0;WIBO_FIXTURE_NLS_SCALAR_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_nls_scalar_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_nls_scalar.exe)
+        set_tests_properties(wibo.test_nls_scalar_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_NLS_SCALAR_RESPONSE=unavailable")
         wibo_add_fixture_bin(NAME test_char_next_ex SOURCES test/test_char_next_ex.c)
         wibo_add_fixture_bin(NAME test_wsprintf SOURCES test/test_wsprintf.c)
         wibo_add_fixture_bin(NAME test_lead_byte_cache SOURCES test/test_lead_byte_cache.c NO_TEST)
@@ -1642,7 +1670,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             get_property(_wibo_test_environment TEST ${_wibo_test} PROPERTY ENVIRONMENT)
             if(_wibo_test_environment MATCHES "WIBO_SYSTEM_PROVIDER=")
                 set_property(TEST ${_wibo_test} APPEND PROPERTY ENVIRONMENT
-                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_ALPHA_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_LEAD_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_UPPER_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
+                    "WIBO_GUEST_ENVIRONMENT_BRIDGE=WIBO_FIXTURE_ADAPTER_RESPONSE,WIBO_FIXTURE_ALPHA_RESPONSE,WIBO_FIXTURE_DEVICES_RESPONSE,WIBO_FIXTURE_LEAD_RESPONSE,WIBO_FIXTURE_IP_TABLE_RESPONSE,WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE,WIBO_FIXTURE_MEMORY_RESPONSE,WIBO_FIXTURE_METRICS_RESPONSE,WIBO_FIXTURE_NETWORK_RESPONSE,WIBO_FIXTURE_NLS_FIND_RESPONSE,WIBO_FIXTURE_NLS_SCALAR_RESPONSE,WIBO_FIXTURE_ROUTE_RESPONSE,WIBO_FIXTURE_STATUS_RESPONSE,WIBO_FIXTURE_SYSTEM_RESPONSE,WIBO_FIXTURE_UPPER_RESPONSE,WIBO_FIXTURE_VOLUME_RESPONSE,WIBO_SYSTEM_PROVIDER,WIBO_SYSTEM_PROVIDER_PERSISTENT")
             endif()
         endforeach()
         set_property(TEST wibo.test_load_cursor APPEND PROPERTY ENVIRONMENT

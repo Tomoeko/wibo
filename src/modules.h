@@ -175,6 +175,8 @@ ModuleInfo *registerProcessModule(std::unique_ptr<Executable> executable, std::f
 								  std::string originalName);
 Executable *executableFromModule(HMODULE module);
 ModuleInfo *moduleInfoFromAddress(void *addr);
+// Copy the image base while loader and registry ownership are protected.
+void *loadedImageBaseFromAddress(void *addr);
 
 /**
  * A null handle or the process image base identifies the main module.

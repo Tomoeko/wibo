@@ -294,6 +294,17 @@ NTSTATUS queryStandardInformationLocked(FsObject &file, FILE_STANDARD_INFORMATIO
 
 namespace ntdll {
 
+PVOID WINAPI RtlPcToFileHeader(PVOID pcValue, GUEST_PTR *baseOfImage) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlPcToFileHeader(%p, %p)\n", pcValue, baseOfImage);
+	PVOID base = wibo::loadedImageBaseFromAddress(pcValue);
+	if (baseOfImage) {
+		const GUEST_PTR value = base ? toGuestPtr(base) : GUEST_NULL;
+		std::memcpy(baseOfImage, &value, sizeof(value));
+	}
+	return base;
+}
+
 constexpr LARGE_INTEGER FILE_WRITE_TO_END_OF_FILE = {.QuadPart = -1};
 constexpr LARGE_INTEGER FILE_USE_FILE_POINTER_POSITION = {.QuadPart = -2};
 

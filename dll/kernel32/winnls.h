@@ -44,6 +44,9 @@ using LPNLSVERSIONINFO = NLSVERSIONINFO *;
 namespace kernel32 {
 
 UINT WINAPI GetACP();
+UINT WINAPI GetOEMCP();
+BOOL WINAPI GetStringTypeExA(LCID locale, DWORD type, LPCSTR source, int count, LPWORD characterTypes);
+BOOL WINAPI IsValidLocaleName(LPCWSTR name);
 LANGID WINAPI GetSystemDefaultLangID();
 LANGID WINAPI GetUserDefaultUILanguage();
 BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,
