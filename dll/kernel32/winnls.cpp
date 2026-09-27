@@ -33,7 +33,7 @@ constexpr DWORD kMapSortKey = 0x00000400;
 constexpr DWORD kMapHash = 0x00040000;
 constexpr DWORD kMapSortHandle = 0x20000000;
 constexpr size_t kMaxLocaleNameUnits = 85;
-constexpr size_t kMaxMappingRequest = 64 * 1024;
+constexpr size_t kMaxNlsRequest = 64 * 1024;
 
 std::string encodeWideBytes(const uint16_t *text, size_t units) {
 	std::string bytes(units * 2, '\0');
@@ -42,6 +42,61 @@ std::string encodeWideBytes(const uint16_t *text, size_t units) {
 		bytes[index * 2 + 1] = static_cast<char>(text[index] >> 8);
 	}
 	return wibo::provider::encodeBytes(bytes);
+}
+
+bool encodeNlsLocale(LPCWSTR name, std::string &encoded) {
+	encoded = "-";
+	if (!name) {
+		return true;
+	}
+	const size_t units = wstrnlen(name, kMaxLocaleNameUnits);
+	if (units == kMaxLocaleNameUnits) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return false;
+	}
+	encoded = encodeWideBytes(name, units);
+	return true;
+}
+
+bool countNlsStringUnits(LPCWSTR text, int count, size_t &remainingHexBytes, size_t &units) {
+	const size_t unitLimit = remainingHexBytes / 4;
+	if (count < 0) {
+		const size_t length = wstrnlen(text, unitLimit);
+		if (length == unitLimit) {
+			kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return false;
+		}
+		units = length + 1;
+	} else {
+		units = static_cast<size_t>(count);
+		if (units > unitLimit) {
+			kernel32::setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return false;
+		}
+	}
+	if (units * sizeof(uint16_t) > std::numeric_limits<uintptr_t>::max() - reinterpret_cast<uintptr_t>(text)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return false;
+	}
+	remainingHexBytes -= units * 4;
+	return true;
+}
+
+bool readNlsResponseHeader(wibo::provider::Reader &reader) {
+	int32_t status = 0;
+	if (!reader.header(status)) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return false;
+	}
+	if (status == ERROR_SUCCESS) {
+		return true;
+	}
+	if (!reader.done()) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return false;
+	}
+	kernel32::setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+	return false;
 }
 
 int compareStrings(const std::string &a, const std::string &b, DWORD dwCmpFlags) {
@@ -224,6 +279,57 @@ int WINAPI CompareStringW(LCID Locale, DWORD dwCmpFlags, LPCWCH lpString1, int c
 	std::string str1 = wideStringToString(lpString1, cchCount1);
 	std::string str2 = wideStringToString(lpString2, cchCount2);
 	return compareStrings(str1, str2, dwCmpFlags);
+}
+
+int WINAPI CompareStringEx(LPCWSTR lpLocaleName, DWORD dwCmpFlags, LPCWCH lpString1, int cchCount1, LPCWCH lpString2,
+						   int cchCount2, LPNLSVERSIONINFO lpVersionInformation, LPVOID lpReserved, LONG_PTR lParam) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CompareStringEx(%p, 0x%x, %p, %d, %p, %d, %p, %p, 0x%llx)\n", lpLocaleName, dwCmpFlags, lpString1,
+			  cchCount1, lpString2, cchCount2, lpVersionInformation, lpReserved,
+			  static_cast<unsigned long long>(lParam));
+	if (lpVersionInformation || lpReserved || lParam) {
+		// Sort tokens and version information are not supported by this transport.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	if (!lpString1 || !lpString2) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	if (!wibo::provider::configured()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	std::string locale;
+	if (!encodeNlsLocale(lpLocaleName, locale)) {
+		return 0;
+	}
+	// Both inputs share the request budget, including any terminating NUL units.
+	size_t remainingHexBytes = kMaxNlsRequest - locale.size() - 128;
+	size_t leftUnits = 0;
+	size_t rightUnits = 0;
+	if (!countNlsStringUnits(lpString1, cchCount1, remainingHexBytes, leftUnits) ||
+		!countNlsStringUnits(lpString2, cchCount2, remainingHexBytes, rightUnits)) {
+		return 0;
+	}
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"compare-string-ex", std::to_string(dwCmpFlags), locale, std::to_string(cchCount1),
+								  encodeWideBytes(lpString1, leftUnits), std::to_string(cchCount2),
+								  encodeWideBytes(lpString2, rightUnits)},
+								 response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader)) {
+		return 0;
+	}
+	uint32_t result = 0;
+	if (!reader.number(result) || result < 1 || result > 3 || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	return static_cast<int>(result);
 }
 
 BOOL WINAPI IsValidCodePage(UINT CodePage) {
@@ -474,32 +580,16 @@ int WINAPI LCMapStringEx(LPCWSTR lpLocaleName, DWORD dwMapFlags, LPCWSTR lpSrcSt
 		setLastError(ERROR_NOT_SUPPORTED);
 		return 0;
 	}
-	std::string locale = "-";
-	if (lpLocaleName) {
-		const size_t localeUnits = wstrnlen(lpLocaleName, kMaxLocaleNameUnits);
-		if (localeUnits == kMaxLocaleNameUnits) {
-			setLastError(ERROR_INVALID_PARAMETER);
-			return 0;
-		}
-		locale = encodeWideBytes(lpLocaleName, localeUnits);
+	std::string locale;
+	if (!encodeNlsLocale(lpLocaleName, locale)) {
+		return 0;
 	}
 	// Reserve room for framing, the operation, and numeric arguments. Each UTF-16
 	// source unit takes four characters when encoded as hexadecimal bytes.
-	const size_t sourceLimit = (kMaxMappingRequest - locale.size() - 128) / 4;
-	size_t sourceUnits;
-	if (cchSrc < 0) {
-		const size_t length = wstrnlen(lpSrcStr, sourceLimit);
-		if (length == sourceLimit) {
-			setLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return 0;
-		}
-		sourceUnits = length + 1;
-	} else {
-		sourceUnits = static_cast<size_t>(cchSrc);
-		if (sourceUnits > sourceLimit) {
-			setLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return 0;
-		}
+	size_t remainingHexBytes = kMaxNlsRequest - locale.size() - 128;
+	size_t sourceUnits = 0;
+	if (!countNlsStringUnits(lpSrcStr, cchSrc, remainingHexBytes, sourceUnits)) {
+		return 0;
 	}
 	const size_t outputUnitSize = dwMapFlags & kMapSortKey ? 1 : sizeof(uint16_t);
 	if (static_cast<size_t>(cchDest) > wibo::provider::kMaxResponse / outputUnitSize) {
@@ -510,8 +600,7 @@ int WINAPI LCMapStringEx(LPCWSTR lpLocaleName, DWORD dwMapFlags, LPCWSTR lpSrcSt
 	const size_t destinationBytes = static_cast<size_t>(cchDest) * outputUnitSize;
 	const uintptr_t sourceAddress = reinterpret_cast<uintptr_t>(lpSrcStr);
 	const uintptr_t destinationAddress = reinterpret_cast<uintptr_t>(lpDestStr);
-	if (sourceBytes > std::numeric_limits<uintptr_t>::max() - sourceAddress ||
-		destinationBytes > std::numeric_limits<uintptr_t>::max() - destinationAddress) {
+	if (destinationBytes > std::numeric_limits<uintptr_t>::max() - destinationAddress) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return 0;
 	}
@@ -530,17 +619,7 @@ int WINAPI LCMapStringEx(LPCWSTR lpLocaleName, DWORD dwMapFlags, LPCWSTR lpSrcSt
 		return 0;
 	}
 	wibo::provider::Reader reader(response);
-	int32_t status = 0;
-	if (!reader.header(status)) {
-		setLastError(ERROR_INVALID_DATA);
-		return 0;
-	}
-	if (status != ERROR_SUCCESS) {
-		if (!reader.done()) {
-			setLastError(ERROR_INVALID_DATA);
-			return 0;
-		}
-		setLastError(status == wibo::provider::kUnavailable ? ERROR_NOT_SUPPORTED : static_cast<DWORD>(status));
+	if (!readNlsResponseHeader(reader)) {
 		return 0;
 	}
 	uint32_t result = 0;

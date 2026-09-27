@@ -523,6 +523,17 @@ bool decodeMappingString(const WCHAR *text, std::vector<WCHAR> &value) {
 	return true;
 }
 
+bool validCountedString(const std::vector<WCHAR> &value, int count) {
+	if (count >= 0)
+		return value.size() == static_cast<size_t>(count);
+	if (value.empty() || value.back())
+		return false;
+	for (size_t index = 0; index + 1 < value.size(); ++index)
+		if (!value[index])
+			return false;
+	return true;
+}
+
 bool lcMapStringEx(WCHAR **parameters) {
 	const auto fail = [](DWORD status) {
 		Response response;
@@ -557,16 +568,8 @@ bool lcMapStringEx(WCHAR **parameters) {
 	for (WCHAR character : locale)
 		if (!character)
 			return fail(ERROR_INVALID_PARAMETER);
-	if (sourceCount >= 0) {
-		if (source.size() != static_cast<size_t>(sourceCount))
-			return fail(ERROR_INVALID_PARAMETER);
-	} else {
-		if (source.empty() || source.back())
-			return fail(ERROR_INVALID_PARAMETER);
-		for (size_t index = 0; index + 1 < source.size(); ++index)
-			if (!source[index])
-				return fail(ERROR_INVALID_PARAMETER);
-	}
+	if (!validCountedString(source, sourceCount))
+		return fail(ERROR_INVALID_PARAMETER);
 
 	const bool sortKey = flags & LCMAP_SORTKEY;
 	const size_t outputUnit = sortKey ? 1 : sizeof(WCHAR);
@@ -602,6 +605,59 @@ bool lcMapStringEx(WCHAR **parameters) {
 	response.header(ERROR_SUCCESS);
 	response.number(static_cast<uint32_t>(result));
 	response.bytes(destination, destinationCapacity ? static_cast<size_t>(result) * outputUnit : 0);
+	return response.write();
+}
+
+bool compareStringEx(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t flags;
+	int leftCount, rightCount;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, flags) || !parseMappingCount(parameters[2], leftCount) ||
+		!parseMappingCount(parameters[4], rightCount))
+		return fail(ERROR_INVALID_PARAMETER);
+	const bool hasLocale = wcscmp(parameters[1], L"-") != 0;
+	size_t totalUnits = hasLocale;
+	const WCHAR *encodedStrings[] = {hasLocale ? parameters[1] : L"", parameters[3], parameters[5]};
+	for (unsigned index = 0; index < 3; ++index) {
+		const size_t length = wcslen(encodedStrings[index]);
+		if (length % 4)
+			return fail(ERROR_INVALID_PARAMETER);
+		const size_t units = index != 0 && length == 0 ? 1 : length / 4;
+		if (units > kMaxResponse / sizeof(WCHAR) - totalUnits)
+			return fail(ERROR_NOT_ENOUGH_MEMORY);
+		totalUnits += units;
+	}
+	std::vector<WCHAR> locale, left, right;
+	if ((hasLocale && !decodeMappingString(parameters[1], locale)) || !decodeMappingString(parameters[3], left) ||
+		!decodeMappingString(parameters[5], right) || !validCountedString(left, leftCount) ||
+		!validCountedString(right, rightCount))
+		return fail(ERROR_INVALID_PARAMETER);
+	for (WCHAR character : locale)
+		if (!character)
+			return fail(ERROR_INVALID_PARAMETER);
+	const size_t leftUnits = left.empty() ? 1 : left.size();
+	const size_t rightUnits = right.empty() ? 1 : right.size();
+	if (hasLocale)
+		locale.push_back(0);
+	// A zero count still requires a readable, non-null string pointer.
+	left.resize(leftUnits);
+	right.resize(rightUnits);
+	SetLastError(ERROR_SUCCESS);
+	const int result = CompareStringEx(hasLocale ? locale.data() : nullptr, flags, left.data(), leftCount, right.data(),
+									   rightCount, nullptr, nullptr, 0);
+	if (!result) {
+		const DWORD error = GetLastError();
+		return fail(error ? error : ERROR_INVALID_DATA);
+	}
+	if (result < CSTR_LESS_THAN || result > CSTR_GREATER_THAN)
+		return fail(ERROR_INVALID_DATA);
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(result));
 	return response.write();
 }
 
@@ -1162,6 +1218,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = knownFolderPath(argv[2], argv[3], argv[4]);
 	else if (argc == 8 && wcscmp(argv[1], L"lc-map-string-ex") == 0)
 		written = lcMapStringEx(argv + 2);
+	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)
+		written = compareStringEx(argv + 2);
 	else if (argc == 3 && wcscmp(argv[1], L"api-set-host") == 0)
 		written = apiSetHost(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"numa-highest-node-number") == 0)

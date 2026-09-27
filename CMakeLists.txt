@@ -943,6 +943,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_lc_map_string_ex_unsupported PROPERTIES TIMEOUT 15
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_NLS_UNSUPPORTED=1")
+        wibo_add_fixture_bin(NAME test_compare_string_ex SOURCES test/test_compare_string_ex.c NO_TEST)
+        foreach(mode success failed truncated trailing invalid-result-zero invalid-result-high)
+            add_test(NAME wibo.test_compare_string_ex_${mode}
+                COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_compare_string_ex.exe)
+            set_tests_properties(wibo.test_compare_string_ex_${mode} PROPERTIES TIMEOUT 15
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_COMPARE_RESPONSE=${mode}")
+        endforeach()
+        add_test(NAME wibo.test_compare_string_ex_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_compare_string_ex.exe)
+        set_tests_properties(wibo.test_compare_string_ex_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_COMPARE_RESPONSE=unavailable")
+        add_test(NAME wibo.test_compare_string_ex_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_compare_string_ex.exe)
+        set_tests_properties(wibo.test_compare_string_ex_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_EXPECT_COMPARE_UNSUPPORTED=1")
         wibo_add_fixture_bin(NAME test_lstrcpyn SOURCES test/test_lstrcpyn.c)
         wibo_add_fixture_bin(NAME test_global_atoms SOURCES test/test_global_atoms.c)
         wibo_add_fixture_bin(NAME test_system_random SOURCES test/test_system_random.c)

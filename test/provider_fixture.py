@@ -90,6 +90,23 @@ elif operation == 'lc-map-string-ex':
     elif fault == 'large-query':
         response = header() + number(8 * 1024 * 1024 + 1) + blob(b'')
 
+elif operation == 'compare-string-ex':
+    flags, locale, left_count, left, right_count, right = arguments
+    valid = (flags == '1' and locale == '' and left_count == '2' and left == '61004200'
+             and right_count == '2' and right == '41004200')
+    response = header() + number(2) if valid else header(87)
+    fault = os.environ.get('WIBO_FIXTURE_COMPARE_RESPONSE')
+    if fault == 'failed':
+        response = header(87)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'invalid-result-zero':
+        response = header() + number(0)
+    elif fault == 'invalid-result-high':
+        response = header() + number(4)
+
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)
     zone = number(300) + bytes(64) + transition(11, 1, 2) + number(0)
