@@ -276,6 +276,15 @@ DWORD Handles::snapshotInherited(std::optional<std::span<const HANDLE>> selectio
 }
 
 DWORD Handles::snapshotSelected(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const {
+	return snapshotSelection(selection, out, false);
+}
+
+DWORD Handles::snapshotExisting(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const {
+	return snapshotSelection(selection, out, true);
+}
+
+DWORD Handles::snapshotSelection(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out,
+								 bool ignoreMissing) const {
 	if (selection.size() > MAX_HANDLES)
 		return ERROR_NOT_SUPPORTED;
 	std::vector<HandleTransferEntry> snapshot;
@@ -283,11 +292,17 @@ DWORD Handles::snapshotSelected(std::span<const HANDLE> selection, std::vector<H
 	for (HANDLE handle : selection) {
 		if (handle == NO_HANDLE || handle == static_cast<HANDLE>(-1))
 			continue;
-		if (handle <= 0 || static_cast<uint64_t>(handle) > UINT32_MAX || (static_cast<uint32_t>(handle) & 3))
+		if (handle <= 0 || static_cast<uint64_t>(handle) > UINT32_MAX || (static_cast<uint32_t>(handle) & 3)) {
+			if (ignoreMissing)
+				continue;
 			return ERROR_INVALID_HANDLE;
+		}
 		const uint32_t index = indexOf(handle);
-		if (index >= mSlots.size() || !mSlots[index].obj)
+		if (index >= mSlots.size() || !mSlots[index].obj) {
+			if (ignoreMissing)
+				continue;
 			return ERROR_INVALID_HANDLE;
+		}
 		const auto &entry = mSlots[index];
 		snapshot.push_back({handle, Pin<>::acquire(entry.obj), entry.meta.grantedAccess, entry.meta.flags});
 	}

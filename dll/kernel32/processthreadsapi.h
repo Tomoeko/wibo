@@ -128,7 +128,6 @@ DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinit
 BOOL WINAPI GetThreadContext(HANDLE hThread, LPCONTEXT context);
 DWORD WINAPI SuspendThread(HANDLE hThread);
 DWORD WINAPI ResumeThread(HANDLE hThread);
-HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription);
 void WINAPI ExitProcess(UINT uExitCode);
 BOOL WINAPI TerminateProcess(HANDLE hProcess, UINT uExitCode);
 BOOL WINAPI GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode);
@@ -144,6 +143,8 @@ BOOL WINAPI GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode);
 BOOL WINAPI SetThreadPriority(HANDLE hThread, int nPriority);
 BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost);
 DWORD WINAPI SetThreadIdealProcessor(HANDLE hThread, DWORD dwIdealProcessor);
+BOOL WINAPI GetThreadIdealProcessorEx(HANDLE thread, PPROCESSOR_NUMBER ideal);
+BOOL WINAPI SetThreadIdealProcessorEx(HANDLE thread, PPROCESSOR_NUMBER ideal, PPROCESSOR_NUMBER previous);
 int WINAPI GetThreadPriority(HANDLE hThread);
 DWORD WINAPI GetPriorityClass(HANDLE hProcess);
 BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *lpExitTime, FILETIME *lpKernelTime,

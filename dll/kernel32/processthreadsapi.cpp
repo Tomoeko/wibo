@@ -349,6 +349,8 @@ void threadCleanup(void *param) {
 	wibo::uninstallTebForCurrentThread();
 	{
 		std::lock_guard lk(obj->m);
+		obj->description.reset();
+		obj->descriptionLength = 0;
 		obj->signaled = true;
 	}
 	retireThread(obj);
@@ -936,14 +938,6 @@ BOOL WINAPI TlsSetValue(DWORD dwTlsIndex, LPVOID lpTlsValue) {
 	return TRUE;
 }
 
-HRESULT WINAPI SetThreadDescription(HANDLE hThread, LPCWSTR lpThreadDescription) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetThreadDescription(%p, %p)\n", hThread, lpThreadDescription);
-	(void)hThread;
-	(void)lpThreadDescription;
-	return S_OK;
-}
-
 namespace {
 Pin<ThreadObject> startThread(SIZE_T dwStackSize, std::function<DWORD()> entry, DWORD dwCreationFlags, DWORD &error) {
 	error = ERROR_SUCCESS;
@@ -1100,30 +1094,6 @@ BOOL WINAPI SetThreadPriorityBoost(HANDLE hThread, BOOL bDisablePriorityBoost) {
 	return TRUE;
 }
 
-DWORD WINAPI SetThreadIdealProcessor(HANDLE hThread, DWORD dwIdealProcessor) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("SetThreadIdealProcessor(%p, %u)\n", hThread, dwIdealProcessor);
-	if (!isPseudoCurrentThreadHandle(hThread) && !wibo::handles().getAs<ThreadObject>(hThread)) {
-		setLastError(ERROR_INVALID_HANDLE);
-		return static_cast<DWORD>(-1);
-	}
-
-	long reported = sysconf(_SC_NPROCESSORS_ONLN);
-	DWORD logicalCount = reported > 0 ? static_cast<DWORD>(reported) : 1;
-	if (dwIdealProcessor >= logicalCount) {
-		setLastError(ERROR_INVALID_PARAMETER);
-		return static_cast<DWORD>(-1);
-	}
-
-	static thread_local DWORD currentIdealProcessor = static_cast<DWORD>(-1);
-	DWORD previous = currentIdealProcessor;
-	if (isPseudoCurrentThreadHandle(hThread)) {
-		currentIdealProcessor = dwIdealProcessor;
-	}
-	setLastError(ERROR_SUCCESS);
-	return previous;
-}
-
 int WINAPI GetThreadPriority(HANDLE hThread) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("STUB: GetThreadPriority(%p)\n", hThread);
@@ -1273,18 +1243,19 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 			// Default standard streams have separate child handles when the handle table is not inherited.
 			const std::array<HANDLE, 3> sourceIds = {standard.input, standard.output, standard.error};
 			std::vector<HandleTransferEntry> snapshot;
-			error = wibo::handles().snapshotSelected(sourceIds, snapshot);
+			error = wibo::handles().snapshotExisting(sourceIds, snapshot);
 			if (error) {
 				setLastError(error);
 				return FALSE;
 			}
 			const std::array<HANDLE *, 3> destinations = {&standard.input, &standard.output, &standard.error};
 			for (unsigned index = 0; index < sourceIds.size(); ++index) {
-				if (sourceIds[index] == NO_HANDLE || sourceIds[index] == static_cast<HANDLE>(-1))
-					continue;
 				const auto source = std::find_if(snapshot.begin(), snapshot.end(),
 												 [&](const auto &entry) { return entry.handle == sourceIds[index]; });
-				assert(source != snapshot.end());
+				if (source == snapshot.end()) {
+					*destinations[index] = NO_HANDLE;
+					continue;
+				}
 				const HANDLE childId = (static_cast<HANDLE>(index) + 1) * 4;
 				options.handles.push_back({childId, source->object.clone(), source->grantedAccess, source->flags});
 				*destinations[index] = childId;

@@ -257,10 +257,14 @@ class Handles {
 							std::vector<HandleTransferEntry> &out) const;
 	// Preserve selection order and aliases without requiring HANDLE_FLAG_INHERIT; skip NULL and -1.
 	DWORD snapshotSelected(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const;
+	// Preserve live entries in order, omitting missing values from implicit standard streams.
+	DWORD snapshotExisting(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out) const;
 	// Import is atomic, requires an empty table, and consumes pins only on success.
 	DWORD importExact(std::span<HandleTransferEntry> entries);
 
   private:
+	DWORD snapshotSelection(std::span<const HANDLE> selection, std::vector<HandleTransferEntry> &out,
+							bool ignoreMissing) const;
 	struct Entry {
 		ObjectBase *obj;
 		HandleMeta meta;

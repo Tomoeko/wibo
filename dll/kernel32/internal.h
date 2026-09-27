@@ -196,6 +196,9 @@ struct ThreadObject final : WaitableObject {
 	TEB *tib = nullptr;
 	bool ownsTib = true;
 	std::shared_ptr<ApcState> apc = std::make_shared<ApcState>();
+	// Protected by m; the counted UTF-16 description excludes its terminator.
+	std::unique_ptr<WCHAR[]> description;
+	size_t descriptionLength = 0;
 
 	void onLastHandleClosed() noexcept override;
 

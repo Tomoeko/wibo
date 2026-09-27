@@ -310,6 +310,8 @@ add_executable(wibo
     dll/kernel32/namedpipeapi.cpp
     dll/kernel32/processenv.cpp
     dll/kernel32/processthreadsapi.cpp
+    dll/kernel32/ideal_processor.cpp
+    dll/kernel32/thread_description.cpp
     dll/kernel32/thread_control.cpp
     dll/kernel32/unwindapi.cpp
     dll/kernel32/system_times.cpp
@@ -592,6 +594,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/namedpipeapi.h
     dll/kernel32/processenv.h
     dll/kernel32/processthreadsapi.h
+    dll/kernel32/thread_description.h
     dll/kernel32/profileapi.h
     dll/kernel32/stringapiset.h
     dll/kernel32/synchapi.h
@@ -709,6 +712,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
         wibo_add_fixture_bin(NAME test_process_default_std SOURCES test/test_process_default_std.c)
         set_tests_properties(wibo.test_process_default_std PROPERTIES TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_process_default_std_missing SOURCES test/test_process_default_std_missing.c)
+        set_tests_properties(wibo.test_process_default_std_missing PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_startup_size SOURCES test/test_process_startup_size.c)
         set_tests_properties(wibo.test_process_startup_size PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_startup_info SOURCES test/test_process_startup_info.c)
@@ -1085,6 +1090,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_thread_yield SOURCES test/test_thread_yield.c)
         wibo_add_fixture_bin(NAME test_thread_priority_boost SOURCES test/test_thread_priority_boost.c)
         wibo_add_fixture_bin(NAME test_thread_ideal_processor SOURCES test/test_thread_ideal_processor.c)
+        set_tests_properties(wibo.test_thread_ideal_processor PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_thread_ideal_processor_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_thread_ideal_processor.exe unavailable)
+        set_tests_properties(wibo.test_thread_ideal_processor_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+        wibo_add_fixture_bin(NAME test_thread_description SOURCES test/test_thread_description.c NO_TEST)
+        add_test(NAME wibo.test_thread_description
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_thread_description.exe local)
+        set_tests_properties(wibo.test_thread_description PROPERTIES TIMEOUT 25
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_raise_exception SOURCES test/test_raise_exception.c)
         wibo_add_fixture_bin(NAME test_slist SOURCES test/test_slist.c)
         wibo_add_fixture_bin(NAME test_slist_flush SOURCES test/test_slist_flush.c)
