@@ -293,6 +293,7 @@ add_executable(wibo
     dll/kernel32.cpp
     dll/kernel32/debugapi.cpp
     dll/kernel32/errhandlingapi.cpp
+    dll/kernel32/vectored_exception.cpp
     dll/kernel32/jobapi.cpp
     dll/kernel32/formatmessage.cpp
     dll/kernel32/fibersapi.cpp
@@ -725,6 +726,16 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             target_include_directories(test_software_exception_capture_helpers PRIVATE src dll test)
             add_test(NAME wibo.test_software_exception_capture_helpers COMMAND test_software_exception_capture_helpers)
             set_tests_properties(wibo.test_software_exception_capture_helpers PROPERTIES TIMEOUT 15)
+            add_executable(test_software_exception_decision_helpers
+                dll/software_exception_decision.cpp dll/kernel32/vectored_exception.cpp
+                dll/software_exception_capture.cpp dll/software_exception_capture_x64.S dll/context_x64.S
+                test/test_software_exception_decision.cpp)
+            target_compile_features(test_software_exception_decision_helpers PRIVATE cxx_std_20)
+            target_compile_options(test_software_exception_decision_helpers PRIVATE -fno-exceptions -fno-rtti)
+            target_compile_definitions(test_software_exception_decision_helpers PRIVATE WIBO_GUEST_64=1)
+            target_include_directories(test_software_exception_decision_helpers PRIVATE src dll test)
+            add_test(NAME wibo.test_software_exception_decision_helpers COMMAND test_software_exception_decision_helpers)
+            set_tests_properties(wibo.test_software_exception_decision_helpers PROPERTIES TIMEOUT 15)
             set_tests_properties(wibo.test_virtual_unwind PROPERTIES TIMEOUT 15
                 ENVIRONMENT "WIBO_TEST_DESCRIBED_MACHINE_FRAME=1")
             if(APPLE)
@@ -1241,6 +1252,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         if(TARGET test_software_exception_capture_helpers)
             add_dependencies(wibo_test_fixtures test_software_exception_capture_helpers)
             set_tests_properties(wibo.test_software_exception_capture_helpers PROPERTIES DEPENDS wibo.build_fixtures)
+        endif()
+        if(TARGET test_software_exception_decision_helpers)
+            add_dependencies(wibo_test_fixtures test_software_exception_decision_helpers)
+            set_tests_properties(wibo.test_software_exception_decision_helpers PROPERTIES DEPENDS wibo.build_fixtures)
         endif()
         if(TARGET test_darwin_teb_context)
             add_dependencies(wibo_test_fixtures test_darwin_teb_context)
