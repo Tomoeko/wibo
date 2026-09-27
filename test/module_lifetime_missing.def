@@ -1,0 +1,3 @@
+LIBRARY zzz_module_lifetime_missing
+EXPORTS
+ missing_value

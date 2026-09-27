@@ -1,0 +1,3 @@
+LIBRARY module_lifetime_cycle_a
+EXPORTS
+ cycle_value_a

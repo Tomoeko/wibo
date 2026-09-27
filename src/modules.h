@@ -16,6 +16,9 @@ using ResolveNameByOrdinal = const char *(*)(uint16_t);
 
 struct ResourceIdentifier;
 struct ResourceLocation;
+struct ModuleInfo;
+
+enum class ModuleSearch { Default, SystemDirectory };
 
 struct ModuleStub {
 	const char **names;
@@ -38,7 +41,7 @@ class Executable {
 
 	bool loadPE(FILE *file, bool exec);
 	bool loadPE(std::span<const uint8_t> image, bool exec);
-	bool resolveImports();
+	bool resolveImports(ModuleSearch search = ModuleSearch::Default, ModuleInfo *importer = nullptr);
 	bool findResource(const ResourceIdentifier &type, const ResourceIdentifier &name, std::optional<uint16_t> language,
 					  ResourceLocation &out) const;
 
@@ -101,13 +104,18 @@ struct ModuleInfo {
 	const wibo::ModuleStub *moduleStub = nullptr;
 	// Loaded PE executable
 	std::unique_ptr<wibo::Executable> executable;
-	// Reference count, or UINT_MAX for built-in modules
+	// Explicit load references, or UINT_MAX for permanent modules.
 	unsigned int refCount = 0;
+	std::vector<ModuleInfo *> dependencies;
+	bool loadInProgress = false;
+	uint64_t initializationOrder = 0;
 	bool processAttachCalled = false;
 	bool processAttachSucceeded = false;
+	bool detachNotificationsDelivered = false;
 	bool threadNotificationsEnabled = true;
 	uint32_t exportOrdinalBase = 0;
 	std::vector<void *> exportsByOrdinal;
+	std::unordered_map<size_t, std::string> exportForwarders;
 	std::unordered_map<std::string, uint16_t> exportNameToOrdinal;
 	bool exportsInitialized = false;
 	ModuleTlsInfo tlsInfo;
@@ -123,6 +131,7 @@ void setDllDirectoryOverride(const std::filesystem::path &path);
 void clearDllDirectoryOverride();
 std::optional<std::filesystem::path> dllDirectoryOverride();
 ModuleInfo *findLoadedModule(const char *name);
+HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool unchanged);
 void notifyDllThreadAttach();
 void notifyDllThreadDetach();
 BOOL disableThreadNotifications(ModuleInfo *info);
@@ -130,12 +139,17 @@ std::unordered_map<std::string, ModulePtr> allLoadedModules();
 bool initializeModuleTls(ModuleInfo &module);
 void releaseModuleTls(ModuleInfo &module);
 
-ModuleInfo *loadModule(const char *name);
+ModuleInfo *loadModule(const char *name, ModuleSearch search = ModuleSearch::Default);
+ModuleInfo *loadDependency(ModuleInfo &importer, const char *name, ModuleSearch search);
 void freeModule(ModuleInfo *info);
-void *findExportByName(ModuleInfo *info, const char *funcName);
-void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal);
-void *resolveFuncByName(ModuleInfo *info, const char *funcName);
-void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal);
+void *findExportByName(ModuleInfo *info, const char *funcName, ModuleSearch search = ModuleSearch::Default,
+					   ModuleInfo *importer = nullptr);
+void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search = ModuleSearch::Default,
+						  ModuleInfo *importer = nullptr);
+void *resolveFuncByName(ModuleInfo *info, const char *funcName, ModuleSearch search = ModuleSearch::Default,
+						ModuleInfo *importer = nullptr);
+void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search = ModuleSearch::Default,
+						   ModuleInfo *importer = nullptr);
 void *resolveMissingImportByName(const char *dllName, const char *funcName);
 void *resolveMissingImportByOrdinal(const char *dllName, uint16_t ordinal);
 

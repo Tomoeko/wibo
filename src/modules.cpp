@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kernel32/errhandlingapi.h"
 #include "kernel32/internal.h"
+#include "kernel32/winbase.h"
 #include "setup.h"
 #include "strutil.h"
 #include "system_provider.h"
@@ -162,6 +163,9 @@ HANDLE g_nextStubHandle = 1;
 // protects the module maps must never be held while guest TLS callbacks or
 // DllMain execute. Guest code is allowed to query and recursively load modules.
 std::recursive_mutex g_loaderNotificationMutex;
+uint64_t g_initializationOrder = 0;
+bool g_collectingModules = false;
+std::vector<wibo::ModulePtr> g_failedModuleLeases;
 
 std::string makeStubKey(const char *dllName, const char *funcName) {
 	std::string key;
@@ -216,14 +220,26 @@ StubFuncType resolveMissingFuncOrdinal(const char *dllName, uint16_t ordinal) {
 	return resolveMissingFuncName(dllName, funcName.c_str());
 }
 
-wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName) {
-	wibo::ModuleInfo *target = wibo::loadModule(dllName.c_str());
+struct ForwarderLookup {
+	std::vector<std::pair<wibo::ModuleInfo *, uint16_t>> path;
+	bool cycleDetected = false;
+	bool staticImport = false;
+};
+
+void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, wibo::ModuleSearch search,
+							   wibo::ModuleInfo *importer, ForwarderLookup &lookup);
+void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, wibo::ModuleSearch search,
+								  wibo::ModuleInfo *importer, ForwarderLookup &lookup);
+
+wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName, wibo::ModuleSearch search,
+											wibo::ModuleInfo &importer) {
+	wibo::ModuleInfo *target = wibo::loadDependency(importer, dllName.c_str(), search);
 	if (target || dllName.empty() || dllName[0] != '_') {
 		return target;
 	}
 
 	std::string undecoratedName = dllName.substr(1);
-	target = wibo::loadModule(undecoratedName.c_str());
+	target = wibo::loadDependency(importer, undecoratedName.c_str(), search);
 	if (target) {
 		DEBUG_LOG("Forwarded export: treating decorated DLL name %s as %s\n", dllName.c_str(), undecoratedName.c_str());
 		dllName = std::move(undecoratedName);
@@ -231,14 +247,18 @@ wibo::ModuleInfo *loadForwarderTargetModule(std::string &dllName) {
 	return target;
 }
 
-void *resolveForwardedExport(wibo::ModuleInfo &source, const char *forwarder) {
+void *resolveForwardedExport(wibo::ModuleInfo &source, const char *forwarder, wibo::ModuleSearch search,
+							 wibo::ModuleInfo &importer, ForwarderLookup &lookup) {
+	auto missing = [&](const char *dllName, const char *exportName) -> void * {
+		return lookup.staticImport ? reinterpret_cast<void *>(resolveMissingFuncName(dllName, exportName)) : nullptr;
+	};
 	if (!forwarder || !*forwarder) {
-		return reinterpret_cast<void *>(resolveMissingFuncName(source.originalName.c_str(), ""));
+		return missing(source.originalName.c_str(), "");
 	}
 
 	const char *separator = std::strchr(forwarder, '.');
 	if (!separator || separator == forwarder || !separator[1]) {
-		return reinterpret_cast<void *>(resolveMissingFuncName(source.originalName.c_str(), forwarder));
+		return missing(source.originalName.c_str(), forwarder);
 	}
 
 	std::string dllName(forwarder, separator - forwarder);
@@ -246,28 +266,28 @@ void *resolveForwardedExport(wibo::ModuleInfo &source, const char *forwarder) {
 	DEBUG_LOG("Forwarded export: %s!%s -> %s!%s\n", source.originalName.c_str(), forwarder, dllName.c_str(),
 			  exportName.c_str());
 
-	wibo::ModuleInfo *target = loadForwarderTargetModule(dllName);
+	wibo::ModuleInfo *target = loadForwarderTargetModule(dllName, search, importer);
 	if (!target) {
-		return reinterpret_cast<void *>(resolveMissingFuncName(dllName.c_str(), exportName.c_str()));
+		return missing(dllName.c_str(), exportName.c_str());
 	}
 
 	if (exportName[0] == '#') {
 		char *end = nullptr;
 		unsigned long ordinal = std::strtoul(exportName.c_str() + 1, &end, 10);
 		if (end && *end == '\0' && ordinal <= UINT16_MAX) {
-			void *func = wibo::resolveFuncByOrdinal(target, static_cast<uint16_t>(ordinal));
+			void *func = findExportByOrdinalInternal(target, static_cast<uint16_t>(ordinal), search, &importer, lookup);
 			if (func) {
 				return func;
 			}
 		}
-		return reinterpret_cast<void *>(resolveMissingFuncName(dllName.c_str(), exportName.c_str()));
+		return lookup.cycleDetected ? nullptr : missing(dllName.c_str(), exportName.c_str());
 	}
 
-	void *func = wibo::resolveFuncByName(target, exportName.c_str());
+	void *func = findExportByNameInternal(target, exportName.c_str(), search, &importer, lookup);
 	if (func) {
 		return func;
 	}
-	return reinterpret_cast<void *>(resolveMissingFuncName(dllName.c_str(), exportName.c_str()));
+	return lookup.cycleDetected ? nullptr : missing(dllName.c_str(), exportName.c_str());
 }
 
 struct ModuleRegistry {
@@ -594,7 +614,19 @@ std::optional<std::filesystem::path> combineAndFind(const std::filesystem::path 
 	return files::findCaseInsensitiveFile(directory, filename);
 }
 
-std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg, bool alteredSearchPath) {
+std::optional<std::string> systemDirectoryName() {
+	std::vector<char> buffer(260);
+	UINT length = kernel32::GetSystemDirectoryA(buffer.data(), static_cast<UINT>(buffer.size()));
+	if (length >= buffer.size()) {
+		buffer.resize(length);
+		length = kernel32::GetSystemDirectoryA(buffer.data(), static_cast<UINT>(buffer.size()));
+	}
+	if (!length || length >= buffer.size())
+		return std::nullopt;
+	return std::string(buffer.data(), length);
+}
+
+std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg, wibo::ModuleSearch search) {
 	std::vector<std::filesystem::path> dirs;
 	std::unordered_set<std::string> seen;
 
@@ -616,6 +648,12 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 		}
 	};
 
+	if (search == wibo::ModuleSearch::SystemDirectory) {
+		if (auto system = systemDirectoryName())
+			addDirectory(files::pathFromWindows(system->c_str()));
+		return dirs;
+	}
+
 	if (!wibo::guestExecutablePath.empty()) {
 		auto parent = wibo::guestExecutablePath.parent_path();
 		if (!parent.empty()) {
@@ -627,7 +665,7 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 		addDirectory(*reg.dllDirectory);
 	}
 
-	if (!alteredSearchPath && !reg.dllDirectory.has_value()) {
+	if (!reg.dllDirectory.has_value()) {
 		addDirectory(std::filesystem::current_path());
 	}
 
@@ -666,13 +704,23 @@ std::vector<std::filesystem::path> collectSearchDirectories(ModuleRegistry &reg,
 }
 
 std::optional<std::filesystem::path> resolveModuleOnDisk(ModuleRegistry &reg, const std::string &requestedName,
-														 bool alteredSearchPath) {
+														 wibo::ModuleSearch search) {
 	ParsedModuleName parsed = parseModuleName(requestedName);
 	auto names = candidateModuleNames(parsed);
 
 	if (!parsed.directory.empty()) {
 		for (const auto &candidate : names) {
 			auto combined = parsed.directory + "\\" + candidate;
+			const bool absolute =
+				combined.front() == '\\' || (combined.size() > 2 && combined[1] == ':' && combined[2] == '\\');
+			if (search == wibo::ModuleSearch::SystemDirectory && !absolute) {
+				auto system = systemDirectoryName();
+				if (!system)
+					return std::nullopt;
+				system->push_back('\\');
+				system->append(combined);
+				combined = std::move(*system);
+			}
 			auto posixPath = files::pathFromWindows(combined.c_str());
 			if (!posixPath.empty()) {
 				auto resolved = files::findCaseInsensitiveFile(std::filesystem::path(posixPath).parent_path(),
@@ -685,7 +733,7 @@ std::optional<std::filesystem::path> resolveModuleOnDisk(ModuleRegistry &reg, co
 		return std::nullopt;
 	}
 
-	auto dirs = collectSearchDirectories(reg, alteredSearchPath);
+	auto dirs = collectSearchDirectories(reg, search);
 	for (const auto &dir : dirs) {
 		for (const auto &candidate : names) {
 			auto resolved = combineAndFind(dir, candidate);
@@ -824,18 +872,20 @@ BOOL callDllMain(wibo::ModuleInfo &info, DWORD reason, LPVOID reserved) {
 		info.processAttachSucceeded = false;
 		BOOL result = invokeWithGuestTIB(DLL_PROCESS_ATTACH, reserved, true);
 		if (!result) {
+			if (info.tlsInfo.hasTls)
+				runModuleTlsCallbacks(info, DLL_PROCESS_DETACH);
 			invokeWithGuestTIB(DLL_PROCESS_DETACH, nullptr, true);
+			info.detachNotificationsDelivered = true;
 			return FALSE;
 		}
 		info.processAttachSucceeded = true;
 		return TRUE;
 	}
 	case DLL_PROCESS_DETACH: {
-		BOOL result = invokeWithGuestTIB(DLL_PROCESS_DETACH, reserved, false);
-		if (info.processAttachSucceeded) {
-			info.processAttachSucceeded = false;
-		}
-		return result;
+		if (!info.processAttachCalled || !info.processAttachSucceeded)
+			return TRUE;
+		info.processAttachSucceeded = false;
+		return invokeWithGuestTIB(DLL_PROCESS_DETACH, reserved, true);
 	}
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
@@ -881,13 +931,108 @@ bool shouldDeliverThreadNotifications(const wibo::ModuleInfo &info) {
 	if (!info.executable) {
 		return false;
 	}
-	if (!info.processAttachCalled || !info.processAttachSucceeded) {
+	if (!info.processAttachCalled || !info.processAttachSucceeded || info.detachNotificationsDelivered) {
 		return false;
 	}
 	if (!info.threadNotificationsEnabled) {
 		return false;
 	}
 	return true;
+}
+
+wibo::ModulePtr unregisterModule(ModuleRegistry &reg, wibo::ModuleInfo *info) {
+	wibo::ModulePtr owner;
+	for (auto it = reg.modulesByKey.begin(); it != reg.modulesByKey.end(); ++it) {
+		if (it->second.get() == info) {
+			owner = it->second;
+			reg.modulesByKey.erase(it);
+			break;
+		}
+	}
+	for (auto it = reg.modulesByAlias.begin(); it != reg.modulesByAlias.end();) {
+		if (it->second != info) {
+			++it;
+			continue;
+		}
+		auto builtin = reg.builtinAliasMap.find(it->first);
+		if (builtin != reg.builtinAliasMap.end() && builtin->second != info) {
+			it->second = builtin->second;
+			++it;
+		} else {
+			it = reg.modulesByAlias.erase(it);
+		}
+	}
+	for (auto &[key, module] : reg.modulesByKey) {
+		std::erase(module->dependencies, info);
+	}
+	reg.pinnedModules.erase(info);
+	publishThreadNotificationSnapshot(reg);
+	return owner;
+}
+
+std::unordered_set<wibo::ModuleInfo *> reachableModules(ModuleRegistry &reg) {
+	std::unordered_set<wibo::ModuleInfo *> reachable;
+	std::vector<wibo::ModuleInfo *> pending;
+	for (auto &[key, module] : reg.modulesByKey) {
+		if (module->refCount || module->loadInProgress || module->moduleStub || module.get() == wibo::mainModule)
+			pending.push_back(module.get());
+	}
+	while (!pending.empty()) {
+		auto *module = pending.back();
+		pending.pop_back();
+		if (reachable.insert(module).second)
+			pending.insert(pending.end(), module->dependencies.begin(), module->dependencies.end());
+	}
+	return reachable;
+}
+
+void collectUnusedModules() {
+	if (g_collectingModules)
+		return;
+	g_collectingModules = true;
+	std::unordered_set<wibo::ModuleInfo *> notified;
+	for (;;) {
+		wibo::ModulePtr candidate;
+		{
+			auto reg = registry();
+			auto reachable = reachableModules(*reg);
+			for (auto &[key, module] : reg->modulesByKey) {
+				if (!reachable.contains(module.get()) && !notified.contains(module.get()) &&
+					(!candidate || module->initializationOrder > candidate->initializationOrder))
+					candidate = module;
+			}
+		}
+		if (!candidate)
+			break;
+		notified.insert(candidate.get());
+		candidate->dependencies.clear();
+		if (!candidate->detachNotificationsDelivered) {
+			candidate->detachNotificationsDelivered = true;
+			if (candidate->tlsInfo.hasTls)
+				runModuleTlsCallbacks(*candidate, DLL_PROCESS_DETACH);
+			callDllMain(*candidate, DLL_PROCESS_DETACH, nullptr);
+		}
+	}
+
+	// Keep every image and TLS block available until the last detach notification returns.
+	std::vector<wibo::ModulePtr> retired;
+	{
+		auto reg = registry();
+		auto reachable = reachableModules(*reg);
+		for (auto *module : notified) {
+			if (!reachable.contains(module))
+				retired.push_back(unregisterModule(*reg, module));
+		}
+		publishThreadNotificationSnapshot(*reg);
+	}
+	retired.insert(retired.end(), g_failedModuleLeases.begin(), g_failedModuleLeases.end());
+	g_failedModuleLeases.clear();
+	for (auto &module : retired) {
+		releaseModuleTls(*module);
+		module->dependencies.clear();
+		g_modules.erase(module->handle);
+	}
+	g_collectingModules = false;
 }
 
 void ensureExportsInitialized(wibo::ModuleInfo &info) {
@@ -913,7 +1058,7 @@ void ensureExportsInitialized(wibo::ModuleInfo &info) {
 			}
 			if (rva >= exe->exportDirectoryRVA && rva < exe->exportDirectoryRVA + exe->exportDirectorySize) {
 				const char *forward = exe->fromRVA<const char>(rva);
-				info.exportsByOrdinal[i] = resolveForwardedExport(info, forward);
+				info.exportForwarders.emplace(i, forward);
 			} else {
 				info.exportsByOrdinal[i] = exe->fromRVA<void>(rva);
 			}
@@ -936,7 +1081,66 @@ void ensureExportsInitialized(wibo::ModuleInfo &info) {
 	info.exportsInitialized = true;
 }
 
-bool ensureModuleReady(wibo::ModuleInfo &info) {
+void *findExportByNameInternal(wibo::ModuleInfo *info, const char *funcName, wibo::ModuleSearch search,
+							   wibo::ModuleInfo *importer, ForwarderLookup &lookup) {
+	if (!info || !funcName) {
+		return nullptr;
+	}
+	if (info->moduleStub && info->moduleStub->byName) {
+		void *func = info->moduleStub->byName(funcName);
+		if (func) {
+			return func;
+		}
+	}
+	ensureExportsInitialized(*info);
+	auto it = info->exportNameToOrdinal.find(funcName);
+	if (it != info->exportNameToOrdinal.end()) {
+		return findExportByOrdinalInternal(info, it->second, search, importer, lookup);
+	}
+	return nullptr;
+}
+
+void *findExportByOrdinalInternal(wibo::ModuleInfo *info, uint16_t ordinal, wibo::ModuleSearch search,
+								  wibo::ModuleInfo *importer, ForwarderLookup &lookup) {
+	if (!info) {
+		return nullptr;
+	}
+	if (info->moduleStub && info->moduleStub->nameByOrdinal) {
+		const char *name = info->moduleStub->nameByOrdinal(ordinal);
+		if (name && info->moduleStub->byName) {
+			void *func = info->moduleStub->byName(name);
+			if (func) {
+				return func;
+			}
+		}
+	}
+	ensureExportsInitialized(*info);
+	if (!info->exportsByOrdinal.empty() && ordinal >= info->exportOrdinalBase) {
+		auto index = static_cast<size_t>(ordinal - info->exportOrdinalBase);
+		if (index < info->exportsByOrdinal.size()) {
+			auto forwarder = info->exportForwarders.find(index);
+			if (forwarder != info->exportForwarders.end()) {
+				const auto key = std::pair{info, ordinal};
+				if (std::find(lookup.path.begin(), lookup.path.end(), key) != lookup.path.end()) {
+					lookup.cycleDetected = true;
+					return nullptr;
+				}
+				lookup.path.push_back(key);
+				void *address = resolveForwardedExport(*info, forwarder->second.c_str(), search,
+													   importer ? *importer : *info, lookup);
+				lookup.path.pop_back();
+				return address;
+			}
+			void *addr = info->exportsByOrdinal[index];
+			if (addr) {
+				return addr;
+			}
+		}
+	}
+	return nullptr;
+}
+
+bool ensureModuleReady(wibo::ModuleInfo &info, wibo::ModuleSearch search) {
 	if (info.moduleStub && !info.moduleStub->dllData.empty() && !info.executable) {
 		DEBUG_LOG("registerBuiltinModule: loading PE for %s\n", info.originalName.c_str());
 		auto executable = std::make_unique<wibo::Executable>();
@@ -950,7 +1154,7 @@ bool ensureModuleReady(wibo::ModuleInfo &info) {
 	if (!info.executable) {
 		return true;
 	}
-	if (!info.executable->resolveImports()) {
+	if (!info.executable->resolveImports(search, &info)) {
 		return false;
 	}
 	if (!wibo::initializeModuleTls(info)) {
@@ -1057,30 +1261,35 @@ ModuleInfo *registerProcessModule(std::unique_ptr<Executable> executable, std::f
 
 void shutdownModuleRegistry() {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	const bool collecting = g_collectingModules;
+	g_collectingModules = true;
 	std::vector<ModulePtr> targets;
-	{
-		auto reg = registry();
-		targets.reserve(reg->modulesByKey.size());
-		for (auto &pair : reg->modulesByKey) {
-			if (pair.second && !pair.second->moduleStub) {
-				targets.push_back(pair.second);
+	std::unordered_set<ModuleInfo *> notified;
+	for (;;) {
+		ModulePtr target;
+		{
+			auto reg = registry();
+			for (auto &[key, module] : reg->modulesByKey) {
+				if (!module->moduleStub && !notified.contains(module.get()) &&
+					(!target || module->initializationOrder > target->initializationOrder))
+					target = module;
 			}
 		}
+		if (!target)
+			break;
+		notified.insert(target.get());
+		targets.push_back(target);
+		if (!target->detachNotificationsDelivered) {
+			target->detachNotificationsDelivered = true;
+			if (target->tlsInfo.hasTls)
+				runModuleTlsCallbacks(*target, TLS_PROCESS_DETACH);
+			callDllMain(*target, DLL_PROCESS_DETACH, reinterpret_cast<LPVOID>(1));
+		}
 	}
-	for (const ModulePtr &target : targets) {
-		ModuleInfo *info = target.get();
-		if (!info || info->moduleStub) {
-			continue;
-		}
-		// runPendingOnExit(*info);
-		if (info->tlsInfo.hasTls) {
-			runModuleTlsCallbacks(*info, TLS_PROCESS_DETACH);
-		}
-		if (info->processAttachCalled && info->processAttachSucceeded) {
-			callDllMain(*info, DLL_PROCESS_DETACH, reinterpret_cast<LPVOID>(1));
-		}
-		releaseModuleTls(*info);
-	}
+	targets.insert(targets.end(), g_failedModuleLeases.begin(), g_failedModuleLeases.end());
+	g_failedModuleLeases.clear();
+	for (const ModulePtr &target : targets)
+		releaseModuleTls(*target);
 	{
 		auto reg = registry();
 		reg->modulesByKey.clear();
@@ -1090,6 +1299,7 @@ void shutdownModuleRegistry() {
 		g_threadNotificationSnapshot.reset();
 	}
 	g_modules.clear();
+	g_collectingModules = collecting;
 }
 
 ModuleInfo *moduleInfoFromHandle(HMODULE module) {
@@ -1383,21 +1593,56 @@ ModuleInfo *findLoadedModule(const char *name) {
 	return info;
 }
 
-static ModuleInfo *loadModuleInternal(const std::string &dllName) {
+HMODULE acquireModuleHandle(const char *name, bool fromAddress, bool pin, bool unchanged) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	ModuleInfo *info = fromAddress ? moduleInfoFromAddress(const_cast<char *>(name)) : findLoadedModule(name);
+	if (!info)
+		return NO_HANDLE;
+	if (pin)
+		info->refCount = UINT_MAX;
+	else if (!unchanged && info->refCount != UINT_MAX)
+		++info->refCount;
+	return info->handle;
+}
+
+static ModuleInfo *loadModuleInternal(const std::string &dllName, ModuleSearch search, bool explicitReference) {
 	auto reg = registry();
 	ParsedModuleName parsed = parseModuleName(dllName);
 	DWORD diskError = ERROR_SUCCESS;
+	auto reuseExternal = [&](ModuleInfo *info) -> ModuleInfo * {
+		if (explicitReference && info->refCount != UINT_MAX)
+			++info->refCount;
+		if (info->detachNotificationsDelivered && !info->loadInProgress) {
+			info->loadInProgress = true;
+			info->detachNotificationsDelivered = false;
+			info->processAttachCalled = false;
+			reg.lock.unlock();
+			if (info->tlsInfo.hasTls)
+				runModuleTlsCallbacks(*info, DLL_PROCESS_ATTACH);
+			BOOL attached = callDllMain(*info, DLL_PROCESS_ATTACH, nullptr);
+			reg.lock.lock();
+			info->loadInProgress = false;
+			if (!attached) {
+				if (explicitReference && info->refCount != UINT_MAX)
+					--info->refCount;
+				info->detachNotificationsDelivered = true;
+				diskError = ERROR_DLL_INIT_FAILED;
+				kernel32::setLastError(diskError);
+				return nullptr;
+			}
+			info->initializationOrder = ++g_initializationOrder;
+			publishThreadNotificationSnapshot(*reg);
+		}
+		return info;
+	};
 
 	auto tryLoadExternal = [&](const std::filesystem::path &path) -> ModuleInfo * {
 		std::string key = storageKeyForPath(path);
 		auto existingIt = reg->modulesByKey.find(key);
 		if (existingIt != reg->modulesByKey.end()) {
 			ModuleInfo *info = existingIt->second.get();
-			if (info->refCount != UINT_MAX) {
-				info->refCount++;
-			}
 			registerExternalModuleAliases(*reg, dllName, files::canonicalPath(path), info);
-			return info;
+			return reuseExternal(info);
 		}
 		reg.lock.unlock();
 
@@ -1429,55 +1674,52 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 		info->normalizedName = normalizedBaseKey(parsed);
 		info->resolvedPath = files::canonicalPath(path);
 		info->executable = std::move(executable);
-		info->refCount = 1;
+		info->refCount = explicitReference ? 1 : 0;
+		info->loadInProgress = true;
 
 		reg.lock.lock();
 		ModuleInfo *raw = info.get();
 		reg->modulesByKey[key] = std::move(info);
 		registerExternalModuleAliases(*reg, dllName, raw->resolvedPath, raw);
+		auto discardModule = [&] {
+			auto discarded = unregisterModule(*reg, raw);
+			g_failedModuleLeases.push_back(std::move(discarded));
+		};
 		if (raw->executable->isDll) {
 			reg.lock.unlock();
 			ensureExportsInitialized(*raw);
-			if (!raw->executable->resolveImports()) {
+			if (!raw->executable->resolveImports(search, raw)) {
 				DEBUG_LOG("  resolveImports failed for %s\n", raw->originalName.c_str());
 				reg.lock.lock();
-				reg->modulesByKey.erase(key);
 				diskError = kernel32::getLastError();
+				discardModule();
 				return nullptr;
 			}
 			if (!initializeModuleTls(*raw)) {
 				DEBUG_LOG("  initializeModuleTls failed for %s\n", raw->originalName.c_str());
 				reg.lock.lock();
-				reg->modulesByKey.erase(key);
 				diskError = kernel32::getLastError();
+				discardModule();
 				return nullptr;
 			}
 			BOOL attached = callDllMain(*raw, DLL_PROCESS_ATTACH, nullptr);
 			reg.lock.lock();
 			if (!attached) {
 				DEBUG_LOG("  DllMain failed for %s\n", raw->originalName.c_str());
-				releaseModuleTls(*raw);
-				// runPendingOnExit(*raw);
-				for (auto it = reg->modulesByAlias.begin(); it != reg->modulesByAlias.end();) {
-					if (it->second == raw) {
-						it = reg->modulesByAlias.erase(it);
-					} else {
-						++it;
-					}
-				}
-				reg->pinnedModules.erase(raw);
-				reg->modulesByKey.erase(key);
+				discardModule();
 				diskError = ERROR_DLL_INIT_FAILED;
 				kernel32::setLastError(ERROR_DLL_INIT_FAILED);
 				return nullptr;
 			}
 			publishThreadNotificationSnapshot(*reg);
 		}
+		raw->loadInProgress = false;
+		raw->initializationOrder = ++g_initializationOrder;
 		return raw;
 	};
 
 	auto resolveAndLoadExternal = [&]() -> ModuleInfo * {
-		auto resolvedPath = resolveModuleOnDisk(*reg, dllName, false);
+		auto resolvedPath = resolveModuleOnDisk(*reg, dllName, search);
 		if (!resolvedPath) {
 			DEBUG_LOG("  module not found on disk\n");
 			diskError = ERROR_MOD_NOT_FOUND;
@@ -1494,14 +1736,11 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 	if (existing) {
 		DEBUG_LOG("  found existing module alias %s (builtin=%d)\n", alias.c_str(), existing->moduleStub != nullptr);
 		if (existing->moduleStub == nullptr) {
-			if (existing->refCount != UINT_MAX) {
-				existing->refCount++;
-			}
 			DEBUG_LOG("  returning existing external module %s\n", existing->originalName.c_str());
-			return existing;
+			return reuseExternal(existing);
 		}
 		bool pinned = reg->pinnedModules.contains(existing);
-		if (!pinned) {
+		if (!pinned && search == ModuleSearch::Default) {
 			if (ModuleInfo *external = resolveAndLoadExternal()) {
 				DEBUG_LOG("  replaced builtin module %s with external copy\n", dllName.c_str());
 				return external;
@@ -1513,7 +1752,7 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 		DEBUG_LOG("  returning builtin module %s\n", existing->originalName.c_str());
 		ModuleInfo *builtin = existing;
 		reg.lock.unlock();
-		if (!ensureModuleReady(*builtin)) {
+		if (!ensureModuleReady(*builtin, search)) {
 			return nullptr;
 		}
 		return builtin;
@@ -1542,7 +1781,7 @@ static ModuleInfo *loadModuleInternal(const std::string &dllName) {
 	if (builtin && builtin->moduleStub != nullptr) {
 		DEBUG_LOG("  falling back to builtin module %s\n", builtin->originalName.c_str());
 		reg.lock.unlock();
-		if (!ensureModuleReady(*builtin)) {
+		if (!ensureModuleReady(*builtin, search)) {
 			return nullptr;
 		}
 		return builtin;
@@ -1585,8 +1824,7 @@ static std::optional<std::string> providerApiSetHost(const std::string &contract
 	return host;
 }
 
-ModuleInfo *loadModule(const char *dllName) {
-	std::lock_guard loaderLock(g_loaderNotificationMutex);
+static ModuleInfo *loadModuleWithReference(const char *dllName, ModuleSearch search, bool explicitReference) {
 	if (!dllName || *dllName == '\0') {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return nullptr;
@@ -1609,12 +1847,12 @@ ModuleInfo *loadModule(const char *dllName) {
 	if (parsed.directory.empty() && (normalized.starts_with("api-") || normalized.starts_with("ext-")) &&
 		provider::configured()) {
 		if (findLoadedModule(normalized.c_str()))
-			return loadModuleInternal(normalized);
+			return loadModuleInternal(normalized, search, explicitReference);
 		auto host = providerApiSetHost(normalized);
 		if (!host)
 			return nullptr;
 		DEBUG_LOG("  resolved api set %s -> %s\n", normalized.c_str(), host->c_str());
-		auto *info = loadModuleInternal(*host);
+		auto *info = loadModuleInternal(*host, search, explicitReference);
 		if (info) {
 			auto reg = registry();
 			registerAlias(*reg, normalized, info);
@@ -1624,7 +1862,7 @@ ModuleInfo *loadModule(const char *dllName) {
 	}
 
 	// DWORD lastError = kernel32::getLastError();
-	if (auto *info = loadModuleInternal(std::string{requested})) {
+	if (auto *info = loadModuleInternal(std::string{requested}, search, explicitReference)) {
 		return info;
 	}
 	if (kernel32::getLastError() != ERROR_MOD_NOT_FOUND) {
@@ -1643,101 +1881,56 @@ ModuleInfo *loadModule(const char *dllName) {
 	return nullptr;
 }
 
+ModuleInfo *loadModule(const char *dllName, ModuleSearch search) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto *info = loadModuleWithReference(dllName, search, true);
+	if (!info) {
+		DWORD error = kernel32::getLastError();
+		collectUnusedModules();
+		kernel32::setLastError(error);
+	}
+	return info;
+}
+
+ModuleInfo *loadDependency(ModuleInfo &importer, const char *dllName, ModuleSearch search) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto *info = loadModuleWithReference(dllName, search, false);
+	if (info) {
+		auto reg = registry();
+		if (std::find(importer.dependencies.begin(), importer.dependencies.end(), info) == importer.dependencies.end())
+			importer.dependencies.push_back(info);
+	} else {
+		DWORD error = kernel32::getLastError();
+		collectUnusedModules();
+		kernel32::setLastError(error);
+	}
+	return info;
+}
+
 void freeModule(ModuleInfo *info) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
-	if (!info || info->refCount == UINT_MAX) {
+	if (!info || info->refCount == UINT_MAX || info->refCount == 0)
 		return;
-	}
-	ModulePtr owner;
-	{
-		auto reg = registry();
-		if (info->refCount == 0) {
-			return;
-		}
-		info->refCount--;
-		if (info->refCount != 0) {
-			return;
-		}
-		std::string key = info->resolvedPath.empty() ? storageKeyForBuiltin(info->normalizedName)
-													 : storageKeyForPath(info->resolvedPath);
-		auto moduleIt = reg->modulesByKey.find(key);
-		if (moduleIt != reg->modulesByKey.end() && moduleIt->second.get() == info) {
-			owner = moduleIt->second;
-			reg->modulesByKey.erase(moduleIt);
-		}
-		for (auto it = reg->modulesByAlias.begin(); it != reg->modulesByAlias.end();) {
-			if (it->second == info) {
-				it = reg->modulesByAlias.erase(it);
-			} else {
-				++it;
-			}
-		}
-		publishThreadNotificationSnapshot(*reg);
-	}
-	if (!owner) {
-		auto handleIt = g_modules.find(info->handle);
-		if (handleIt != g_modules.end() && handleIt->second.get() == info) {
-			owner = handleIt->second;
-		}
-	}
-	if (!owner) {
-		return;
-	}
-	// runPendingOnExit(*info);
-	if (info->tlsInfo.hasTls) {
-		runModuleTlsCallbacks(*info, TLS_PROCESS_DETACH);
-	}
-	callDllMain(*info, DLL_PROCESS_DETACH, nullptr);
-	releaseModuleTls(*info);
-	g_modules.erase(info->handle);
+	--info->refCount;
+	collectUnusedModules();
 }
 
-void *findExportByName(ModuleInfo *info, const char *funcName) {
-	if (!info || !funcName) {
-		return nullptr;
-	}
-	if (info->moduleStub && info->moduleStub->byName) {
-		void *func = info->moduleStub->byName(funcName);
-		if (func) {
-			return func;
-		}
-	}
-	ensureExportsInitialized(*info);
-	auto it = info->exportNameToOrdinal.find(funcName);
-	if (it != info->exportNameToOrdinal.end()) {
-		return findExportByOrdinal(info, it->second);
-	}
-	return nullptr;
+void *findExportByName(ModuleInfo *info, const char *funcName, ModuleSearch search, ModuleInfo *importer) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	ForwarderLookup lookup;
+	lookup.staticImport = importer != nullptr;
+	return findExportByNameInternal(info, funcName, search, importer, lookup);
 }
 
-void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal) {
-	if (!info) {
-		return nullptr;
-	}
-	if (info->moduleStub && info->moduleStub->nameByOrdinal) {
-		const char *name = info->moduleStub->nameByOrdinal(ordinal);
-		if (name && info->moduleStub->byName) {
-			void *func = info->moduleStub->byName(name);
-			if (func) {
-				return func;
-			}
-		}
-	}
-	ensureExportsInitialized(*info);
-	if (!info->exportsByOrdinal.empty() && ordinal >= info->exportOrdinalBase) {
-		auto index = static_cast<size_t>(ordinal - info->exportOrdinalBase);
-		if (index < info->exportsByOrdinal.size()) {
-			void *addr = info->exportsByOrdinal[index];
-			if (addr) {
-				return addr;
-			}
-		}
-	}
-	return nullptr;
+void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search, ModuleInfo *importer) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	ForwarderLookup lookup;
+	lookup.staticImport = importer != nullptr;
+	return findExportByOrdinalInternal(info, ordinal, search, importer, lookup);
 }
 
-void *resolveFuncByName(ModuleInfo *info, const char *funcName) {
-	void *func = findExportByName(info, funcName);
+void *resolveFuncByName(ModuleInfo *info, const char *funcName, ModuleSearch search, ModuleInfo *importer) {
+	void *func = findExportByName(info, funcName, search, importer);
 	if (func) {
 		return func;
 	}
@@ -1748,8 +1941,8 @@ void *resolveFuncByName(ModuleInfo *info, const char *funcName) {
 	return nullptr;
 }
 
-void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal) {
-	void *func = findExportByOrdinal(info, ordinal);
+void *resolveFuncByOrdinal(ModuleInfo *info, uint16_t ordinal, ModuleSearch search, ModuleInfo *importer) {
+	void *func = findExportByOrdinal(info, ordinal, search, importer);
 	if (func) {
 		return func;
 	}

@@ -1,0 +1,4 @@
+LIBRARY module_forward_failure
+EXPORTS
+ missing_module=zzz_module_lifetime_missing.missing_value
+ missing_export=restricted_loader_dependency.absent_value

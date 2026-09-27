@@ -603,13 +603,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
     if(WIBO_GUEST_64)
         find_program(WIBO_MINGW_CC x86_64-w64-mingw32-gcc)
         find_program(WIBO_MINGW_WINDRES x86_64-w64-mingw32-windres)
+        find_program(WIBO_MINGW_DLLTOOL x86_64-w64-mingw32-dlltool)
     else()
         find_program(WIBO_MINGW_CC i686-w64-mingw32-gcc)
         find_program(WIBO_MINGW_WINDRES i686-w64-mingw32-windres)
+        find_program(WIBO_MINGW_DLLTOOL i686-w64-mingw32-dlltool)
     endif()
 
     set(WIBO_HAVE_MINGW_TOOLCHAIN FALSE)
-    if(WIBO_MINGW_CC AND WIBO_MINGW_WINDRES)
+    if(WIBO_MINGW_CC AND WIBO_MINGW_WINDRES AND WIBO_MINGW_DLLTOOL)
         set(WIBO_HAVE_MINGW_TOOLCHAIN TRUE)
     endif()
 
@@ -622,12 +624,13 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         function(wibo_add_fixture_dll)
             set(options)
             set(oneValueArgs NAME)
-            set(multiValueArgs SOURCES COMPILE_OPTIONS DEPENDS)
+            set(multiValueArgs SOURCES COMPILE_OPTIONS DEPENDS BYPRODUCTS)
             cmake_parse_arguments(PARSE_ARGV 0 fixture "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
             set(fixture_OUTPUT ${WIBO_TEST_BIN_DIR}/${fixture_NAME}.dll)
             add_custom_command(
                 OUTPUT ${fixture_OUTPUT}
+                BYPRODUCTS ${fixture_BYPRODUCTS}
                 COMMAND ${WIBO_MINGW_CC} -Wall -Wextra -O2 -shared
                         -I${CMAKE_CURRENT_SOURCE_DIR}/test
                         -o ${fixture_OUTPUT}
@@ -1042,6 +1045,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_load_library_ex SOURCES test/test_load_library_ex.c)
         set_tests_properties(wibo.test_load_library_ex PROPERTIES TIMEOUT 15
             ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_system_library_load SOURCES test/test_system_library_load.c)
+        set_tests_properties(wibo.test_system_library_load PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_C_DRIVE=${WIBO_TEST_BIN_DIR}/system-drive;WIBO_SYSTEM_FIXTURE=1")
+        wibo_add_fixture_bin(NAME test_module_lifetime SOURCES test/test_module_lifetime.c)
+        set_tests_properties(wibo.test_module_lifetime PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
 
         # DLLs for fixture tests
         wibo_add_fixture_dll(NAME external_exports SOURCES test/external_exports.c)
@@ -1050,6 +1059,81 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_dll(NAME thread_release SOURCES test/thread_release.c)
         wibo_add_fixture_dll(NAME thread_notifications_stress SOURCES test/thread_notifications_stress.c)
         wibo_add_fixture_dll(NAME tls_reloc SOURCES test/tls_reloc_dll.c)
+        wibo_add_fixture_dll(NAME restricted_loader_dependency SOURCES test/system_loader_dependency.c test/fixture_relocation_anchor.c
+            BYPRODUCTS ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.a
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0
+                -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.a)
+        wibo_add_fixture_dll(NAME restricted_loader_parent SOURCES test/system_loader_parent.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.dll)
+        wibo_add_fixture_dll(NAME system_loader_forwarder SOURCES test/system_loader_forwarder.def test/fixture_relocation_anchor.c
+            BYPRODUCTS ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0
+                -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a)
+        wibo_add_fixture_dll(NAME restricted_loader_forward_parent SOURCES test/system_loader_parent.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_DEPENDENCY_NAME=forward_value
+                ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.dll)
+        wibo_add_fixture_dll(NAME system_loader_dependency SOURCES test/system_loader_dependency.c test/fixture_relocation_anchor.c
+            BYPRODUCTS ${WIBO_TEST_BIN_DIR}/system_loader_dependency.a
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_DEPENDENCY_VALUE=99
+                -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/system_loader_dependency.a)
+        foreach(_library module_lifetime_cycle_a module_lifetime_cycle_b module_lifetime_missing)
+            add_custom_command(
+                OUTPUT ${WIBO_TEST_BIN_DIR}/${_library}.a
+                COMMAND ${WIBO_MINGW_DLLTOOL}
+                    -d ${CMAKE_CURRENT_SOURCE_DIR}/test/${_library}.def
+                    -l ${WIBO_TEST_BIN_DIR}/${_library}.a
+                DEPENDS test/${_library}.def)
+            list(APPEND WIBO_TEST_FIXTURES ${WIBO_TEST_BIN_DIR}/${_library}.a)
+        endforeach()
+        wibo_add_fixture_dll(NAME module_lifetime_cycle_a SOURCES test/module_lifetime_cycle_a.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,DllMain ${WIBO_TEST_BIN_DIR}/module_lifetime_cycle_b.a -lkernel32
+            DEPENDS ${WIBO_TEST_BIN_DIR}/module_lifetime_cycle_b.a)
+        wibo_add_fixture_dll(NAME module_lifetime_cycle_b SOURCES test/module_lifetime_cycle_b.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,DllMain ${WIBO_TEST_BIN_DIR}/module_lifetime_cycle_a.a -lkernel32
+            DEPENDS ${WIBO_TEST_BIN_DIR}/module_lifetime_cycle_a.a)
+        wibo_add_fixture_dll(NAME module_lifetime_failure SOURCES test/module_lifetime_failure.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.a
+                ${WIBO_TEST_BIN_DIR}/module_lifetime_missing.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.a ${WIBO_TEST_BIN_DIR}/module_lifetime_missing.a)
+        wibo_add_fixture_dll(NAME system_loader_failure SOURCES test/module_lifetime_failure.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0 ${WIBO_TEST_BIN_DIR}/system_loader_dependency.a
+                ${WIBO_TEST_BIN_DIR}/module_lifetime_missing.a
+            DEPENDS ${WIBO_TEST_BIN_DIR}/system_loader_dependency.a ${WIBO_TEST_BIN_DIR}/module_lifetime_missing.a)
+        foreach(_library module_forward_cycle_a module_forward_cycle_b)
+            wibo_add_fixture_dll(NAME ${_library} SOURCES test/${_library}.def test/fixture_relocation_anchor.c
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,0)
+        endforeach()
+        wibo_add_fixture_dll(NAME module_forward_failure SOURCES test/module_forward_failure.def test/fixture_relocation_anchor.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,0)
+        wibo_add_fixture_dll(NAME module_detach_reference SOURCES test/module_detach_reference.c
+            COMPILE_OPTIONS -nostdlib -Wl,--entry,DllMain -lkernel32)
+        add_custom_command(
+            OUTPUT ${WIBO_TEST_BIN_DIR}/failed-module/version.dll
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${WIBO_TEST_BIN_DIR}/failed-module
+            COMMAND ${WIBO_MINGW_CC} -Wall -Wextra -O2 -shared
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/dll_attach_failure.c
+                -o ${WIBO_TEST_BIN_DIR}/failed-module/version.dll
+            DEPENDS test/dll_attach_failure.c)
+        list(APPEND WIBO_TEST_FIXTURES ${WIBO_TEST_BIN_DIR}/failed-module/version.dll)
+        set(_system_fixture_dir ${WIBO_TEST_BIN_DIR}/system-drive/Windows/System32)
+        add_custom_command(
+            OUTPUT ${_system_fixture_dir}/system_loader_dependency.dll ${_system_fixture_dir}/system_loader_parent.dll
+            BYPRODUCTS ${_system_fixture_dir}/system_loader_dependency.a
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_system_fixture_dir}
+            COMMAND ${WIBO_MINGW_CC} -Wall -Wextra -O2 -shared -nostdlib -Wl,--entry,0
+                -o ${_system_fixture_dir}/system_loader_dependency.dll
+                -Wl,--out-implib,${_system_fixture_dir}/system_loader_dependency.a
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/system_loader_dependency.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/fixture_relocation_anchor.c
+            COMMAND ${WIBO_MINGW_CC} -Wall -Wextra -O2 -shared -nostdlib -Wl,--entry,0
+                -o ${_system_fixture_dir}/system_loader_parent.dll
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/system_loader_parent.c
+                ${_system_fixture_dir}/system_loader_dependency.a
+            DEPENDS test/system_loader_dependency.c test/system_loader_parent.c test/fixture_relocation_anchor.c)
+        list(APPEND WIBO_TEST_FIXTURES
+            ${_system_fixture_dir}/system_loader_dependency.dll ${_system_fixture_dir}/system_loader_parent.dll)
 
         # Resources for test_resources
         add_custom_command(

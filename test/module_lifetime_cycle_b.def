@@ -1,0 +1,4 @@
+LIBRARY module_lifetime_cycle_b
+EXPORTS
+ cycle_value_b
+ cycle_back_reference

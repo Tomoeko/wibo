@@ -1,0 +1,3 @@
+LIBRARY system_loader_forwarder
+EXPORTS
+ forward_value=restricted_loader_dependency.dependency_value

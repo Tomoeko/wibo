@@ -703,7 +703,9 @@ bool wibo::Executable::loadPE(std::span<const uint8_t> image, bool exec) {
 	return loadPEFromSource(*this, PeInputView(image), exec);
 }
 
-bool wibo::Executable::resolveImports() {
+bool wibo::Executable::resolveImports(ModuleSearch search, ModuleInfo *importer) {
+	if (!importer && mainModule && mainModule->executable.get() == this)
+		importer = mainModule;
 	auto finalizeSections = [this]() -> bool {
 		if (!execMapped || sectionsProtected) {
 			return true;
@@ -768,8 +770,8 @@ bool wibo::Executable::resolveImports() {
 		GUEST_PTR *lookupTable = fromRVA<GUEST_PTR>(iltRVA);
 		GUEST_PTR *addressTable = fromRVA<GUEST_PTR>(dir->importAddressTable);
 
-		ModuleInfo *module = loadModule(dllName);
-		if (!module && kernel32::getLastError() != ERROR_MOD_NOT_FOUND) {
+		ModuleInfo *module = importer ? loadDependency(*importer, dllName, search) : loadModule(dllName, search);
+		if (!module && (search == ModuleSearch::SystemDirectory || kernel32::getLastError() != ERROR_MOD_NOT_FOUND)) {
 			DEBUG_LOG("Failed to load import module %s\n", dllName);
 			// lastError is set by loadModule
 			importsResolved = false;
@@ -784,15 +786,15 @@ bool wibo::Executable::resolveImports() {
 				// Import by ordinal
 				uint16_t ordinal = lookup & 0xFFFF;
 				DEBUG_LOG("  Ordinal: %d\n", ordinal);
-				void *func =
-					module ? resolveFuncByOrdinal(module, ordinal) : resolveMissingImportByOrdinal(dllName, ordinal);
+				void *func = module ? resolveFuncByOrdinal(module, ordinal, search, importer)
+									: resolveMissingImportByOrdinal(dllName, ordinal);
 				DEBUG_LOG("    -> %p\n", func);
 				*addressTable = reinterpret_cast<uintptr_t>(func);
 			} else {
 				// Import by name
 				PEHintNameTableEntry *hintName = fromRVA<PEHintNameTableEntry>(static_cast<uint32_t>(lookup));
 				DEBUG_LOG("  Name: %s (IAT=%p)\n", hintName->name, addressTable);
-				void *func = module ? resolveFuncByName(module, hintName->name)
+				void *func = module ? resolveFuncByName(module, hintName->name, search, importer)
 									: resolveMissingImportByName(dllName, hintName->name);
 				DEBUG_LOG("    -> %p\n", func);
 				*addressTable = reinterpret_cast<uintptr_t>(func);
