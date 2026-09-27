@@ -12,7 +12,12 @@ with tempfile.TemporaryDirectory(prefix='wibo-provider-') as directory:
     marker = pathlib.Path(directory) / 'marker'
     env = dict(os.environ, WIBO_SYSTEM_PROVIDER=helper, WIBO_SYSTEM_PROVIDER_PERSISTENT='1',
                WIBO_FIXTURE_STREAM_MARKER=str(marker), WIBO_FIXTURE_STREAM_MODE=mode)
-    subprocess.run([runner, image], env=env, check=True, timeout=25)
+    env.pop('WIBO_SYSTEM_PROVIDER_MAX_TIMEOUT_MS', None)
+    timeout = 25
+    if mode == 'timeout':
+        env['WIBO_SYSTEM_PROVIDER_MAX_TIMEOUT_MS'] = '1000'
+        timeout = 5
+    subprocess.run([runner, image], env=env, check=True, timeout=timeout)
     assert marker.exists()
     pid = int(marker.read_text())
     for attempt in range(100):

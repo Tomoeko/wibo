@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -27,6 +28,20 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr size_t kMaxRequest = 64 * 1024;
 constexpr size_t kMaxArguments = 32;
+
+int configuredTimeoutLimit(int requested) {
+	const char *value = std::getenv("WIBO_SYSTEM_PROVIDER_MAX_TIMEOUT_MS");
+	if (!value || !*value)
+		return requested;
+	const char *end = value + std::strlen(value);
+	int maximum = 0;
+	const auto parsed = std::from_chars(value, end, maximum);
+	if (parsed.ec != std::errc{} || parsed.ptr != end || maximum <= 0) {
+		DEBUG_LOG("Invalid system provider timeout limit; using the requested timeout\n");
+		return requested;
+	}
+	return std::min(requested, maximum);
+}
 
 void appendNumber(std::vector<uint8_t> &bytes, uint32_t value) {
 	for (unsigned shift = 0; shift < 32; shift += 8)
@@ -238,6 +253,7 @@ bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &re
 	if (!path || !*path || timeoutMs <= 0) {
 		return false;
 	}
+	timeoutMs = configuredTimeoutLimit(timeoutMs);
 	const char *persistent = std::getenv("WIBO_SYSTEM_PROVIDER_PERSISTENT");
 	if (persistent && std::strcmp(persistent, "1") == 0) {
 		static PersistentProvider client;

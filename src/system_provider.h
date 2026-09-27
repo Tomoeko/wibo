@@ -20,6 +20,8 @@ constexpr int32_t kUnavailable = static_cast<int32_t>(0x80041001);
 bool configured();
 std::string encodeBytes(std::string_view input);
 bool encodeUtf8(std::u16string_view input, std::string &output);
+// A positive WIBO_SYSTEM_PROVIDER_MAX_TIMEOUT_MS caps the caller's lock/IO timeout;
+// missing, empty, or invalid settings retain the requested finite timeout.
 bool request(const std::vector<std::string> &arguments, std::vector<uint8_t> &response, int timeoutMs = 10000,
 			 bool *timedOut = nullptr);
 
