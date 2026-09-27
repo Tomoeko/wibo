@@ -77,6 +77,37 @@ elif operation == 'is-char-alpha-w-table':
     elif fault == 'wrong-size':
         response = header() + blob(table[:-1])
 
+elif operation == 'char-upper-buff-w':
+    count, encoded, incoming_error = arguments
+    count, incoming_error = int(count), int(incoming_error)
+    data = bytes.fromhex(encoded)
+    assert 0 < count <= 16000 and len(data) == count * 2
+    units = list(struct.unpack('<' + 'H' * count, data))
+    mappings = {0x00e9: 0x00c9, 0x00ff: 0x0178, 0x03c3: 0x03a3, 0x03ac: 0x0386,
+                0x0436: 0x0416, 0x0561: 0x0531, 0xff41: 0xff21}
+    pair_mappings = {(0xd801, 0xdc28): (0xd801, 0xdc00),
+                     (0xd83a, 0xdd22): (0xd83a, 0xdd00),
+                     (0xd801, 0xdd97): (0xd801, 0xdd70)}
+    index = 0
+    while index < count:
+        pair = tuple(units[index:index + 2])
+        if pair in pair_mappings:
+            units[index:index + 2] = pair_mappings[pair]
+            index += 2
+            continue
+        code = units[index]
+        units[index] = code - 0x20 if ord('a') <= code <= ord('z') else mappings.get(code, code)
+        index += 1
+    output = struct.pack('<' + 'H' * count, *units)
+    response = header() + number(count) + number(incoming_error) + blob(output)
+    fault = os.environ.get('WIBO_FIXTURE_UPPER_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'wrong-count':
+        response = header() + number(count + 1) + number(incoming_error) + blob(output)
+    elif fault == 'wrong-size':
+        response = header() + number(count) + number(incoming_error) + blob(output[:-2])
+
 elif operation == 'numa-highest-node-number':
     response = header() + number(3)
     fault = os.environ.get('WIBO_FIXTURE_NUMA_RESPONSE')
@@ -160,6 +191,20 @@ elif operation == 'cp-info-ex-w':
         response = header() + number(2) + blob(value)
     elif fault == 'success-error':
         response = header(87) + number(1) + blob(value)
+    lead_mode = os.environ.get('WIBO_FIXTURE_LEAD_RESPONSE')
+    if code_page == 60000 and flags == 0 and lead_mode:
+        value = bytearray(544)
+        struct.pack_into('<I', value, 0, 2)
+        value[4] = ord('?')
+        value[6:8] = bytes([0x81, 0x9f])
+        struct.pack_into('<HI', value, 18, 0xfffd, 60000)
+        name = 'FixtureCodePage\0'.encode('utf-16-le')
+        value[24:24 + len(name)] = name
+        if lead_mode == 'unterminated':
+            value[6:18] = bytes([0x81, 0x9f]) * 6
+        elif lead_mode == 'reversed':
+            value[6:8] = bytes([0x9f, 0x81])
+        response = header(87) + number(0) if lead_mode == 'failed' else header() + number(1) + blob(value)
 
 elif operation in ('time-zone-information', 'dynamic-time-zone-information'):
     transition = lambda month, week, hour: struct.pack('<8H', 0, month, 0, week, hour, 0, 0, 0)

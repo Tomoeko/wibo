@@ -19,6 +19,12 @@ __attribute__((annotate("CC:stdcall"), annotate("GUEST_ENTRY:fixtureDirectEntry"
 unsigned long long Probe(Record *value);
 }
 """
+STACK_VARARGS_PROTOTYPE = """
+namespace fixture {
+__attribute__((annotate("CC:cdecl"), annotate("GUEST_STACK_VARARGS")))
+int Probe(void *buffer, const unsigned short *format, const void *arguments);
+}
+"""
 
 
 class CodegenDiagnosticsTests(unittest.TestCase):
@@ -167,6 +173,91 @@ class CodegenDiagnosticsTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(diagnostic, result.stderr)
                     self.assertIn("Cannot generate trampolines", result.stderr)
+                    self.assertEqual(
+                        [(output.read_bytes(), output.stat().st_mtime_ns) for output in outputs], previous
+                    )
+
+    def test_guest_stack_cursor_uses_named_arguments_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = self.generate(directory, STACK_VARARGS_PROTOTYPE, ["--guest-arch", "x86"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            assembly = (directory / "fixture.S").read_text()
+            self.assertIn("lea rdx, [r10+28]", assembly)
+            self.assertIn("call", assembly)
+            self.assertIn("src=guest-stack-cursor", assembly)
+            self.assertNotIn("ret 12", assembly)
+            self.assertNotIn("[r10+28]", assembly.replace("lea rdx, [r10+28]", ""))
+            mapping = (directory / "fixture_trampolines.h").read_text()
+            self.assertIn("thunk_fixture_Probe(void * arg0, const unsigned short * arg1, ...)", mapping)
+            self.assertNotIn("arg2", mapping)
+
+            result = self.generate(
+                directory, STACK_VARARGS_PROTOTYPE, ["--arch", "x86", "--guest-arch", "x86"]
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            assembly = (directory / "fixture.S").read_text()
+            self.assertIn("lea ecx, [eax+12]", assembly)
+            self.assertIn("mov [esp+8], ecx", assembly)
+            self.assertNotIn("ret 12", assembly)
+
+            source = STACK_VARARGS_PROTOTYPE.replace(
+                'annotate("CC:cdecl")', 'fastcall, annotate("CC:cdecl")'
+            )
+            result = self.generate(directory, source, ["--arch", "x86", "--guest-arch", "x86"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            assembly = (directory / "fixture.S").read_text()
+            self.assertIn("lea ecx, [eax+12]", assembly)
+            self.assertIn("mov [esp+0], ecx", assembly)
+            self.assertIn("mov ecx, [eax+4]", assembly)
+            self.assertIn("mov edx, [eax+8]", assembly)
+            self.assertNotIn("ret 12", assembly)
+
+    def test_guest_stack_cursor_errors_preserve_previous_outputs(self):
+        cases = [
+            (
+                'typedef int (*Callback)(const void *) '
+                '__attribute__((annotate("CC:cdecl"), annotate("GUEST_STACK_VARARGS")));',
+                ["--guest-arch", "x86"], "callback typedefs",
+            ),
+            (STACK_VARARGS_PROTOTYPE, [], "requires a 32-bit guest"),
+            (
+                STACK_VARARGS_PROTOTYPE.replace("CC:cdecl", "CC:stdcall"),
+                ["--guest-arch", "x86"], "fixed cdecl",
+            ),
+            (
+                STACK_VARARGS_PROTOTYPE.replace("const void *arguments", "int arguments"),
+                ["--guest-arch", "x86"], "final pointer",
+            ),
+            (
+                STACK_VARARGS_PROTOTYPE.replace("const void *arguments", "const void *arguments, ..."),
+                ["--guest-arch", "x86"], "fixed cdecl",
+            ),
+            (
+                STACK_VARARGS_PROTOTYPE.replace(
+                    'annotate("GUEST_STACK_VARARGS")', 'annotate("GUEST_STACK_VARARGS:bad")'
+                ),
+                ["--guest-arch", "x86"], "malformed GUEST_STACK_VARARGS",
+            ),
+            (
+                STACK_VARARGS_PROTOTYPE.replace(
+                    'annotate("GUEST_STACK_VARARGS")',
+                    'annotate("GUEST_STACK_VARARGS"), annotate("GUEST_STACK_VARARGS")',
+                ),
+                ["--guest-arch", "x86"], "duplicate GUEST_STACK_VARARGS",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result = self.generate(directory, PROTOTYPE)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = [directory / "fixture.S", directory / "fixture_trampolines.h"]
+            previous = [(output.read_bytes(), output.stat().st_mtime_ns) for output in outputs]
+            for source, arguments, diagnostic in cases:
+                with self.subTest(diagnostic=diagnostic):
+                    result = self.generate(directory, source, arguments)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(diagnostic, result.stderr)
                     self.assertEqual(
                         [(output.read_bytes(), output.stat().st_mtime_ns) for output in outputs], previous
                     )

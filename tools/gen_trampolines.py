@@ -139,6 +139,7 @@ class FuncInfo:
     return_type: ArgInfo
     args: List[ArgInfo] = field(default_factory=list)
     guest_entry: Optional[str] = None
+    guest_stack_varargs: bool = False
 
 
 @dataclass
@@ -244,6 +245,26 @@ def _guest_entry_from_annotations(func: Cursor) -> Optional[str]:
     if not match or match.group(1) in _CPP_KEYWORDS:
         raise ValueError(f"{func.spelling}: malformed GUEST_ENTRY annotation {annotations[0]!r}")
     return match.group(1)
+
+
+def _guest_stack_varargs_from_annotations(func: Cursor) -> bool:
+    annotations = [
+        child.spelling for child in func.get_children()
+        if child.kind == CursorKind.ANNOTATE_ATTR
+        and child.spelling.strip().startswith("GUEST_STACK_VARARGS")
+    ]
+    if not annotations:
+        return False
+    if len(annotations) != 1:
+        raise ValueError(f"{func.spelling}: duplicate GUEST_STACK_VARARGS annotations")
+    if annotations[0] != "GUEST_STACK_VARARGS":
+        raise ValueError(f"{func.spelling}: malformed GUEST_STACK_VARARGS annotation {annotations[0]!r}")
+    return True
+
+
+def _source_args(f: FuncInfo | TypedefInfo) -> List[ArgInfo]:
+    # A stack cursor is supplied by the trampoline, not read as a guest argument.
+    return f.args[:-1] if isinstance(f, FuncInfo) and f.guest_stack_varargs else f.args
 
 
 def _is_handle_typedef(arg_type: CXType) -> bool:
@@ -431,11 +452,18 @@ def collect_functions(
             if not name:
                 return
             guest_entry = _guest_entry_from_annotations(node)
+            guest_stack_varargs = _guest_stack_varargs_from_annotations(node)
             source_cc = _source_cc_from_annotations(node)
             if source_cc == CallingConv.DEFAULT:
-                if guest_entry:
-                    raise ValueError(f"{name}: GUEST_ENTRY requires a CC annotation")
+                if guest_entry or guest_stack_varargs:
+                    raise ValueError(f"{name}: guest entry annotations require a CC annotation")
                 return  # No CC annotation; skip
+            args = _collect_args(node.type)
+            if guest_stack_varargs:
+                if guest_entry or node.type.is_function_variadic() or source_cc != CallingConv.C:
+                    raise ValueError(f"{name}: GUEST_STACK_VARARGS requires a fixed cdecl declaration")
+                if not args or args[-1].type.get_canonical().kind != TypeKind.POINTER:
+                    raise ValueError(f"{name}: GUEST_STACK_VARARGS requires a final pointer parameter")
             out[name] = FuncInfo(
                 qualified_ns="::".join(ns_parts),
                 name=name,
@@ -444,8 +472,9 @@ def collect_functions(
                 target_cc=_get_function_calling_conv(node.type),
                 variadic=node.type.is_function_variadic(),
                 return_type=_calculate_arg_info(node.type.get_result()),
-                args=_collect_args(node.type),
+                args=args,
                 guest_entry=guest_entry,
+                guest_stack_varargs=guest_stack_varargs,
             )
 
         # Recurse into children
@@ -478,6 +507,9 @@ def collect_typedefs(tu: TranslationUnit, arch: Arch) -> List[TypedefInfo]:
         """Process a function pointer type and add it to the output."""
         if not name:
             return
+
+        if _guest_stack_varargs_from_annotations(node):
+            raise ValueError(f"{name}: GUEST_STACK_VARARGS is not supported on callback typedefs")
 
         # Determine calling convention
         source_cc = _get_function_calling_conv(func_type)
@@ -565,7 +597,7 @@ def emit_cc_thunk32(f: FuncInfo | TypedefInfo, lines: List[str]):
         return
 
     source_layout = compute_arg_layout(
-        f.args,
+        _source_args(f),
         f.source_cc,
         Arch.X86,
         stack_offset=4,
@@ -612,6 +644,11 @@ def emit_cc_thunk32(f: FuncInfo | TypedefInfo, lines: List[str]):
         if target.stack_offset is None:
             continue
 
+        if isinstance(f, FuncInfo) and f.guest_stack_varargs and idx == len(f.args) - 1:
+            lines.append(f"\tlea ecx, [eax+{4 + source_layout.stack_size}]")
+            lines.append(f"\tmov [esp+{target.stack_offset}], ecx")
+            continue
+
         source = source_layout.args[idx]
         if source.stack_offset is None:
             raise NotImplementedError(
@@ -630,6 +667,10 @@ def emit_cc_thunk32(f: FuncInfo | TypedefInfo, lines: List[str]):
     # Load args into registers as needed
     for idx, target in enumerate(target_layout.args):
         if target.register is None:
+            continue
+
+        if isinstance(f, FuncInfo) and f.guest_stack_varargs and idx == len(f.args) - 1:
+            lines.append(f"\tlea {target.register}, [eax+{4 + source_layout.stack_size}]")
             continue
 
         source = source_layout.args[idx]
@@ -747,7 +788,7 @@ def emit_cc_thunk64(f: FuncInfo | TypedefInfo, lines: List[str]):
         return
 
     source_layout = compute_arg_layout(
-        f.args,
+        _source_args(f),
         f.source_cc,
         Arch.X86_64 if host_to_guest else Arch.X86,
         stack_offset=24 if host_to_guest else 20,
@@ -887,6 +928,13 @@ def emit_cc_thunk64(f: FuncInfo | TypedefInfo, lines: List[str]):
         # Transfer args
         for i, target in enumerate(target_layout.args):
             arg = f.args[i]
+            if f.guest_stack_varargs and i == len(f.args) - 1:
+                if target.register is not None:
+                    lines.append(f"\tlea {target.register}, [r10+{20 + source_layout.stack_size}]")
+                else:
+                    lines.append(f"\tlea rax, [r10+{20 + source_layout.stack_size}]")
+                    lines.append(f"\tmov qword ptr [rsp+{target.stack_offset}], rax")
+                continue
             source = source_layout.args[i]
 
             if target.stack_offset is not None:
@@ -994,11 +1042,14 @@ def emit_guest_to_host_thunks(
         lines.append(
             f"# {f.qualified_ns}::{f.name} (source_cc={f.source_cc.name}, target_cc={f.target_cc.name}, variadic={f.variadic})"
         )
-        source_layout = compute_arg_layout(f.args, f.source_cc, Arch.X86)
+        source_layout = compute_arg_layout(_source_args(f), f.source_cc, Arch.X86)
         target_layout = compute_arg_layout(f.args, f.target_cc, arch)
         for i, arg in enumerate(f.args):
             details: List[str] = []
-            details.append(f"src={describe_arg_placement(source_layout.args[i])}")
+            if f.guest_stack_varargs and i == len(f.args) - 1:
+                details.append("src=guest-stack-cursor")
+            else:
+                details.append(f"src={describe_arg_placement(source_layout.args[i])}")
             details.append(f"dst={describe_arg_placement(target_layout.args[i])}")
             details.append(f"class={arg.arg_class.value}")
             details.append(f"sign_extended={arg.sign_extended}")
@@ -1166,9 +1217,11 @@ def emit_header_mapping(
 
         thunk = f"thunk_{dll}_{f.name}"
         args = []
-        for i, arg in enumerate(f.args):
+        for i, arg in enumerate(_source_args(f)):
             type_str = _canonical_type_str(arg.type)
             args.append(f"{type_str} arg{i}")
+        if f.guest_stack_varargs:
+            args.append("...")
         param_list = ", ".join(args)
         return_type = _canonical_type_str(f.return_type.type)
         if arch == Arch.X86_64:
@@ -1274,10 +1327,12 @@ def main() -> int:
         return 1
     try:
         funcs = collect_functions(tu, args.ns, arch)
+        if guest_arch != Arch.X86 and any(f.guest_stack_varargs for f in funcs):
+            raise ValueError("GUEST_STACK_VARARGS requires a 32-bit guest")
+        typedefs = collect_typedefs(tu, arch)
     except ValueError as error:
         sys.stderr.write(f"Cannot generate trampolines: {error}\n")
         return 1
-    typedefs = collect_typedefs(tu, arch)
     variables = collect_variables(tu, args.ns)
 
     if not funcs and not typedefs and not variables:

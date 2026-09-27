@@ -10,11 +10,14 @@
 #include "system_provider.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -36,6 +39,43 @@ constexpr DWORD kFindFilters = kNormIgnoreCase | 0x08000000;
 constexpr DWORD kMuiLanguageId = 0x4;
 constexpr DWORD kMuiLanguageName = 0x8;
 constexpr size_t kMaxUiLanguageUnits = (wibo::provider::kMaxResponse - 32) / sizeof(WCHAR);
+std::mutex g_leadByteMutex;
+std::unordered_map<UINT, std::array<BYTE, MAX_LEADBYTES>> g_leadByteRanges;
+
+bool loadLeadByteRanges(UINT codePage, std::array<BYTE, MAX_LEADBYTES> &ranges) {
+	{
+		std::lock_guard lock(g_leadByteMutex);
+		if (const auto found = g_leadByteRanges.find(codePage); found != g_leadByteRanges.end()) {
+			ranges = found->second;
+			return true;
+		}
+	}
+	CPINFOEXW information{};
+	if (!kernel32::GetCPInfoExW(codePage, 0, &information))
+		return false;
+	bool ended = false;
+	for (size_t index = 0; index < ranges.size(); index += 2) {
+		const BYTE first = information.LeadByte[index];
+		const BYTE last = information.LeadByte[index + 1];
+		if ((!first && last) || (first && (ended || first > last))) {
+			kernel32::setLastError(ERROR_INVALID_DATA);
+			return false;
+		}
+		ended |= first == 0;
+		ranges[index] = first;
+		ranges[index + 1] = last;
+	}
+	if (!ended) {
+		kernel32::setLastError(ERROR_INVALID_DATA);
+		return false;
+	}
+	{
+		std::lock_guard lock(g_leadByteMutex);
+		if (g_leadByteRanges.size() < 64)
+			g_leadByteRanges.emplace(codePage, ranges);
+	}
+	return true;
+}
 
 bool validUiLanguageCount(uint32_t count, uint32_t units, DWORD flags) {
 	if (units < 2 || units > kMaxUiLanguageUnits || count > (units - 1) / 2 || (!count && units != 2))
@@ -899,22 +939,37 @@ BOOL WINAPI IsDBCSLeadByteEx(UINT CodePage, BYTE TestChar) {
 		return FALSE;
 	};
 
-	setLastError(ERROR_SUCCESS);
-	switch (CodePage) {
+	const DWORD incomingError = getLastError();
+	const UINT resolvedCodePage = CodePage == 0 ? GetACP() : CodePage;
+	BOOL result;
+	switch (resolvedCodePage) {
 	case 932: // Shift-JIS
-		return inRanges({{0x81, 0x9F}, {0xE0, 0xFC}});
-	case 936:  // GBK
-	case 949:  // Korean
-	case 950:  // Big5
+		result = inRanges({{0x81, 0x9F}, {0xE0, 0xFC}});
+		break;
+	case 936: // GBK
+	case 949: // Korean
+	case 950: // Big5
+		result = inRanges({{0x81, 0xFE}});
+		break;
 	case 1361: // Johab
-		return inRanges({{0x81, 0xFE}});
-	case 0: // CP_ACP
-	case 1: // CP_OEMCP
-	case 2: // CP_MACCP
-	case 3: // CP_THREAD_ACP
+		result = inRanges({{0x84, 0xD3}, {0xD8, 0xDE}, {0xE0, 0xF9}});
+		break;
+	case 1252:
+	case 28591:
+	case 65001:
+		result = FALSE;
+		break;
 	default:
-		return FALSE;
+		std::array<BYTE, MAX_LEADBYTES> ranges{};
+		if (!loadLeadByteRanges(resolvedCodePage, ranges))
+			return FALSE;
+		result = FALSE;
+		for (size_t index = 0; index < ranges.size() && ranges[index]; index += 2)
+			result |= TestChar >= ranges[index] && TestChar <= ranges[index + 1];
+		break;
 	}
+	setLastError(incomingError);
+	return result;
 }
 
 int WINAPI LCMapStringW(LCID Locale, DWORD dwMapFlags, LPCWCH lpSrcStr, int cchSrc, LPWSTR lpDestStr, int cchDest) {

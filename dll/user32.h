@@ -30,6 +30,14 @@ BOOL WINAPI UnregisterClassW(LPCWSTR name, HINSTANCE instance);
 
 void WINAPI DisableProcessWindowsGhosting();
 BOOL WINAPI IsCharAlphaW(WCHAR character);
+LPSTR WINAPI CharNextExA(WORD codePage, LPCSTR current, DWORD flags);
+DWORD WINAPI CharUpperBuffW(LPWSTR buffer, DWORD length);
+#ifdef WIBO_GUEST_64
+int CDECL_NO_CONV wsprintfW(LPWSTR buffer, LPCWSTR format, ...);
+#else
+// The trampoline supplies the cursor immediately after the named guest arguments.
+int CDECL wsprintfW(LPWSTR buffer, LPCWSTR format, const void *arguments) WIBO_ANNOTATE("GUEST_STACK_VARARGS");
+#endif
 int WINAPI GetSystemMetrics(int index);
 int WINAPI LoadStringA(HMODULE hInstance, UINT uID, LPSTR lpBuffer, int cchBufferMax);
 int WINAPI LoadStringW(HMODULE hInstance, UINT uID, LPWSTR lpBuffer, int cchBufferMax);

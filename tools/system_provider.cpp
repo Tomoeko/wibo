@@ -558,6 +558,29 @@ bool validCountedString(const std::vector<WCHAR> &value, int count) {
 	return true;
 }
 
+bool upperCharacterBuffer(WCHAR **parameters) {
+	const auto fail = [](DWORD status) {
+		Response response;
+		response.header(status);
+		return response.write();
+	};
+	uint32_t count = 0, incomingError = 0;
+	std::vector<WCHAR> buffer;
+	if (!parseUnsignedDecimal(parameters[0], 16000, count) || !count ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, incomingError) ||
+		!decodeMappingString(parameters[1], buffer) || buffer.size() != count)
+		return fail(ERROR_INVALID_PARAMETER);
+	SetLastError(incomingError);
+	const DWORD result = CharUpperBuffW(buffer.data(), count);
+	const DWORD nativeError = GetLastError();
+	Response response;
+	response.header(ERROR_SUCCESS);
+	response.number(result);
+	response.number(nativeError);
+	response.bytes(buffer.data(), buffer.size() * sizeof(WCHAR));
+	return response.write();
+}
+
 bool lcMapStringEx(WCHAR **parameters) {
 	const auto fail = [](DWORD status) {
 		Response response;
@@ -1021,6 +1044,39 @@ bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText,
 	return write(status, result, countPresent, count, units, languages);
 }
 
+class VersionLibrary {
+	HMODULE module = nullptr;
+	DWORD loadError = ERROR_SUCCESS;
+
+  public:
+	VersionLibrary() : module(LoadLibraryW(L"version.dll")) {
+		if (!module)
+			loadError = GetLastError();
+	}
+	~VersionLibrary() {
+		if (module)
+			FreeLibrary(module);
+	}
+	VersionLibrary(const VersionLibrary &) = delete;
+	VersionLibrary &operator=(const VersionLibrary &) = delete;
+
+	template <typename Function> Function resolve(const char *name) {
+		if (!module)
+			return nullptr;
+		const auto address = GetProcAddress(module, name);
+		if (!address) {
+			loadError = GetLastError();
+			return nullptr;
+		}
+		static_assert(sizeof(Function) == sizeof(address));
+		Function function;
+		std::memcpy(&function, &address, sizeof(function));
+		return function;
+	}
+
+	[[nodiscard]] DWORD error() const { return loadError; }
+};
+
 bool fileVersionInfoSizeExW(const WCHAR *flagsText, const WCHAR *filenameText, const WCHAR *handleText,
 							const WCHAR *lastErrorText) {
 	const auto fail = [](DWORD status) {
@@ -1042,11 +1098,15 @@ bool fileVersionInfoSizeExW(const WCHAR *flagsText, const WCHAR *filenameText, c
 				return fail(ERROR_INVALID_PARAMETER);
 		filename.push_back(0);
 	}
+	using QueryVersionSize = DWORD(WINAPI *)(DWORD, LPCWSTR, LPDWORD);
+	VersionLibrary library;
+	const auto query = library.resolve<QueryVersionSize>("GetFileVersionInfoSizeExW");
+	if (!query)
+		return fail(library.error());
 	constexpr DWORD kUnwrittenHandle = UINT32_MAX;
 	DWORD handle = kUnwrittenHandle;
 	SetLastError(incomingError);
-	const DWORD size =
-		GetFileVersionInfoSizeExW(flags, hasFilename ? filename.data() : nullptr, hasHandle ? &handle : nullptr);
+	const DWORD size = query(flags, hasFilename ? filename.data() : nullptr, hasHandle ? &handle : nullptr);
 	const DWORD nativeError = GetLastError();
 	const bool handlePresent = hasHandle && handle != kUnwrittenHandle;
 	Response response;
@@ -1103,9 +1163,14 @@ bool fileVersionInfoExW(WCHAR **parameters) {
 		buffer.assign(initial.begin(), initial.end());
 		buffer.resize(capacity + kGuardBytes, kGuardValue);
 	}
+	using QueryVersionInfo = BOOL(WINAPI *)(DWORD, LPCWSTR, DWORD, DWORD, LPVOID);
+	VersionLibrary library;
+	const auto query = library.resolve<QueryVersionInfo>("GetFileVersionInfoExW");
+	if (!query)
+		return fail(library.error());
 	SetLastError(incomingError);
-	const BOOL result = GetFileVersionInfoExW(flags, hasFilename ? filename.data() : nullptr, handle, capacity,
-											  hasData ? buffer.data() : nullptr);
+	const BOOL result =
+		query(flags, hasFilename ? filename.data() : nullptr, handle, capacity, hasData ? buffer.data() : nullptr);
 	const DWORD nativeError = GetLastError();
 	if ((result && !hasData) || (hasData && !std::all_of(buffer.begin() + capacity, buffer.end(),
 														 [](BYTE value) { return value == kGuardValue; })))
@@ -1677,6 +1742,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = lcMapStringEx(argv + 2);
 	else if (argc == 2 && wcscmp(argv[1], L"is-char-alpha-w-table") == 0)
 		written = alphabeticCharacterTable();
+	else if (argc == 5 && wcscmp(argv[1], L"char-upper-buff-w") == 0)
+		written = upperCharacterBuffer(argv + 2);
 	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)
 		written = compareStringEx(argv + 2);
 	else if (argc == 10 && wcscmp(argv[1], L"find-nls-string-ex") == 0)
