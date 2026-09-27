@@ -393,7 +393,8 @@ if(WIBO_GUEST_64)
     target_sources(wibo PRIVATE
         dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
         dll/software_exception_decision.cpp dll/software_exception_dispatch.cpp
-        dll/software_exception_dispatch_x64.S dll/software_exception_failure.cpp)
+        dll/software_exception_dispatch_x64.S dll/software_exception_failure.cpp
+        dll/software_exception_frame.cpp)
     target_compile_definitions(wibo PRIVATE WIBO_GUEST_64=1)
     set_target_properties(wibo PROPERTIES OUTPUT_NAME wibo64)
 endif()
@@ -709,6 +710,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 COMPILE_OPTIONS -std=c++20 -fno-exceptions -fno-rtti
                 DEPENDS dll/context_x64_offsets.h)
             set_tests_properties(wibo.test_software_exception_dispatch_public PROPERTIES TIMEOUT 15)
+            wibo_add_fixture_bin(NAME test_software_frame_dispatch
+                SOURCES test/test_software_frame_dispatch.c test/test_software_frame_dispatch.S)
+            set_tests_properties(wibo.test_software_frame_dispatch PROPERTIES TIMEOUT 15)
             wibo_add_fixture_bin(NAME test_function_table SOURCES test/test_function_table.c)
             wibo_add_fixture_bin(NAME test_function_table_callback SOURCES test/test_function_table_callback.c)
             set_tests_properties(wibo.test_function_table_callback PROPERTIES TIMEOUT 15)
@@ -753,7 +757,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                     dll/software_exception_decision.cpp dll/kernel32/vectored_exception.cpp
                     dll/software_exception_capture.cpp dll/software_exception_capture_x64.S dll/context_x64.S
                     dll/software_exception_prepare.cpp dll/software_exception_callback_x64.S
-                    test/test_software_exception_dispatch.cpp test/test_software_exception_dispatch_x64.S)
+                    test/test_software_exception_dispatch.cpp test/test_software_exception_dispatch_x64.S
+                    test/test_software_frame_search_stub.cpp)
                 target_compile_features(${target} PRIVATE cxx_std_20)
                 target_compile_options(${target} PRIVATE -fno-exceptions -fno-rtti)
                 target_compile_definitions(${target} PRIVATE WIBO_GUEST_64=1)

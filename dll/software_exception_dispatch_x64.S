@@ -45,7 +45,8 @@ ASM_GLOBAL(wiboDispatchRtlRaiseException64, @function)
 	call SYMBOL_NAME(wiboPrepareSoftwareExceptionDispatchCapture64)
 	lea rdi, [rsp+WIBO_SOFTWARE_FRAME_CAPTURE]
 	lea rsi, [rsp+WIBO_SOFTWARE_DISPATCH_FRAME_DECISION]
-	call SYMBOL_NAME(wiboPrepareSoftwareExceptionDecision64)
+	lea rdx, [rsp+WIBO_SOFTWARE_DISPATCH_FRAME_ACTIVATION]
+	call SYMBOL_NAME(wiboPrepareSoftwareExceptionDispatchDecision64)
 	cmp eax, WIBO_SOFTWARE_DISPATCH_RESUME
 	je DISPATCH_RESTORE
 	cmp eax, WIBO_SOFTWARE_DISPATCH_NOTIFICATION_RETURN

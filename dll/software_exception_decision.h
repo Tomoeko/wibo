@@ -33,5 +33,9 @@ static_assert(sizeof(SoftwareExceptionDecision64) == 1248);
 // LegacyNotificationReturn preserves the existing notification policy without
 // treating unsuccessful handler traversal as a Resume result.
 extern "C" DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *capture,
-														SoftwareExceptionDecision64 *output);
+														SoftwareExceptionDecision64 *output,
+														bool deferNotificationFallback = false);
+// Shared validation for a normal-return handler selecting the original context.
+void wiboSelectSoftwareExceptionContinuation64(const SoftwareExceptionCapture64 *capture,
+											   SoftwareExceptionDecision64 *output);
 #endif

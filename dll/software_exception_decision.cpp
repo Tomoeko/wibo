@@ -31,7 +31,7 @@ bool supportedContext(const CONTEXT64 &selected, const CONTEXT64 &original) {
 } // namespace
 
 DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *capture,
-											 SoftwareExceptionDecision64 *output) {
+											 SoftwareExceptionDecision64 *output, bool deferNotificationFallback) {
 	*output = {};
 	output->kind = SoftwareExceptionDecisionKind64::InvalidCapture;
 	output->failureCode = kInvalidParameter;
@@ -54,18 +54,32 @@ DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *c
 			capture->callerCapture && capture->record == &capture->callerCapture->localRecord) {
 			// Preserve the notification return policy using the immutable capture.
 			// Context mutations from unsuccessful handlers do not select a resume.
-			std::memcpy(&output->resumeContext, &capture->context, sizeof(CONTEXT64));
+			if (!deferNotificationFallback)
+				std::memcpy(&output->resumeContext, &capture->context, sizeof(CONTEXT64));
 			output->kind = SoftwareExceptionDecisionKind64::LegacyNotificationReturn;
 			output->failureCode = 0;
 		}
 		return static_cast<DWORD>(output->kind);
 	}
+	wiboSelectSoftwareExceptionContinuation64(capture, output);
+	if (output->kind == SoftwareExceptionDecisionKind64::Resume &&
+		(info.ExceptionRecord != toGuestPtr(capture->record) ||
+		 info.ContextRecord != toGuestPtr(&output->resumeContext))) {
+		output->kind = SoftwareExceptionDecisionKind64::UnsupportedContextState;
+		output->failureCode = output->originalCode;
+	}
+	return static_cast<DWORD>(output->kind);
+}
+
+void wiboSelectSoftwareExceptionContinuation64(const SoftwareExceptionCapture64 *capture,
+											   SoftwareExceptionDecision64 *output) {
+	output->failureCode = output->originalCode;
 	// Neither clearing an original noncontinuable flag nor setting it while
 	// handling permits continuation in this initial decision subset.
 	if ((output->originalFlags | capture->record->ExceptionFlags) & kNoncontinuable) {
 		output->kind = SoftwareExceptionDecisionKind64::NoncontinuableContinuationRequiresDispatch;
 		output->failureCode = kNoncontinuableException;
-		return static_cast<DWORD>(output->kind);
+		return;
 	}
 	auto &selected = output->resumeContext;
 	const auto &original = capture->context;
@@ -73,17 +87,15 @@ DWORD wiboPrepareSoftwareExceptionDecision64(const SoftwareExceptionCapture64 *c
 	// abandon an outer callback's still-live host traversal activation.
 	if (selected.Rip != original.Rip || selected.Rsp != original.Rsp) {
 		output->kind = SoftwareExceptionDecisionKind64::UnsupportedControlTransfer;
-		return static_cast<DWORD>(output->kind);
+		return;
 	}
-	if (!supportedContext(selected, original) || info.ExceptionRecord != toGuestPtr(capture->record) ||
-		info.ContextRecord != toGuestPtr(&selected)) {
+	if (!supportedContext(selected, original)) {
 		output->kind = SoftwareExceptionDecisionKind64::UnsupportedContextState;
-		return static_cast<DWORD>(output->kind);
+		return;
 	}
 	// The raw legacy restore uses FltSave.MxCsr, matching the installed oracle.
 	// Divergent MXCSR field authority on other implementations is unverified.
 	output->kind = SoftwareExceptionDecisionKind64::Resume;
 	output->failureCode = 0;
-	return static_cast<DWORD>(output->kind);
 }
 #endif

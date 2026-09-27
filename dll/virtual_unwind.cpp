@@ -3,9 +3,12 @@
 #ifdef WIBO_GUEST_64
 #include "common.h"
 #include "context.h"
+#include "heap.h"
 #include "kernel32/internal.h"
 #include "kernel32/thread_context.h"
+#include "virtual_unwind.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -30,10 +33,51 @@ template <typename T> T readValue(ULONGLONG address) {
 	return value;
 }
 
+struct StackBounds {
+	ULONGLONG limit, base;
+	bool valid = true;
+};
+
+template <typename T> T readStackValue(ULONGLONG address, StackBounds *bounds) {
+	if (bounds) {
+		if (!bounds->valid || address < bounds->limit || address >= bounds->base ||
+			sizeof(T) > bounds->base - address) {
+			bounds->valid = false;
+			return {};
+		}
+		ULONGLONG remaining = sizeof(T), cursor = address;
+		while (remaining) {
+			MEMORY_BASIC_INFORMATION region{};
+			if (wibo::heap::virtualQuery(reinterpret_cast<const void *>(cursor), &region) !=
+					wibo::heap::VmStatus::Success ||
+				region.State != MEM_COMMIT || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+				(region.Protect & 0xff) == PAGE_EXECUTE || cursor < region.BaseAddress ||
+				cursor - region.BaseAddress >= region.RegionSize) {
+				bounds->valid = false;
+				return {};
+			}
+			const auto available = region.RegionSize - (cursor - region.BaseAddress);
+			const auto amount = std::min<ULONGLONG>(remaining, available);
+			remaining -= amount;
+			cursor += amount;
+		}
+	}
+	return readValue<T>(address);
+}
+
+ULONGLONG stackAddress(ULONGLONG base, ULONGLONG offset, StackBounds *bounds) {
+	if (bounds && offset > std::numeric_limits<ULONGLONG>::max() - base) {
+		bounds->valid = false;
+		return 0;
+	}
+	return base + offset;
+}
+
 ULONGLONG &integerRegister(CONTEXT64 &context, unsigned index) { return context.*kIntegerRegisters[index]; }
 
-void restoreInteger(CONTEXT64 &context, KNONVOLATILE_CONTEXT_POINTERS *pointers, unsigned reg, ULONGLONG address) {
-	integerRegister(context, reg) = readValue<ULONGLONG>(address);
+void restoreInteger(CONTEXT64 &context, KNONVOLATILE_CONTEXT_POINTERS *pointers, unsigned reg, ULONGLONG address,
+					StackBounds *bounds) {
+	integerRegister(context, reg) = readStackValue<ULONGLONG>(address, bounds);
 	if (pointers)
 		pointers->IntegerContext[reg] = address;
 }
@@ -134,7 +178,7 @@ RUNTIME_FUNCTION primaryEntry(ULONGLONG base, RUNTIME_FUNCTION entry) {
 }
 
 void unwindDescribedEpilogue(ULONGLONG base, RUNTIME_FUNCTION entry, ULONGLONG offset, CONTEXT64 &context,
-							 KNONVOLATILE_CONTEXT_POINTERS *pointers) {
+							 KNONVOLATILE_CONTEXT_POINTERS *pointers, StackBounds *bounds) {
 	for (unsigned depth = 0; depth < 64; ++depth) {
 		UnwindInfo info(base, entry);
 		unsigned index = 0;
@@ -152,7 +196,7 @@ void unwindDescribedEpilogue(ULONGLONG base, RUNTIME_FUNCTION entry, ULONGLONG o
 		while (index < info.count && (info.code(index)[1] & 15) == 0) {
 			const unsigned reg = info.code(index)[1] >> 4;
 			if (position >= offset) {
-				restoreInteger(context, pointers, reg, context.Rsp);
+				restoreInteger(context, pointers, reg, context.Rsp, bounds);
 				context.Rsp += 8;
 			}
 			position += reg >= 8 ? 2 : 1;
@@ -165,12 +209,16 @@ void unwindDescribedEpilogue(ULONGLONG base, RUNTIME_FUNCTION entry, ULONGLONG o
 			++index;
 		}
 		if (index < info.count) {
+			if (bounds) {
+				bounds->valid = false;
+				return;
+			}
 			if ((info.code(index)[1] & 15) != 10 || (info.code(index)[1] >> 4) > 1 || index + 1 != info.count)
 				invalidUnwind("unsupported epilogue unwind operations");
 			context.Rip = readValue<ULONGLONG>(context.Rsp);
 			context.Rsp = readValue<ULONGLONG>(context.Rsp + 24);
 		} else {
-			context.Rip = readValue<ULONGLONG>(context.Rsp);
+			context.Rip = readStackValue<ULONGLONG>(context.Rsp, bounds);
 			context.Rsp += 8;
 		}
 		return;
@@ -179,7 +227,7 @@ void unwindDescribedEpilogue(ULONGLONG base, RUNTIME_FUNCTION entry, ULONGLONG o
 }
 
 bool unwindEpilogue(ULONGLONG base, ULONGLONG pc, const RUNTIME_FUNCTION &entry, const UnwindInfo &info,
-					CONTEXT64 &context, KNONVOLATILE_CONTEXT_POINTERS *pointers) {
+					CONTEXT64 &context, KNONVOLATILE_CONTEXT_POINTERS *pointers, StackBounds *bounds) {
 	const auto end = base + entry.EndAddress;
 	if (pc < base + entry.BeginAddress || pc >= end)
 		return false;
@@ -222,7 +270,7 @@ bool unwindEpilogue(ULONGLONG base, ULONGLONG pc, const RUNTIME_FUNCTION &entry,
 		const unsigned reg = (byte(prefix) & 7) + extension;
 		if (reg == 4)
 			return false;
-		restoreInteger(next, pointers ? &locations : nullptr, reg, next.Rsp);
+		restoreInteger(next, pointers ? &locations : nullptr, reg, next.Rsp, bounds);
 		next.Rsp += 8;
 		pc += prefix + 1;
 	}
@@ -254,34 +302,39 @@ bool unwindEpilogue(ULONGLONG base, ULONGLONG pc, const RUNTIME_FUNCTION &entry,
 	}
 	if (!terminal)
 		return false;
-	next.Rip = readValue<ULONGLONG>(next.Rsp);
+	next.Rip = readStackValue<ULONGLONG>(next.Rsp, bounds);
 	next.Rsp += 8;
 	context = next;
 	if (pointers)
 		*pointers = locations;
 	return true;
 }
-} // namespace
-
-namespace ntdll {
-PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
-							  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame,
-							  KNONVOLATILE_CONTEXT_POINTERS *pointers) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("RtlVirtualUnwind(%u, %llx, %llx, %p, %p, %p, %p, %p)\n", handlerType, imageBase, controlPc,
-			  functionEntry, context, handlerData, frame, pointers);
+PVOID virtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc, RUNTIME_FUNCTION *functionEntry,
+					CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame, KNONVOLATILE_CONTEXT_POINTERS *pointers,
+					StackBounds *bounds) {
 	if (!functionEntry || !context || !frame || !handlerData)
 		invalidUnwind("missing required argument");
 	RUNTIME_FUNCTION entry = *functionEntry;
 	UnwindInfo initial(imageBase, entry);
 	ULONGLONG offset = controlPc - imageBase - entry.BeginAddress;
 	*frame = establisherFrame(initial, offset, *context);
+	if (bounds && (*frame < bounds->limit || *frame >= bounds->base || (*frame & 7))) {
+		bounds->valid = false;
+		return nullptr;
+	}
 	if (offset >= initial.prologue) {
 		if (initial.version == 1) {
-			if (unwindEpilogue(imageBase, controlPc, entry, initial, *context, pointers))
+			// Epilogue recognition is speculative, just like its context copy.
+			// Failed tentative reads do not invalidate a later body unwind.
+			StackBounds tentativeBounds = bounds ? *bounds : StackBounds{};
+			if (unwindEpilogue(imageBase, controlPc, entry, initial, *context, pointers,
+							   bounds ? &tentativeBounds : nullptr)) {
+				if (bounds)
+					bounds->valid = tentativeBounds.valid;
 				return nullptr;
+			}
 		} else if (const auto epilogueOffset = describedEpilogue(initial, entry, controlPc - imageBase)) {
-			unwindDescribedEpilogue(imageBase, entry, *epilogueOffset, *context, pointers);
+			unwindDescribedEpilogue(imageBase, entry, *epilogueOffset, *context, pointers, bounds);
 			return nullptr;
 		}
 	}
@@ -307,7 +360,7 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 					displacement |= ULONGLONG(readValue<WORD>(reinterpret_cast<ULONGLONG>(code + 4))) << 16;
 				switch (op) {
 				case 0:
-					restoreInteger(*context, pointers, reg, context->Rsp);
+					restoreInteger(*context, pointers, reg, context->Rsp, bounds);
 					context->Rsp += 8;
 					break;
 				case 1:
@@ -324,17 +377,22 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 					break;
 				case 4:
 				case 5:
-					restoreInteger(*context, pointers, reg, *frame + displacement * (op == 4 ? 8 : 1));
+					restoreInteger(*context, pointers, reg,
+								   stackAddress(*frame, displacement * (op == 4 ? 8 : 1), bounds), bounds);
 					break;
 				case 8:
 				case 9: {
-					const auto address = *frame + displacement * (op == 8 ? 16 : 1);
-					context->FltSave.XmmRegisters[reg] = readValue<M128A>(address);
+					const auto address = stackAddress(*frame, displacement * (op == 8 ? 16 : 1), bounds);
+					context->FltSave.XmmRegisters[reg] = readStackValue<M128A>(address, bounds);
 					if (pointers)
 						pointers->FloatingContext[reg] = address;
 					break;
 				}
 				case 10: {
+					if (bounds) {
+						bounds->valid = false;
+						return nullptr;
+					}
 					if (reg > 1)
 						invalidUnwind("invalid machine frame operation");
 					const auto address = context->Rsp + reg * 8;
@@ -355,7 +413,7 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 			continue;
 		}
 		if (!machineFrame) {
-			context->Rip = readValue<ULONGLONG>(context->Rsp);
+			context->Rip = readStackValue<ULONGLONG>(context->Rsp, bounds);
 			context->Rsp += 8;
 		}
 		if (controlPc - imageBase - entry.BeginAddress >= info.prologue &&
@@ -366,5 +424,28 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 		return nullptr;
 	}
 }
+} // namespace
+
+namespace ntdll {
+PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
+							  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame,
+							  KNONVOLATILE_CONTEXT_POINTERS *pointers) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlVirtualUnwind(%u, %llx, %llx, %p, %p, %p, %p, %p)\n", handlerType, imageBase, controlPc,
+			  functionEntry, context, handlerData, frame, pointers);
+	return virtualUnwind(handlerType, imageBase, controlPc, functionEntry, context, handlerData, frame, pointers,
+						 nullptr);
+}
 } // namespace ntdll
+
+namespace wibo {
+bool virtualUnwindWithStackBounds(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
+								  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData,
+								  ULONGLONG *frame, ULONGLONG stackLimit, ULONGLONG stackBase, PVOID *languageHandler) {
+	StackBounds bounds{stackLimit, stackBase};
+	*languageHandler =
+		virtualUnwind(handlerType, imageBase, controlPc, functionEntry, context, handlerData, frame, nullptr, &bounds);
+	return bounds.valid;
+}
+} // namespace wibo
 #endif
