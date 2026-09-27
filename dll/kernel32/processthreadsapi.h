@@ -14,6 +14,18 @@ struct PROCESS_INFORMATION {
 using PPROCESS_INFORMATION = PROCESS_INFORMATION *;
 using LPPROCESS_INFORMATION = PROCESS_INFORMATION *;
 
+struct PROCESSOR_NUMBER {
+	WORD Group;
+	BYTE Number;
+	BYTE Reserved;
+};
+static_assert(sizeof(PROCESSOR_NUMBER) == 4);
+static_assert(alignof(PROCESSOR_NUMBER) == 2);
+static_assert(offsetof(PROCESSOR_NUMBER, Group) == 0);
+static_assert(offsetof(PROCESSOR_NUMBER, Number) == 2);
+static_assert(offsetof(PROCESSOR_NUMBER, Reserved) == 3);
+using PPROCESSOR_NUMBER = PROCESSOR_NUMBER *;
+
 struct STARTUPINFOA {
 	DWORD cb;
 	GUEST_PTR lpReserved;
@@ -102,6 +114,8 @@ HANDLE WINAPI GetCurrentProcess();
 BOOL WINAPI FlushInstructionCache(HANDLE process, LPCVOID address, SIZE_T size);
 DWORD WINAPI GetCurrentProcessId();
 DWORD WINAPI GetCurrentThreadId();
+DWORD WINAPI GetCurrentProcessorNumber();
+void WINAPI GetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber);
 HANDLE WINAPI GetCurrentThread();
 HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId);
 HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId);

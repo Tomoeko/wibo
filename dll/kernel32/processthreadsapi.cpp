@@ -40,6 +40,8 @@
 
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
+#elif defined(__linux__)
+#include <sched.h>
 #endif
 
 namespace {
@@ -84,6 +86,34 @@ FILETIME fileTimeFromTimespec(const struct timespec &value) {
 		total = static_cast<uint64_t>(value.tv_sec) * 10000000ULL + static_cast<uint64_t>(value.tv_nsec) / 100ULL;
 	}
 	return fileTimeFromDuration(total);
+}
+
+DWORD queryCurrentProcessorNumber() {
+	const long online = sysconf(_SC_NPROCESSORS_ONLN);
+	if (online <= 0 || online > static_cast<long>(sizeof(DWORD_PTR) * 8)) {
+		// The existing processor view represents one contiguous, pointer-sized group.
+		std::fputs("Unsupported current-processor topology\n", stderr);
+		kernel32::exitInternal(ERROR_NOT_SUPPORTED);
+	}
+	size_t processorNumber = std::numeric_limits<size_t>::max();
+	bool queried = false;
+#ifdef __APPLE__
+	if (__builtin_available(macOS 11.0, *)) {
+		queried = pthread_cpu_number_np(&processorNumber) == 0;
+	}
+#elif defined(__linux__)
+	const int number = sched_getcpu();
+	if (number >= 0) {
+		processorNumber = static_cast<size_t>(number);
+		queried = true;
+	}
+#endif
+	if (!queried || processorNumber >= static_cast<size_t>(online)) {
+		// Neither processor query defines an error return. Do not substitute an index.
+		std::fputs("Unsupported current-processor query\n", stderr);
+		kernel32::exitInternal(ERROR_NOT_SUPPORTED);
+	}
+	return static_cast<DWORD>(processorNumber);
 }
 
 DWORD_PTR computeSystemAffinityMask() {
@@ -473,6 +503,24 @@ DWORD WINAPI GetCurrentThreadId() {
 	DWORD threadId = wibo::getThreadId();
 	DEBUG_LOG("GetCurrentThreadId() -> %u\n", threadId);
 	return threadId;
+}
+
+DWORD WINAPI GetCurrentProcessorNumber() {
+	HOST_CONTEXT_GUARD();
+	const DWORD result = queryCurrentProcessorNumber();
+	DEBUG_LOG("GetCurrentProcessorNumber() -> %u\n", result);
+	return result;
+}
+
+void WINAPI GetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber) {
+	HOST_CONTEXT_GUARD();
+	if (!ProcNumber) {
+		std::fputs("Invalid current-processor output buffer\n", stderr);
+		exitInternal(ERROR_INVALID_PARAMETER);
+	}
+	const DWORD number = queryCurrentProcessorNumber();
+	*ProcNumber = {0, static_cast<BYTE>(number), 0};
+	DEBUG_LOG("GetCurrentProcessorNumberEx(%p) -> group=0 number=%u\n", ProcNumber, number);
 }
 
 HANDLE WINAPI GetCurrentThread() {
