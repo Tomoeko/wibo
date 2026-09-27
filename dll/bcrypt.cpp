@@ -10,6 +10,7 @@
 #include "advapi32/sha1.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <string>
 #include <sys/random.h>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #ifdef __APPLE__
@@ -29,43 +31,52 @@ constexpr NTSTATUS kStatusNoMemory = static_cast<NTSTATUS>(0xc0000017);
 constexpr NTSTATUS kStatusBufferTooSmall = static_cast<NTSTATUS>(0xc0000023);
 constexpr ULONG kKnownOpenFlags = 0x1 | 0x8 | 0x20; // Dispatch, HMAC, and reusable hashing.
 constexpr size_t kMaxIdentifierNameUnits = 256;
+constexpr ULONG kHashReusable = 0x20;
+
+#ifdef __APPLE__
+using NativeHashContext = std::variant<MD5_CTX, sha1_context, CC_SHA256_CTX>;
+#else
+using NativeHashContext = std::variant<MD5_CTX, sha1_context>;
+#endif
 
 struct HashImplementation {
 	size_t contextSize;
 	ULONG digestSize;
-	void (*initialize)(void *);
-	void (*update)(void *, const void *, size_t);
-	void (*finish)(void *, unsigned char *);
+	void (*initialize)(NativeHashContext &);
+	void (*update)(NativeHashContext &, const void *, size_t);
+	void (*finish)(NativeHashContext &, unsigned char *);
 };
 
-void initializeMd5(void *context) { MD5_Init(static_cast<MD5_CTX *>(context)); }
-void updateMd5(void *context, const void *data, size_t length) {
-	MD5_Update(static_cast<MD5_CTX *>(context), data, length);
+void initializeMd5(NativeHashContext &context) { MD5_Init(&context.emplace<MD5_CTX>()); }
+void updateMd5(NativeHashContext &context, const void *data, size_t length) {
+	MD5_Update(&std::get<MD5_CTX>(context), data, length);
 }
-void finishMd5(void *context, unsigned char *digest) { MD5_Final(digest, static_cast<MD5_CTX *>(context)); }
-void initializeSha1(void *context) { sha1_init(static_cast<sha1_context *>(context)); }
-void updateSha1(void *context, const void *data, size_t length) {
-	sha1_update(static_cast<sha1_context *>(context), data, length);
+void finishMd5(NativeHashContext &context, unsigned char *digest) { MD5_Final(digest, &std::get<MD5_CTX>(context)); }
+void initializeSha1(NativeHashContext &context) { sha1_init(&context.emplace<sha1_context>()); }
+void updateSha1(NativeHashContext &context, const void *data, size_t length) {
+	sha1_update(&std::get<sha1_context>(context), data, length);
 }
-void finishSha1(void *context, unsigned char *digest) { sha1_finalize(static_cast<sha1_context *>(context), digest); }
+void finishSha1(NativeHashContext &context, unsigned char *digest) {
+	sha1_finalize(&std::get<sha1_context>(context), digest);
+}
 
 constexpr HashImplementation kMd5Implementation{sizeof(MD5_CTX), 16, initializeMd5, updateMd5, finishMd5};
 constexpr HashImplementation kSha1Implementation{sizeof(sha1_context), SHA1_SIZE, initializeSha1, updateSha1,
 												 finishSha1};
 
 #ifdef __APPLE__
-void initializeSha256(void *context) { CC_SHA256_Init(static_cast<CC_SHA256_CTX *>(context)); }
-void updateSha256(void *context, const void *data, size_t length) {
+void initializeSha256(NativeHashContext &context) { CC_SHA256_Init(&context.emplace<CC_SHA256_CTX>()); }
+void updateSha256(NativeHashContext &context, const void *data, size_t length) {
 	const auto *bytes = static_cast<const unsigned char *>(data);
 	while (length) {
 		const size_t chunk = std::min(length, static_cast<size_t>(std::numeric_limits<CC_LONG>::max()));
-		CC_SHA256_Update(static_cast<CC_SHA256_CTX *>(context), bytes, static_cast<CC_LONG>(chunk));
+		CC_SHA256_Update(&std::get<CC_SHA256_CTX>(context), bytes, static_cast<CC_LONG>(chunk));
 		bytes += chunk;
 		length -= chunk;
 	}
 }
-void finishSha256(void *context, unsigned char *digest) {
-	CC_SHA256_Final(digest, static_cast<CC_SHA256_CTX *>(context));
+void finishSha256(NativeHashContext &context, unsigned char *digest) {
+	CC_SHA256_Final(digest, &std::get<CC_SHA256_CTX>(context));
 }
 constexpr HashImplementation kSha256Implementation{sizeof(CC_SHA256_CTX), CC_SHA256_DIGEST_LENGTH, initializeSha256,
 												   updateSha256, finishSha256};
@@ -75,10 +86,30 @@ struct AlgorithmProvider {
 	const HashImplementation *hash;
 };
 
-std::mutex g_algorithmMutex;
+struct HashObject {
+	std::mutex mutex;
+	std::shared_ptr<const AlgorithmProvider> provider;
+	NativeHashContext context;
+	bool reusable;
+	bool finalized = false;
+
+	HashObject(std::shared_ptr<const AlgorithmProvider> algorithm, bool reuse)
+		: provider(std::move(algorithm)), reusable(reuse) {
+		provider->hash->initialize(context);
+	}
+};
+
+std::mutex g_objectMutex;
 std::unordered_map<BCRYPT_ALG_HANDLE, std::shared_ptr<const AlgorithmProvider>> g_algorithms;
-// Tokens are opaque and never reused, including after an algorithm is closed.
-BCRYPT_ALG_HANDLE g_nextAlgorithmHandle = 0x10000;
+std::unordered_map<BCRYPT_HASH_HANDLE, std::shared_ptr<HashObject>> g_hashes;
+// All object kinds share opaque tokens, which are never reused after closing.
+BCRYPT_HANDLE g_nextObjectHandle = 0x10000;
+
+std::shared_ptr<HashObject> findHash(BCRYPT_HASH_HANDLE handle) {
+	std::lock_guard lock(g_objectMutex);
+	const auto found = g_hashes.find(handle);
+	return found == g_hashes.end() ? nullptr : found->second;
+}
 
 bool readIdentifierName(LPCWSTR name, std::u16string &value) {
 	const size_t units = wstrnlen(name, kMaxIdentifierNameUnits);
@@ -153,10 +184,10 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *phAlgorithm, LPCW
 		return STATUS_NOT_IMPLEMENTED;
 	// This uses local primitives, without host CNG registration or configuration.
 	auto providerObject = std::make_shared<const AlgorithmProvider>(AlgorithmProvider{implementation});
-	std::lock_guard lock(g_algorithmMutex);
-	if (g_nextAlgorithmHandle == std::numeric_limits<BCRYPT_ALG_HANDLE>::max())
+	std::lock_guard lock(g_objectMutex);
+	if (g_nextObjectHandle == std::numeric_limits<BCRYPT_HANDLE>::max())
 		return kStatusNoMemory;
-	const BCRYPT_ALG_HANDLE handle = g_nextAlgorithmHandle++;
+	const BCRYPT_ALG_HANDLE handle = g_nextObjectHandle++;
 	g_algorithms.emplace(handle, std::move(providerObject));
 	std::memcpy(phAlgorithm, &handle, sizeof(handle));
 	return STATUS_SUCCESS;
@@ -167,7 +198,7 @@ NTSTATUS WINAPI BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE hAlgorithm, ULONG
 	DEBUG_LOG("BCryptCloseAlgorithmProvider(0x%llx, 0x%x)\n", static_cast<unsigned long long>(hAlgorithm), dwFlags);
 	if (dwFlags)
 		return STATUS_NOT_SUPPORTED;
-	std::lock_guard lock(g_algorithmMutex);
+	std::lock_guard lock(g_objectMutex);
 	return g_algorithms.erase(hAlgorithm) ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
 }
 
@@ -176,7 +207,7 @@ NTSTATUS WINAPI BCryptGetProperty(BCRYPT_HANDLE hObject, LPCWSTR pszProperty, PU
 	HOST_CONTEXT_GUARD();
 	std::shared_ptr<const AlgorithmProvider> provider;
 	{
-		std::lock_guard lock(g_algorithmMutex);
+		std::lock_guard lock(g_objectMutex);
 		const auto found = g_algorithms.find(hObject);
 		if (found == g_algorithms.end())
 			return STATUS_INVALID_HANDLE;
@@ -200,6 +231,90 @@ NTSTATUS WINAPI BCryptGetProperty(BCRYPT_HANDLE hObject, LPCWSTR pszProperty, PU
 		return kStatusBufferTooSmall;
 	if (pbOutput)
 		std::memcpy(pbOutput, &provider->hash->digestSize, sizeof(provider->hash->digestSize));
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI BCryptCreateHash(BCRYPT_ALG_HANDLE hAlgorithm, BCRYPT_HASH_HANDLE *phHash, PUCHAR pbHashObject,
+								 ULONG cbHashObject, PUCHAR pbSecret, ULONG cbSecret, ULONG dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("BCryptCreateHash(0x%llx, %p, %p, %u, %p, %u, 0x%x)\n", static_cast<unsigned long long>(hAlgorithm),
+			  phHash, pbHashObject, cbHashObject, pbSecret, cbSecret, dwFlags);
+	std::shared_ptr<const AlgorithmProvider> provider;
+	{
+		std::lock_guard lock(g_objectMutex);
+		const auto found = g_algorithms.find(hAlgorithm);
+		if (found == g_algorithms.end())
+			return STATUS_INVALID_HANDLE;
+		provider = found->second;
+	}
+	if (!phHash)
+		return STATUS_INVALID_PARAMETER;
+	if ((dwFlags & ~kHashReusable) || pbHashObject || cbHashObject || pbSecret || cbSecret)
+		return STATUS_NOT_SUPPORTED;
+	auto object = std::make_shared<HashObject>(std::move(provider), (dwFlags & kHashReusable) != 0);
+	std::lock_guard lock(g_objectMutex);
+	if (g_nextObjectHandle == std::numeric_limits<BCRYPT_HANDLE>::max())
+		return kStatusNoMemory;
+	const BCRYPT_HASH_HANDLE handle = g_nextObjectHandle++;
+	g_hashes.emplace(handle, std::move(object));
+	std::memcpy(phHash, &handle, sizeof(handle));
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI BCryptDestroyHash(BCRYPT_HASH_HANDLE hHash) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("BCryptDestroyHash(0x%llx)\n", static_cast<unsigned long long>(hHash));
+	std::shared_ptr<HashObject> object;
+	{
+		std::lock_guard lock(g_objectMutex);
+		const auto found = g_hashes.find(hHash);
+		if (found == g_hashes.end())
+			return STATUS_INVALID_HANDLE;
+		object = std::move(found->second);
+		g_hashes.erase(found);
+	}
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI BCryptHashData(BCRYPT_HASH_HANDLE hHash, PUCHAR pbInput, ULONG cbInput, ULONG dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("BCryptHashData(0x%llx, %p, %u, 0x%x)\n", static_cast<unsigned long long>(hHash), pbInput, cbInput,
+			  dwFlags);
+	auto object = findHash(hHash);
+	if (!object)
+		return STATUS_INVALID_HANDLE;
+	std::lock_guard lock(object->mutex);
+	if (object->finalized)
+		return STATUS_INVALID_HANDLE;
+	if (dwFlags || (!pbInput && cbInput))
+		return STATUS_INVALID_PARAMETER;
+	if (cbInput)
+		object->provider->hash->update(object->context, pbInput, cbInput);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI BCryptFinishHash(BCRYPT_HASH_HANDLE hHash, PUCHAR pbOutput, ULONG cbOutput, ULONG dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("BCryptFinishHash(0x%llx, %p, %u, 0x%x)\n", static_cast<unsigned long long>(hHash), pbOutput, cbOutput,
+			  dwFlags);
+	auto object = findHash(hHash);
+	if (!object)
+		return STATUS_INVALID_HANDLE;
+	std::lock_guard lock(object->mutex);
+	if (object->finalized)
+		return STATUS_INVALID_HANDLE;
+	const auto &implementation = *object->provider->hash;
+	if (dwFlags || !pbOutput || cbOutput != implementation.digestSize)
+		return STATUS_INVALID_PARAMETER;
+	std::array<unsigned char, 32> digest{};
+	if (implementation.digestSize > digest.size())
+		return STATUS_NOT_SUPPORTED;
+	implementation.finish(object->context, digest.data());
+	if (object->reusable)
+		implementation.initialize(object->context);
+	else
+		object->finalized = true;
+	std::memcpy(pbOutput, digest.data(), implementation.digestSize);
 	return STATUS_SUCCESS;
 }
 
