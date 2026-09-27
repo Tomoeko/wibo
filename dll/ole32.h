@@ -13,6 +13,7 @@ void WINAPI CoTaskMemFree(PVOID pv);
 HRESULT WINAPI CoInitialize(LPVOID pvReserved);
 HRESULT WINAPI CoInitializeEx(LPVOID pvReserved, DWORD flags);
 void WINAPI CoUninitialize();
+HRESULT WINAPI CoGetContextToken(ULONG_PTR *token);
 HRESULT WINAPI OleInitialize(LPVOID pvReserved);
 void WINAPI OleUninitialize();
 HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwClsContext, const GUID *riid,

@@ -342,6 +342,8 @@ add_executable(wibo
     dll/wmi_proxy.cpp
     dll/network_proxy.cpp
     dll/ole32.cpp
+    dll/combase.cpp
+    dll/com_context.cpp
     dll/oleaut32.cpp
     dll/psapi.cpp
     dll/setupapi.cpp
@@ -552,6 +554,8 @@ wibo_codegen_module(NAME lmgr HEADERS dll/lmgr.h)
 wibo_codegen_module(NAME network_proxy HEADERS dll/network_proxy.h)
 wibo_codegen_module(NAME wmi_proxy HEADERS dll/wmi_proxy.h)
 wibo_codegen_module(NAME ole32 HEADERS dll/ole32.h)
+wibo_codegen_module(NAME combase HEADERS dll/combase.h)
+wibo_codegen_module(NAME com_context HEADERS dll/com_context.h)
 wibo_codegen_module(NAME oleaut32 HEADERS dll/oleaut32.h)
 wibo_codegen_module(NAME psapi HEADERS dll/psapi.h)
 wibo_codegen_module(NAME setupapi HEADERS dll/setupapi.h)
@@ -1004,6 +1008,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_ole_initialize SOURCES test/test_ole_initialize.c COMPILE_OPTIONS -lole32)
+        wibo_add_fixture_bin(NAME test_runtime_initialize SOURCES test/test_runtime_initialize.c COMPILE_OPTIONS -lole32)
+        set_tests_properties(wibo.test_runtime_initialize PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_com_context_token SOURCES test/test_com_context_token.c COMPILE_OPTIONS -lole32 -luuid)
+        set_tests_properties(wibo.test_com_context_token PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_rtl SOURCES test/test_rtl.c)
         wibo_add_fixture_bin(NAME test_rtl_bitmap SOURCES test/test_rtl_bitmap.c)
         wibo_add_fixture_bin(NAME test_ntquery SOURCES test/test_ntquery.c)

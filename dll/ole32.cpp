@@ -1,5 +1,6 @@
 #include "ole32.h"
 
+#include "com_context.h"
 #include "common.h"
 #include "context.h"
 #include "errors.h"
@@ -159,6 +160,8 @@ HRESULT WINAPI CoInitializeEx(LPVOID pvReserved, DWORD flags) {
 	const DWORD mode = flags & 2;
 	if (apartmentReferences && apartmentMode != mode)
 		return static_cast<HRESULT>(0x80010106);
+	if (!apartmentReferences)
+		wibo::com::beginApartment(mode == 0);
 	apartmentMode = mode;
 	return apartmentReferences++ ? 1 : S_OK;
 }
@@ -171,8 +174,14 @@ HRESULT WINAPI CoInitialize(LPVOID pvReserved) {
 void WINAPI CoUninitialize() {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoUninitialize()\n");
-	if (apartmentReferences)
-		--apartmentReferences;
+	if (apartmentReferences && --apartmentReferences == 0)
+		wibo::com::endApartment();
+}
+
+HRESULT WINAPI CoGetContextToken(ULONG_PTR *token) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoGetContextToken(%p)\n", token);
+	return wibo::com::currentContextToken(token);
 }
 
 HRESULT WINAPI OleInitialize(LPVOID pvReserved) {

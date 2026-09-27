@@ -1,6 +1,7 @@
 #include "processthreadsapi.h"
 #include "ws2/internal.h"
 
+#include "com_context.h"
 #include "common.h"
 #include "context.h"
 #include "directory_changes.h"
@@ -190,6 +191,7 @@ void threadCleanup(void *param) {
 	kernel32::cancelDirectoryIoForThread(pthread_self());
 	kernel32::closeApcState();
 	wibo::notifyDllThreadDetach();
+	wibo::com::releaseThreadContext();
 	wibo::uninstallTebForCurrentThread();
 	{
 		std::lock_guard lk(obj->m);
