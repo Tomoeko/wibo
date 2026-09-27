@@ -178,6 +178,13 @@ ModuleInfo *moduleInfoFromAddress(void *addr);
 // Copy the image base while loader and registry ownership are protected.
 void *loadedImageBaseFromAddress(void *addr);
 
+struct LoadedImageRange {
+	uintptr_t base;
+	size_t size;
+};
+// Copy executable image ranges while loader and registry ownership are protected.
+std::vector<LoadedImageRange> loadedImageRanges();
+
 /**
  * A null handle or the process image base identifies the main module.
  */

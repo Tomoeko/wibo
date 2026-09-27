@@ -3,6 +3,7 @@
 #define CINTERFACE
 #define COBJMACROS
 #include "../src/security_descriptor.h"
+#include "../src/token_identity.h"
 #include <winsock2.h>
 #include <ws2ipdef.h>
 
@@ -463,6 +464,248 @@ bool userName() {
 	if (status == ERROR_SUCCESS) {
 		response.bytes(wide.data(), wcslen(wide.data()) * sizeof(WCHAR));
 		response.bytes(narrow.data(), strlen(narrow.data()));
+	}
+	return response.write();
+}
+
+DWORD readTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS informationClass, std::vector<BYTE> &bytes) {
+	constexpr DWORD kMaxTokenInformation = 1024 * 1024;
+	DWORD required = 0;
+	SetLastError(ERROR_SUCCESS);
+	if (GetTokenInformation(token, informationClass, nullptr, 0, &required))
+		return ERROR_INVALID_DATA;
+	DWORD status = GetLastError();
+	for (unsigned attempt = 0; status == ERROR_INSUFFICIENT_BUFFER && attempt < 3; ++attempt) {
+		if (!required || required > kMaxTokenInformation)
+			return ERROR_NOT_ENOUGH_MEMORY;
+		bytes.resize(required);
+		SetLastError(ERROR_SUCCESS);
+		if (GetTokenInformation(token, informationClass, bytes.data(), static_cast<DWORD>(bytes.size()), &required)) {
+			if (required > bytes.size())
+				return ERROR_INVALID_DATA;
+			bytes.resize(required);
+			return ERROR_SUCCESS;
+		}
+		status = GetLastError();
+	}
+	return status ? status : ERROR_INVALID_DATA;
+}
+
+bool copyTokenSid(const std::vector<BYTE> &storage, PSID sid, std::vector<uint8_t> &output) {
+	const uintptr_t base = reinterpret_cast<uintptr_t>(storage.data());
+	const uintptr_t address = reinterpret_cast<uintptr_t>(sid);
+	if (address < base || address - base > storage.size() || storage.size() - (address - base) < 8)
+		return false;
+	const size_t offset = address - base;
+	if (storage[offset] != SID_REVISION || storage[offset + 1] > SID_MAX_SUB_AUTHORITIES)
+		return false;
+	const size_t size = 8 + 4 * size_t(storage[offset + 1]);
+	if (size > storage.size() - offset)
+		return false;
+	output.assign(storage.begin() + offset, storage.begin() + offset + size);
+	return true;
+}
+
+bool copyTokenGroups(const std::vector<BYTE> &storage, std::vector<wibo::identity::SidAndAttributes> &output) {
+	constexpr size_t kHeaderSize = offsetof(TOKEN_GROUPS, Groups);
+	if (storage.size() < kHeaderSize)
+		return false;
+	const auto *groups = reinterpret_cast<const TOKEN_GROUPS *>(storage.data());
+	if (groups->GroupCount > (storage.size() - kHeaderSize) / sizeof(SID_AND_ATTRIBUTES))
+		return false;
+	for (DWORD index = 0; index < groups->GroupCount; ++index) {
+		wibo::identity::SidAndAttributes group;
+		group.attributes = groups->Groups[index].Attributes;
+		if (!copyTokenSid(storage, groups->Groups[index].Sid, group.sid))
+			return false;
+		output.push_back(std::move(group));
+	}
+	return true;
+}
+
+DWORD captureNativeMembership(HANDLE primaryToken, wibo::identity::TokenSnapshot &snapshot) {
+	HANDLE token = nullptr;
+	SetLastError(ERROR_SUCCESS);
+	DWORD status = DuplicateTokenEx(primaryToken, TOKEN_QUERY, nullptr, SecurityIdentification, TokenImpersonation,
+								   &token)
+					   ? ERROR_SUCCESS
+					   : GetLastError();
+	if (!token && !status)
+		status = ERROR_INVALID_DATA;
+	TOKEN_STATISTICS before{}, after{};
+	DWORD length = 0;
+	if (!status) {
+		SetLastError(ERROR_SUCCESS);
+		if (!GetTokenInformation(token, TokenStatistics, &before, sizeof(before), &length)) {
+			status = GetLastError();
+			if (!status)
+				status = ERROR_INVALID_DATA;
+		} else if (length != sizeof(before) || before.TokenType != TokenImpersonation ||
+				   before.GroupCount != snapshot.groups.size()) {
+			status = ERROR_INVALID_DATA;
+		}
+	}
+	for (size_t index = 0; !status && index <= snapshot.groups.size(); ++index) {
+		const auto &entry = index ? snapshot.groups[index - 1] : snapshot.user;
+		BOOL member = FALSE;
+		SetLastError(ERROR_SUCCESS);
+		if (!CheckTokenMembership(token, const_cast<uint8_t *>(entry.sid.data()), &member)) {
+			status = GetLastError();
+			if (!status)
+				status = ERROR_INVALID_DATA;
+		} else if (index && member &&
+				   (!(entry.attributes & SE_GROUP_ENABLED) || (entry.attributes & SE_GROUP_USE_FOR_DENY_ONLY))) {
+			status = ERROR_INVALID_DATA;
+		} else {
+			snapshot.nativeMembership.push_back(member ? 1 : 0);
+		}
+	}
+	if (!status) {
+		SetLastError(ERROR_SUCCESS);
+		if (!GetTokenInformation(token, TokenStatistics, &after, sizeof(after), &length)) {
+			status = GetLastError();
+			if (!status)
+				status = ERROR_INVALID_DATA;
+		} else if (length != sizeof(after) || after.TokenType != TokenImpersonation ||
+				   after.GroupCount != snapshot.groups.size()) {
+			status = ERROR_INVALID_DATA;
+		} else if (std::memcmp(&before.TokenId, &after.TokenId, sizeof(LUID)) ||
+				   std::memcmp(&before.ModifiedId, &after.ModifiedId, sizeof(LUID))) {
+			status = ERROR_RETRY;
+		}
+	}
+	if (token) {
+		SetLastError(ERROR_SUCCESS);
+		if (!CloseHandle(token) && !status) {
+			status = GetLastError();
+			if (!status)
+				status = ERROR_INVALID_DATA;
+		}
+	}
+	return status;
+}
+
+DWORD captureTokenIdentity(HANDLE token, wibo::identity::TokenSnapshot &snapshot) {
+	TOKEN_STATISTICS before{}, after{};
+	DWORD length = 0;
+	SetLastError(ERROR_SUCCESS);
+	if (!GetTokenInformation(token, TokenStatistics, &before, sizeof(before), &length)) {
+		const DWORD status = GetLastError();
+		return status ? status : ERROR_INVALID_DATA;
+	}
+	if (length != sizeof(before) || before.TokenType != TokenPrimary)
+		return ERROR_INVALID_DATA;
+	std::vector<BYTE> user, groups, restricted, primaryGroup;
+	DWORD status = readTokenInformation(token, TokenUser, user);
+	if (!status)
+		status = readTokenInformation(token, TokenGroups, groups);
+	if (!status) {
+		status = readTokenInformation(token, TokenRestrictedSids, restricted);
+		if (status == ERROR_INVALID_FUNCTION || status == ERROR_NOT_SUPPORTED || status == ERROR_INVALID_PARAMETER) {
+			// Retain native decisions when restriction metadata is unavailable;
+			// an absent query result does not establish an empty restriction list.
+			snapshot.membershipDisposition = wibo::identity::MembershipDisposition::NativeEvaluated;
+			snapshot.restrictionQueryError = status;
+			status = ERROR_SUCCESS;
+		}
+	}
+	if (!status)
+		status = readTokenInformation(token, TokenPrimaryGroup, primaryGroup);
+	if (status)
+		return status;
+	if (user.size() < sizeof(TOKEN_USER) || primaryGroup.size() < sizeof(TOKEN_PRIMARY_GROUP))
+		return ERROR_INVALID_DATA;
+	const auto *nativeUser = reinterpret_cast<const TOKEN_USER *>(user.data());
+	snapshot.user.attributes = nativeUser->User.Attributes;
+	if (!copyTokenSid(user, nativeUser->User.Sid, snapshot.user.sid) || !copyTokenGroups(groups, snapshot.groups) ||
+		(snapshot.membershipDisposition == wibo::identity::MembershipDisposition::CapturedLists &&
+		 !copyTokenGroups(restricted, snapshot.restrictedSids)) ||
+		!copyTokenSid(primaryGroup, reinterpret_cast<const TOKEN_PRIMARY_GROUP *>(primaryGroup.data())->PrimaryGroup,
+					  snapshot.primaryGroup))
+		return ERROR_INVALID_DATA;
+	TOKEN_ELEVATION elevation{};
+	SetLastError(ERROR_SUCCESS);
+	if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &length)) {
+		status = GetLastError();
+		return status ? status : ERROR_INVALID_DATA;
+	}
+	if (length != sizeof(elevation) || elevation.TokenIsElevated > 1)
+		return ERROR_INVALID_DATA;
+	snapshot.elevation = elevation.TokenIsElevated;
+	if (snapshot.membershipDisposition == wibo::identity::MembershipDisposition::NativeEvaluated) {
+		status = captureNativeMembership(token, snapshot);
+		if (status)
+			return status;
+	}
+	SetLastError(ERROR_SUCCESS);
+	if (!GetTokenInformation(token, TokenStatistics, &after, sizeof(after), &length)) {
+		status = GetLastError();
+		return status ? status : ERROR_INVALID_DATA;
+	}
+	if (length != sizeof(after) || after.TokenType != TokenPrimary || after.GroupCount != snapshot.groups.size())
+		return ERROR_INVALID_DATA;
+	if (std::memcmp(&before.TokenId, &after.TokenId, sizeof(LUID)) ||
+		std::memcmp(&before.ModifiedId, &after.ModifiedId, sizeof(LUID)))
+		return ERROR_RETRY;
+	static_assert(sizeof(TOKEN_STATISTICS) == sizeof(wibo::identity::TokenStatisticsSnapshot));
+	static_assert(offsetof(TOKEN_STATISTICS, ExpirationTime) ==
+				  offsetof(wibo::identity::TokenStatisticsSnapshot, expirationTime));
+	static_assert(offsetof(TOKEN_STATISTICS, ModifiedId) ==
+				  offsetof(wibo::identity::TokenStatisticsSnapshot, modifiedId));
+	std::memcpy(&snapshot.statistics, &after, sizeof(after));
+	return ERROR_SUCCESS;
+}
+
+bool tokenIdentity() {
+	HANDLE token = nullptr;
+	SetLastError(ERROR_SUCCESS);
+	DWORD status =
+		OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &token) ? ERROR_SUCCESS : GetLastError();
+	if (!token && !status)
+		status = ERROR_INVALID_DATA;
+	wibo::identity::TokenSnapshot snapshot;
+	if (!status) {
+		for (unsigned attempt = 0; attempt < 3; ++attempt) {
+			snapshot = {};
+			status = captureTokenIdentity(token, snapshot);
+			if (status != ERROR_RETRY)
+				break;
+		}
+	}
+	if (token) {
+		SetLastError(ERROR_SUCCESS);
+		if (!CloseHandle(token) && !status) {
+			status = GetLastError();
+			if (!status)
+				status = ERROR_INVALID_DATA;
+		}
+	}
+	Response response;
+	response.header(status);
+	if (!status) {
+		response.number(static_cast<uint32_t>(snapshot.source));
+		response.bytes(&snapshot.statistics, sizeof(snapshot.statistics));
+		response.number(snapshot.user.attributes);
+		response.bytes(snapshot.user.sid.data(), snapshot.user.sid.size());
+		for (const auto *list : {&snapshot.groups, &snapshot.restrictedSids}) {
+			response.number(static_cast<uint32_t>(list->size()));
+			for (const auto &entry : *list) {
+				response.number(entry.attributes);
+				response.bytes(entry.sid.data(), entry.sid.size());
+			}
+		}
+		response.bytes(snapshot.primaryGroup.data(), snapshot.primaryGroup.size());
+		response.number(snapshot.elevation);
+		response.number(static_cast<uint32_t>(snapshot.membershipDisposition));
+		response.number(snapshot.restrictionQueryError);
+		response.number(static_cast<uint32_t>(snapshot.nativeMembership.size()));
+		for (uint32_t member : snapshot.nativeMembership)
+			response.number(member);
+	}
+	if (!response.good()) {
+		Response failure;
+		failure.header(ERROR_NOT_ENOUGH_MEMORY);
+		return failure.write();
 	}
 	return response.write();
 }
@@ -2111,6 +2354,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = statusError(argv[2]);
 	else if (argc == 2 && wcscmp(argv[1], L"user-name") == 0)
 		written = userName();
+	else if (argc == 2 && wcscmp(argv[1], L"token-identity") == 0)
+		written = tokenIdentity();
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-a") == 0)
 		written = account(argv[2], argv[3], true);
 	else if (argc == 4 && wcscmp(argv[1], L"account-lookup-w") == 0)

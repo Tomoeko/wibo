@@ -1,4 +1,5 @@
 #include "common.h"
+#include "diagnostics.h"
 #include "entry.h"
 #include "entry_trampolines.h"
 #include "files.h"
@@ -13,9 +14,9 @@
 #include "types.h"
 #include "version_info.h"
 
+#include <cerrno>
 #include <charconv>
 #include <csignal>
-#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -145,20 +146,6 @@ class MainTebScope {
 
 } // namespace
 
-void wibo::debug_log(const char *fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
-	if (wibo::debugEnabled) {
-		for (size_t i = 0; i < wibo::debugIndent; i++)
-			fprintf(stderr, "\t");
-		fprintf(stderr, "[thread %x] ", getThreadId());
-		vfprintf(stderr, fmt, args);
-		fflush(stderr);
-	}
-
-	va_end(args);
-}
-
 TEB *wibo::allocateTib() {
 	auto *newTib = static_cast<TEB *>(wibo::heap::guestMalloc(sizeof(TEB), true));
 	if (!newTib) {
@@ -193,7 +180,7 @@ void wibo::initializeTibStackInfo(TEB *tibPtr) {
 	bool stackReady = wibo::heap::reserveGuestStack(1 * 1024 * 1024, &guestLimit, &guestBase);
 #endif
 	if (!stackReady) {
-		fprintf(stderr, "Failed to initialize guest stack\n");
+		wibo::diagnosticLog("Failed to initialize guest stack\n");
 		std::abort();
 	}
 	tibPtr->Tib.StackLimit = toGuestPtr(guestLimit);
@@ -467,12 +454,14 @@ int main(int argc, char **argv) {
 	}
 
 	std::optional<files::StandardHandles> inheritedStandardHandles;
+	DWORD bootstrapError = 0;
 	if (bootstrapFd >= 0) {
-		const DWORD error = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles);
-		if (error) {
-			std::fprintf(stderr, "Failed to initialize child process state: %u\n", error);
-			return 1;
-		}
+		bootstrapError = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles);
+	}
+	wibo::initializeDiagnostics();
+	if (bootstrapError) {
+		wibo::diagnosticLog("Failed to initialize child process state: %u\n", bootstrapError);
+		return 1;
 	}
 	files::init(inheritedStandardHandles);
 
@@ -491,7 +480,7 @@ int main(int argc, char **argv) {
 	wibo::processPeb = peb;
 	wibo::initializeTibStackInfo(tib);
 	if (!wibo::installTibForCurrentThread(tib)) {
-		perror("Failed to setup x86 segments and TEB");
+		wibo::diagnosticLog("Failed to setup x86 segments and TEB: %s\n", std::strerror(errno));
 		wibo::destroyTib(tib);
 		return 1;
 	}
@@ -510,7 +499,7 @@ int main(int argc, char **argv) {
 		programName = guestArgs[0];
 	}
 	if (programName.empty()) {
-		fprintf(stderr, "No guest program specified\n");
+		wibo::diagnosticLog("No guest program specified\n");
 		return 1;
 	}
 
@@ -522,7 +511,7 @@ int main(int argc, char **argv) {
 	std::filesystem::path resolvedGuestPath =
 		wibo::resolveExecutable(programName, true, pathNamespace).value_or(std::filesystem::path{});
 	if (resolvedGuestPath.empty()) {
-		fprintf(stderr, "Failed to resolve path to guest program %s\n", programName.c_str());
+		wibo::diagnosticLog("Failed to resolve path to guest program %s\n", programName.c_str());
 		return 1;
 	}
 
@@ -606,29 +595,28 @@ int main(int argc, char **argv) {
 
 	FILE *f = fopen(resolvedGuestPath.c_str(), "rb");
 	if (!f) {
-		std::string mesg = std::string("Failed to open file ") + resolvedGuestPath.string();
-		perror(mesg.c_str());
+		wibo::diagnosticLog("Failed to open file %s: %s\n", resolvedGuestPath.c_str(), std::strerror(errno));
 		return 1;
 	}
 
 	auto executable = std::make_unique<wibo::Executable>();
 	if (!executable->loadPE(f, true)) {
 		fclose(f);
-		fprintf(stderr, "Failed to load PE image %s\n", resolvedGuestPath.c_str());
+		wibo::diagnosticLog("Failed to load PE image %s\n", resolvedGuestPath.c_str());
 		return 1;
 	}
 	fclose(f);
 
 	const auto entryPoint = reinterpret_cast<EntryProc>(executable->entryPoint);
 	if (!entryPoint) {
-		fprintf(stderr, "Executable %s has no entry point\n", resolvedGuestPath.c_str());
+		wibo::diagnosticLog("Executable %s has no entry point\n", resolvedGuestPath.c_str());
 		return 1;
 	}
 
 	wibo::mainModule =
 		wibo::registerProcessModule(std::move(executable), std::move(resolvedGuestPath), std::move(programName));
 	if (!wibo::mainModule || !wibo::mainModule->executable) {
-		fprintf(stderr, "Failed to register process module\n");
+		wibo::diagnosticLog("Failed to register process module\n");
 		return 1;
 	}
 	// Dependency initialization can inspect the process image through the PEB.
@@ -637,7 +625,7 @@ int main(int argc, char **argv) {
 			  wibo::mainModule->executable->imageBase);
 
 	if (!wibo::mainModule->executable->resolveImports()) {
-		fprintf(stderr, "Failed to resolve imports for main module (DLL initialization failure?)\n");
+		wibo::diagnosticLog("Failed to resolve imports for main module (DLL initialization failure?)\n");
 #if defined(__APPLE__) && defined(WIBO_GUEST_64)
 		// abort() enters pthread_kill, where Rosetta can leave the translated
 		// process permanently uninterruptible. Import failure is an ordinary
@@ -650,7 +638,7 @@ int main(int argc, char **argv) {
 #endif
 	}
 	if (!wibo::initializeModuleTls(*wibo::mainModule)) {
-		fprintf(stderr, "Failed to initialize TLS for main module\n");
+		wibo::diagnosticLog("Failed to initialize TLS for main module\n");
 		return 1;
 	}
 

@@ -1,6 +1,7 @@
 #include "modules.h"
 
 #include "common.h"
+#include "diagnostics.h"
 #include "entry.h"
 #include "entry_trampolines.h"
 #include "errors.h"
@@ -198,9 +199,8 @@ StubFuncType resolveMissingFuncName(const char *dllName, const char *funcName) {
 		return existing->second;
 	}
 	if (stubIndex >= MAX_STUBS) {
-		fprintf(stderr, "wibo: too many missing functions encountered (>%zu). Last failure: %s (%s)\n", MAX_STUBS,
-				funcName, dllName);
-		fflush(stderr);
+		wibo::diagnosticLog("wibo: too many missing functions encountered (>%zu). Last failure: %s (%s)\n", MAX_STUBS,
+							funcName, dllName);
 #if defined(__APPLE__)
 		wibo::uninstallTebForCurrentThread();
 		_exit(127);
@@ -1254,8 +1254,7 @@ namespace entry {
 void stubBase(SIZE_T index) {
 	const char *func = stubFuncNames[index].empty() ? "<unknown>" : stubFuncNames[index].c_str();
 	const char *dll = stubDlls[index].empty() ? "<unknown>" : stubDlls[index].c_str();
-	fprintf(stderr, "wibo: call reached missing import %s from %s\n", func, dll);
-	fflush(stderr);
+	wibo::diagnosticLog("wibo: call reached missing import %s from %s\n", func, dll);
 #if defined(__APPLE__)
 	// abort() raises SIGABRT through pthread_kill. Rosetta can wedge that call
 	// indefinitely when a translated guest worker owns the fault, leaving every
@@ -1441,6 +1440,25 @@ void *loadedImageBaseFromAddress(void *addr) {
 	auto reg = registry();
 	ModuleInfo *info = moduleFromAddress(*reg, addr);
 	return info && info->executable ? info->executable->imageBase : nullptr;
+}
+
+std::vector<LoadedImageRange> loadedImageRanges() {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto reg = registry();
+	std::vector<LoadedImageRange> images;
+	for (const auto &[key, module] : reg->modulesByKey) {
+		(void)key;
+		if (!module || !module->executable)
+			continue;
+		const auto &image = *module->executable;
+		if (image.execMapped && image.imageBase && image.imageSize)
+			images.push_back({reinterpret_cast<uintptr_t>(image.imageBase), image.imageSize});
+	}
+	std::sort(images.begin(), images.end(), [](const auto &left, const auto &right) { return left.base < right.base; });
+	images.erase(std::unique(images.begin(), images.end(),
+							 [](const auto &left, const auto &right) { return left.base == right.base; }),
+				 images.end());
+	return images;
 }
 
 bool initializeModuleTls(ModuleInfo &module) {
@@ -2125,6 +2143,8 @@ void *resolveMissingImportByOrdinal(const char *dllName, uint16_t ordinal) {
 }
 
 Executable *executableFromModule(HMODULE module) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	auto reg = registry();
 	ModuleInfo *info = moduleInfoFromHandle(module);
 	if (!info) {
 		return nullptr;

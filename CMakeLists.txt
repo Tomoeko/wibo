@@ -67,8 +67,8 @@ if(WIBO_BUILD_SYSTEM_PROVIDER)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tools
         COMMAND ${WIBO_PROVIDER_CXX} -std=c++20 -Wall -Wextra -O2 -municode -static
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/system_provider.cpp
-            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lshlwapi -lsetupapi -lversion -o ${_provider_image}
-        DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h VERBATIM)
+            -lole32 -loleaut32 -lwbemuuid -luuid -luser32 -lgdi32 -liphlpapi -lshell32 -lshlwapi -lsetupapi -lversion -ladvapi32 -o ${_provider_image}
+        DEPENDS tools/system_provider.cpp tools/adapter_addresses.h src/security_descriptor.h src/token_identity.h VERBATIM)
     add_custom_target(system_provider ALL DEPENDS ${_provider_image})
 endif()
 set_property(CACHE WIBO_GUEST_ARCH PROPERTY STRINGS x86 x86_64)
@@ -285,6 +285,7 @@ add_executable(wibo
     dll/advapi32/md5.c
     dll/advapi32/processthreadsapi.cpp
     dll/advapi32/securitybaseapi.cpp
+    dll/advapi32/token_membership.cpp
     dll/advapi32/winbase.cpp
     dll/advapi32/wincrypt.cpp
     dll/advapi32/winreg.cpp
@@ -388,6 +389,8 @@ add_executable(wibo
     src/heap.cpp
     src/loader.cpp
     src/main.cpp
+    src/diagnostics.cpp
+    src/token_identity.cpp
     src/modules.cpp
     src/process_bootstrap.cpp
     src/processes_common.cpp
@@ -550,6 +553,7 @@ wibo_codegen_module(NAME advapi32 HEADERS
     dll/advapi32/evntprov.h
     dll/advapi32/processthreadsapi.h
     dll/advapi32/securitybaseapi.h
+    dll/advapi32/token_membership.h
     dll/advapi32/winbase.h
     dll/advapi32/wincrypt.h
     dll/advapi32/winreg.h
@@ -704,6 +708,35 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endif()
         add_test(NAME wibo.test_handle_transfer COMMAND test_handle_transfer)
         set_tests_properties(wibo.test_handle_transfer PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_token_metadata SOURCES test/test_token_metadata.c
+            COMPILE_OPTIONS -ladvapi32)
+        set_tests_properties(wibo.test_token_metadata PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_token_metadata_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_token_metadata.exe unsupported)
+        set_tests_properties(wibo.test_token_metadata_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+
+        wibo_add_fixture_bin(NAME test_token_information_identity SOURCES test/test_token_information_identity.c
+            COMPILE_OPTIONS -ladvapi32 NO_TEST)
+        add_test(NAME wibo.test_token_information_identity_unavailable
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_token_information_identity.exe)
+        set_tests_properties(wibo.test_token_information_identity_unavailable PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=;WIBO_FIXTURE_TOKEN_IDENTITY_RESPONSE=unavailable")
+        wibo_add_fixture_bin(NAME test_token_identity SOURCES test/test_token_identity.c
+            COMPILE_OPTIONS -ladvapi32 NO_TEST)
+        foreach(_token_mode success restricted retry failed unavailable truncated trailing bad-source
+                bad-stats-size bad-stats-type bad-stats-count bad-sid-revision bad-sid-count bad-sid-size
+                bad-elevation oversized-count user-attributes
+                native-evaluated native-evaluated-87 native-evaluated-50
+                bad-native-mode bad-native-error bad-native-count bad-native-value bad-native-deny-only
+                bad-native-disabled bad-native-restricted bad-list-decisions bad-list-error)
+            add_test(NAME wibo.test_token_identity_${_token_mode}
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/token_identity_provider_fixture.py
+                    $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_token_identity.exe ${_token_mode})
+            set_tests_properties(wibo.test_token_identity_${_token_mode} PROPERTIES TIMEOUT 30
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
+        endforeach()
 
         # Define fixture tests
         wibo_add_fixture_bin(NAME test_exit_process SOURCES test/test_exit_process.c
@@ -748,6 +781,14 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             wibo_add_fixture_bin(NAME test_missing_import_exit SOURCES test/test_missing_import_exit.c WILL_FAIL
                 COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
             set_tests_properties(wibo.test_missing_import_exit PROPERTIES TIMEOUT 5)
+            wibo_add_fixture_bin(NAME test_diagnostic_missing_child SOURCES test/test_diagnostic_missing_child.c NO_TEST
+                COMPILE_OPTIONS -nostdlib -Wl,--entry,mainCRTStartup -lkernel32)
+            wibo_add_fixture_bin(NAME test_diagnostic_null_std SOURCES test/test_diagnostic_null_std.c NO_TEST)
+            add_test(NAME wibo.test_diagnostic_log
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_diagnostic_log.py
+                    $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_diagnostic_null_std.exe)
+            set_tests_properties(wibo.test_diagnostic_log PROPERTIES TIMEOUT 25
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         endif()
         # A synchronous guest fault can strand Rosetta in an unkillable UEs
         # state on macOS. Keep these destructive teardown checks on native
@@ -885,6 +926,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 ENVIRONMENT "WIBO_EXPECT_BCRYPT_STATE=1;WIBO_EXPECT_BCRYPT_LIMITS=1")
         endif()
         wibo_add_fixture_bin(NAME test_dbghelp SOURCES test/test_dbghelp.c COMPILE_OPTIONS -ldbghelp)
+        set_tests_properties(wibo.test_dbghelp PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_dbghelp_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_dbghelp.exe --unsupported)
+        set_tests_properties(wibo.test_dbghelp_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_user32 SOURCES test/test_user32.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_window_message SOURCES test/test_window_message.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)

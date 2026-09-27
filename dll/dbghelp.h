@@ -7,8 +7,10 @@ using PDWORD64 = DWORD64 *;
 
 namespace dbghelp {
 
+DWORD WINAPI SymGetOptions();
 DWORD WINAPI SymSetOptions(DWORD SymOptions);
 BOOL WINAPI SymInitialize(HANDLE hProcess, LPCSTR UserSearchPath, BOOL fInvadeProcess);
+BOOL WINAPI SymCleanup(HANDLE hProcess);
 PVOID WINAPI SymFunctionTableAccess64(HANDLE hProcess, DWORD64 AddrBase);
 DWORD64 WINAPI SymGetModuleBase64(HANDLE hProcess, DWORD64 qwAddr);
 BOOL WINAPI SymGetLineFromAddr64(HANDLE hProcess, DWORD64 qwAddr, PDWORD pdwDisplacement, PVOID Line64);

@@ -6,6 +6,7 @@
 #include "handles.h"
 #include "internal.h"
 #include "kernel32/internal.h"
+#include "kernel32/minwinbase.h"
 #include "security_descriptor.h"
 #include "strutil.h"
 #include "system_provider.h"
@@ -17,8 +18,6 @@
 
 namespace {
 
-constexpr BYTE kNtAuthority[6] = {0, 0, 0, 0, 0, 5};
-
 constexpr size_t kAceAlignment = 4;
 constexpr DWORD ERROR_REVISION_MISMATCH = 1306;
 constexpr DWORD ERROR_INVALID_ACL = 1336;
@@ -27,7 +26,7 @@ constexpr DWORD ERROR_ALLOTTED_SPACE_EXCEEDED = 1344;
 constexpr DWORD ERROR_INVALID_SECURITY_DESCR = 1338;
 
 struct SidAndAttributes {
-	Sid *SidPtr;
+	GUEST_PTR SidPtr;
 	DWORD Attributes;
 };
 
@@ -48,9 +47,12 @@ struct TokenStatisticsData {
 	LUID modifiedId{};
 };
 
-struct TokenPrimaryGroupStub {
-	Sid *PrimaryGroup;
+struct TokenPrimaryGroupData {
+	GUEST_PTR PrimaryGroup;
 };
+static_assert(sizeof(TokenUserData) == (sizeof(GUEST_PTR) == 8 ? 16 : 8));
+static_assert(sizeof(TokenPrimaryGroupData) == sizeof(GUEST_PTR));
+static_assert(sizeof(TokenStatisticsData) == 56);
 
 size_t alignToDword(size_t value) { return (value + (kAceAlignment - 1)) & ~(kAceAlignment - 1); }
 
@@ -87,21 +89,6 @@ bool computeAclUsedSize(const ACL *acl, size_t capacity, size_t &used) {
 		offset += aceSize;
 	}
 	used = offset;
-	return true;
-}
-
-bool writeLocalSystemSid(Sid *sid) {
-	if (!sid) {
-		return false;
-	}
-	sid->Revision = 1;
-	sid->SubAuthorityCount = 1;
-	SidIdentifierAuthority authority{};
-	for (size_t i = 0; i < std::size(kNtAuthority); ++i) {
-		authority.Value[i] = kNtAuthority[i];
-	}
-	sid->IdentifierAuthority = authority;
-	sid->SubAuthority[0] = SECURITY_LOCAL_SYSTEM_RID;
 	return true;
 }
 
@@ -603,9 +590,11 @@ PDWORD WINAPI GetSidSubAuthority(PSID pSid, DWORD nSubAuthority) {
 
 BOOL WINAPI ImpersonateLoggedOnUser(HANDLE hToken) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: ImpersonateLoggedOnUser(%p)\n", hToken);
-	(void)hToken;
-	return TRUE;
+	DEBUG_LOG("ImpersonateLoggedOnUser(%p)\n", hToken);
+	const auto token = wibo::handles().getAs<TokenObject>(hToken);
+	// Thread-token assignment is unavailable; do not claim to replace the active identity.
+	kernel32::setLastError(token ? ERROR_NOT_SUPPORTED : ERROR_INVALID_HANDLE);
+	return FALSE;
 }
 
 BOOL WINAPI DuplicateTokenEx(HANDLE hExistingToken, DWORD dwDesiredAccess, void *lpTokenAttributes,
@@ -613,21 +602,48 @@ BOOL WINAPI DuplicateTokenEx(HANDLE hExistingToken, DWORD dwDesiredAccess, void 
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("DuplicateTokenEx(%p, 0x%x, %p, %u, %u, %p)\n", hExistingToken, dwDesiredAccess, lpTokenAttributes,
 			  ImpersonationLevel, TokenType, phNewToken);
-	(void)lpTokenAttributes;
-	(void)ImpersonationLevel;
-	(void)TokenType;
 	if (!phNewToken) {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	auto existing = wibo::handles().getAs<TokenObject>(hExistingToken);
+	*phNewToken = NO_HANDLE;
+	HandleMeta metadata{};
+	auto existing = wibo::handles().getAs<TokenObject>(hExistingToken, &metadata);
 	if (!existing) {
 		kernel32::setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	auto newToken =
-		make_pin<TokenObject>(existing->obj.clone(), dwDesiredAccess == 0 ? existing->desiredAccess : dwDesiredAccess);
-	*phNewToken = wibo::handles().alloc(std::move(newToken), 0, 0);
+	if (!(metadata.grantedAccess & TOKEN_DUPLICATE)) {
+		kernel32::setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+	if (TokenType != static_cast<DWORD>(TokenKind::Primary) &&
+		TokenType != static_cast<DWORD>(TokenKind::Impersonation)) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const auto kind = static_cast<TokenKind>(TokenType);
+	if (kind == TokenKind::Impersonation &&
+		(ImpersonationLevel > 3 ||
+		 (existing->kind == TokenKind::Impersonation && ImpersonationLevel > existing->impersonationLevel))) {
+		kernel32::setLastError(1346); // ERROR_BAD_IMPERSONATION_LEVEL
+		return FALSE;
+	}
+	const auto *attributes = static_cast<const SECURITY_ATTRIBUTES *>(lpTokenAttributes);
+	if (attributes && attributes->lpSecurityDescriptor != GUEST_NULL) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	DWORD granted = metadata.grantedAccess;
+	DWORD error = dwDesiredAccess ? tokenAccessError(dwDesiredAccess, granted) : ERROR_SUCCESS;
+	if (error != ERROR_SUCCESS) {
+		kernel32::setLastError(error);
+		return FALSE;
+	}
+	auto newToken = make_pin<TokenObject>(existing->obj.clone(), existing->identityContext, kind,
+										  kind == TokenKind::Impersonation ? ImpersonationLevel : 0);
+	const DWORD flags = attributes && attributes->bInheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	*phNewToken = wibo::handles().alloc(std::move(newToken), granted, flags);
 	return TRUE;
 }
 
@@ -787,77 +803,85 @@ BOOL WINAPI SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR pSecurityDescriptor, 
 BOOL WINAPI GetTokenInformation(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass,
 								LPVOID TokenInformation, DWORD TokenInformationLength, LPDWORD ReturnLength) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetTokenInformation(%p, %u, %p, %u, %p)\n", TokenHandle, TokenInformationClass, TokenInformation,
+	DEBUG_LOG("GetTokenInformation(%p, %u, %p, %u, %p)\n", TokenHandle, TokenInformationClass, TokenInformation,
 			  TokenInformationLength, ReturnLength);
 	if (!ReturnLength) {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	auto token = wibo::handles().getAs<TokenObject>(TokenHandle);
+	const bool scalar = TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenType ||
+						TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenImpersonationLevel;
+	const DWORD fixedLength = scalar || TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenElevation ? sizeof(DWORD)
+							  : TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenStatistics
+								  ? sizeof(TokenStatisticsData)
+								  : 0;
+	if (fixedLength) {
+		*ReturnLength = fixedLength;
+		if (TokenInformationLength < fixedLength) {
+			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
+			return FALSE;
+		}
+	}
+	HandleMeta metadata{};
+	auto token = wibo::handles().getAs<TokenObject>(TokenHandle, &metadata);
 	if (!token) {
 		kernel32::setLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	*ReturnLength = 0;
-	if (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenUser) {
-		constexpr size_t sidSize = sizeof(Sid);
-		constexpr size_t tokenUserSize = sizeof(TokenUserData);
-		DWORD required = static_cast<DWORD>(tokenUserSize + sidSize);
-		*ReturnLength = required;
-		if (!TokenInformation || TokenInformationLength < required) {
-			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
-			return FALSE;
-		}
-		auto *tokenUser = reinterpret_cast<TokenUserData *>(TokenInformation);
-		auto *sid = reinterpret_cast<Sid *>(reinterpret_cast<BYTE *>(TokenInformation) + tokenUserSize);
-		if (!writeLocalSystemSid(sid)) {
+	if (!(metadata.grantedAccess & TOKEN_QUERY)) {
+		kernel32::setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+	if (scalar) {
+		if (!TokenInformation || (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenImpersonationLevel &&
+								  token->kind == TokenKind::Primary)) {
 			kernel32::setLastError(ERROR_INVALID_PARAMETER);
 			return FALSE;
 		}
-		tokenUser->User.SidPtr = sid;
-		tokenUser->User.Attributes = 0;
+		const DWORD value = TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenType
+								? static_cast<DWORD>(token->kind)
+								: token->impersonationLevel;
+		std::memcpy(TokenInformation, &value, sizeof(value));
 		return TRUE;
 	}
 	if (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenStatistics) {
-		DWORD required = sizeof(TokenStatisticsData);
-		*ReturnLength = required;
-		if (!TokenInformation || TokenInformationLength < required) {
-			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
-			return FALSE;
-		}
-		auto *stats = reinterpret_cast<TokenStatisticsData *>(TokenInformation);
-		*stats = TokenStatisticsData{};
-		stats->tokenType = 1;		   // TokenPrimary
-		stats->impersonationLevel = 0; // SecurityAnonymous
-		stats->tokenId.LowPart = 1;
-		stats->authenticationId.LowPart = 1;
-		stats->modifiedId.LowPart = 1;
-		return TRUE;
+		// The adapter's IDs belong to its captured token, not these guest token objects.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
 	}
-	if (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenElevation) {
-		DWORD required = sizeof(DWORD);
+	if (!fixedLength)
+		*ReturnLength = 0;
+	if (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenUser ||
+		TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenPrimaryGroup ||
+		TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenElevation) {
+		const DWORD incomingError = kernel32::getLastError();
+		std::shared_ptr<const wibo::identity::TokenSnapshot> snapshot;
+		const DWORD error = wibo::identity::tokenSnapshot(token->identityContext, snapshot);
+		if (error != ERROR_SUCCESS) {
+			kernel32::setLastError(error);
+			return FALSE;
+		}
+		const bool user = TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenUser;
+		const bool group = TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenPrimaryGroup;
+		const auto &sid = user ? snapshot->user.sid : snapshot->primaryGroup;
+		const size_t headerSize = user ? sizeof(TokenUserData) : group ? sizeof(TokenPrimaryGroupData) : 0;
+		const DWORD required = static_cast<DWORD>(headerSize ? headerSize + sid.size() : sizeof(DWORD));
 		*ReturnLength = required;
 		if (!TokenInformation || TokenInformationLength < required) {
 			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
 			return FALSE;
 		}
-		*reinterpret_cast<DWORD *>(TokenInformation) = 0; // not elevated
-		return TRUE;
-	}
-	if (TokenInformationClass == TOKEN_INFORMATION_CLASS::TokenPrimaryGroup) {
-		DWORD required = static_cast<DWORD>(sizeof(TokenPrimaryGroupStub) + sizeof(Sid));
-		*ReturnLength = required;
-		if (!TokenInformation || TokenInformationLength < required) {
-			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
-			return FALSE;
+		auto *bytes = static_cast<BYTE *>(TokenInformation);
+		if (headerSize) {
+			std::memcpy(bytes + headerSize, sid.data(), sid.size());
+			const GUEST_PTR pointer = toGuestPtr(bytes + headerSize);
+			std::memcpy(bytes, &pointer, sizeof(pointer));
+			if (user)
+				std::memcpy(bytes + offsetof(SidAndAttributes, Attributes), &snapshot->user.attributes, sizeof(DWORD));
+		} else {
+			std::memcpy(bytes, &snapshot->elevation, sizeof(DWORD));
 		}
-		auto *groupInfo = reinterpret_cast<TokenPrimaryGroupStub *>(TokenInformation);
-		auto *sid = reinterpret_cast<Sid *>(reinterpret_cast<BYTE *>(TokenInformation) + sizeof(TokenPrimaryGroupStub));
-		if (!writeLocalSystemSid(sid)) {
-			kernel32::setLastError(ERROR_INVALID_PARAMETER);
-			return FALSE;
-		}
-		groupInfo->PrimaryGroup = sid;
+		kernel32::setLastError(incomingError);
 		return TRUE;
 	}
 	kernel32::setLastError(ERROR_NOT_SUPPORTED);
