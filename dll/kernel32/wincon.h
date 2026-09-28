@@ -2,6 +2,8 @@
 
 #include "types.h"
 
+#include <cstdint>
+
 struct COORD {
 	SHORT X;
 	SHORT Y;
@@ -35,6 +37,11 @@ static_assert(sizeof(CONSOLE_READCONSOLE_CONTROL) == 16);
 typedef BOOL(_CC_STDCALL *PHANDLER_ROUTINE)(DWORD CtrlType);
 
 namespace kernel32 {
+
+// The console session is process state, independent of the standard handles.
+DWORD initializeConsoleSession(uint16_t imageSubsystem, bool detached, int inheritedDescriptor);
+DWORD snapshotConsoleSessionDescriptor(int &descriptor);
+bool hasConsoleSession();
 
 BOOL WINAPI AttachConsole(DWORD processId);
 BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode);

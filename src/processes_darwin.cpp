@@ -152,8 +152,15 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 		for (const auto &mapping : descriptors) {
 			if (rc)
 				break;
+			// CLOEXEC_DEFAULT closes unmentioned descriptors in the child. A close
+			// action for an absent standard stream can race with another thread.
+			if (mapping.source < 0 && mapping.destination >= 0 && mapping.destination < 3)
+				continue;
 			rc = mapping.source < 0 ? posix_spawn_file_actions_addclose(&actions, mapping.destination)
-									: posix_spawn_file_actions_adddup2(&actions, mapping.source, mapping.destination);
+										: posix_spawn_file_actions_adddup2(&actions, mapping.source, mapping.destination);
+			if (rc != 0)
+				DEBUG_LOG("Spawn descriptor action failed: source=%d destination=%d error=%d\n", mapping.source,
+						  mapping.destination, rc);
 		}
 		for (int descriptor = 0; descriptor < 3 && !rc; ++descriptor) {
 			const bool replaced = std::any_of(descriptors.begin(), descriptors.end(),
@@ -163,6 +170,7 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 		}
 	}
 	if (rc != 0) {
+		DEBUG_LOG("Spawn file actions failed: error=%d directoryFd=%d\n", rc, directoryFd);
 		posix_spawn_file_actions_destroy(&actions);
 		return rc;
 	}
@@ -180,9 +188,21 @@ int spawnProcess(char *const argv[], char *const envp[], int directoryFd, SpawnP
 									  POSIX_SPAWN_SETSIGMASK | (descriptors.empty() ? 0 : POSIX_SPAWN_CLOEXEC_DEFAULT));
 	}
 	pid_t pid = -1;
+	bool spawnAttempted = false;
 	if (rc == 0) {
 		std::lock_guard lock(nativeProcessOperationMutex());
+		spawnAttempted = true;
 		rc = posix_spawn(&pid, path.c_str(), &actions, &attr, argv, envp);
+	}
+	if (spawnAttempted && rc == EBADF) {
+		DEBUG_LOG("Spawn failed with EBADF: directoryFd=%d mappings=%zu\n", directoryFd, descriptors.size());
+		if (directoryFd >= 0 && fcntl(directoryFd, F_GETFD) < 0 && errno == EBADF)
+			DEBUG_LOG("Spawn directory descriptor invalid: descriptor=%d\n", directoryFd);
+		for (const auto &mapping : descriptors) {
+			if (mapping.source >= 0 && fcntl(mapping.source, F_GETFD) < 0 && errno == EBADF)
+				DEBUG_LOG("Spawn source descriptor invalid: source=%d destination=%d\n", mapping.source,
+						  mapping.destination);
+		}
 	}
 	posix_spawnattr_destroy(&attr);
 	posix_spawn_file_actions_destroy(&actions);

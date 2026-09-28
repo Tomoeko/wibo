@@ -95,6 +95,17 @@ constexpr DWORD INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
 constexpr DWORD INVALID_FILE_SIZE = 0xFFFFFFFF;
 
 typedef void(_CC_STDCALL *LPOVERLAPPED_COMPLETION_ROUTINE)(DWORD, DWORD, LPOVERLAPPED);
+typedef DWORD(_CC_STDCALL *LPPROGRESS_ROUTINE)(LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER,
+											 DWORD, DWORD, HANDLE, HANDLE, LPVOID);
+
+constexpr DWORD COPY_FILE_FAIL_IF_EXISTS = 0x00000001;
+constexpr DWORD COPY_FILE_COPY_SYMLINK = 0x00000800;
+constexpr DWORD CALLBACK_CHUNK_FINISHED = 0;
+constexpr DWORD CALLBACK_STREAM_SWITCH = 1;
+constexpr DWORD PROGRESS_CONTINUE = 0;
+constexpr DWORD PROGRESS_CANCEL = 1;
+constexpr DWORD PROGRESS_STOP = 2;
+constexpr DWORD PROGRESS_QUIET = 3;
 
 namespace kernel32 {
 BOOL WINAPI AreFileApisANSI();
@@ -145,6 +156,12 @@ HANDLE WINAPI CreateFileW(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwSha
 						  DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
 BOOL WINAPI DeleteFileA(LPCSTR lpFileName);
 BOOL WINAPI DeleteFileW(LPCWSTR lpFileName);
+BOOL WINAPI CopyFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, BOOL bFailIfExists);
+BOOL WINAPI CopyFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, BOOL bFailIfExists);
+BOOL WINAPI CopyFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
+						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
+BOOL WINAPI CopyFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
+						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
 BOOL WINAPI MoveFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName);
 BOOL WINAPI MoveFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, DWORD dwFlags);
 BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD dwFlags);

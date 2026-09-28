@@ -11,6 +11,7 @@ DWORD winErrorFromErrno(int err) {
 	case 0:
 		return ERROR_SUCCESS;
 	case EACCES:
+	case EPERM:
 		return ERROR_ACCESS_DENIED;
 	case EXDEV:
 		return ERROR_NOT_SAME_DEVICE;

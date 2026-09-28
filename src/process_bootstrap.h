@@ -13,9 +13,15 @@ namespace wibo {
 
 struct SpawnOptions {
 	bool suspended = false;
+	bool detachedConsole = false;
 	std::vector<uint16_t> environment;
 	std::vector<HandleTransferEntry> handles;
 	std::optional<files::StandardHandles> standardHandles;
+};
+
+struct ConsoleBootstrap {
+	bool detached = false;
+	int inheritedDescriptor = -1;
 };
 
 namespace detail {
@@ -44,13 +50,15 @@ class ProcessBootstrap {
 	int mChildEndpoint = -1;
 	int mChildManifest = -1;
 	int mChildControl = -1;
+	int mConsole = -1;
 	std::vector<DescriptorMapping> mDescriptors;
 };
 
 } // namespace detail
 
 // Imported state and the initial resume gate precede all guest module initialization.
-DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files::StandardHandles> &standardHandles);
+DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files::StandardHandles> &standardHandles,
+						 ConsoleBootstrap &console);
 std::shared_future<void> monitorPrimaryThread(int controlFd, Pin<kernel32::ProcessThreadObject> thread);
 void reportPrimaryThreadExit(DWORD exitCode);
 

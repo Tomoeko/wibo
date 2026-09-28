@@ -6,6 +6,7 @@
 #include "heap.h"
 #include "kernel32/heapapi.h"
 #include "kernel32/internal.h"
+#include "kernel32/wincon.h"
 #include "modules.h"
 #include "processes.h"
 #include "setup.h"
@@ -454,9 +455,10 @@ int main(int argc, char **argv) {
 	}
 
 	std::optional<files::StandardHandles> inheritedStandardHandles;
+	wibo::ConsoleBootstrap inheritedConsole;
 	DWORD bootstrapError = 0;
 	if (bootstrapFd >= 0) {
-		bootstrapError = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles);
+		bootstrapError = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles, inheritedConsole);
 	}
 	wibo::initializeDiagnostics();
 	if (bootstrapError) {
@@ -621,6 +623,12 @@ int main(int argc, char **argv) {
 	}
 	// Dependency initialization can inspect the process image through the PEB.
 	peb->ImageBaseAddress = toGuestPtr(wibo::mainModule->executable->imageBase);
+	const DWORD consoleError = kernel32::initializeConsoleSession(wibo::mainModule->executable->subsystem,
+											  inheritedConsole.detached, inheritedConsole.inheritedDescriptor);
+	if (consoleError) {
+		wibo::diagnosticLog("Failed to initialize process console: %u\n", consoleError);
+		return 1;
+	}
 	DEBUG_LOG("Registered main module %s at %p\n", wibo::mainModule->normalizedName.c_str(),
 			  wibo::mainModule->executable->imageBase);
 

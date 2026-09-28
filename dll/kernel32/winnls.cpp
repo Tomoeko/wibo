@@ -437,8 +437,21 @@ LANGID WINAPI GetSystemDefaultLangID() {
 
 LANGID WINAPI GetUserDefaultUILanguage() {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetUserDefaultUILanguage()\n");
-	return 0;
+	DEBUG_LOG("GetUserDefaultUILanguage()\n");
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"user-default-ui-language"}, response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return 0;
+	uint32_t language = 0;
+	if (!reader.number(language) || !language || language > UINT16_MAX || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	return static_cast<LANGID>(language);
 }
 
 BOOL WINAPI GetFileMUIPath(DWORD dwFlags, LPCWSTR pcwszFilePath, LPWSTR pwszLanguage, PULONG pcchLanguage,

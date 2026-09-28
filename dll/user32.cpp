@@ -22,6 +22,7 @@
 namespace {
 
 std::atomic<bool> g_ghostingDisabled = false;
+std::atomic<DWORD> g_foregroundPermissionProcess = 0;
 std::mutex g_atomMutex;
 std::unordered_map<std::u16string, UINT> g_registeredAtoms;
 constexpr size_t kAlphaTableBytes = 0x10000 / 8;
@@ -315,8 +316,84 @@ BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWO
 }
 
 HWND WINAPI GetActiveWindow() {
+	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetActiveWindow()\n");
 	return NO_HANDLE;
+}
+
+HWND WINAPI GetForegroundWindow() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetForegroundWindow()\n");
+	return NO_HANDLE;
+}
+
+HWND WINAPI GetFocus() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetFocus()\n");
+	return NO_HANDLE;
+}
+
+HWND WINAPI SetFocus(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetFocus(%p)\n", window);
+	if (window)
+		kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return NO_HANDLE;
+}
+
+HWND WINAPI SetActiveWindow(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetActiveWindow(%p)\n", window);
+	if (window)
+		kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return NO_HANDLE;
+}
+
+BOOL WINAPI SetForegroundWindow(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetForegroundWindow(%p)\n", window);
+	kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return FALSE;
+}
+
+BOOL WINAPI AllowSetForegroundWindow(DWORD processId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("AllowSetForegroundWindow(%u)\n", processId);
+	if (processId != 0 && processId != UINT32_MAX) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	g_foregroundPermissionProcess.store(processId);
+	return TRUE;
+}
+
+DWORD WINAPI GetWindowThreadProcessId(HWND window, LPDWORD processId) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetWindowThreadProcessId(%p, %p)\n", window, processId);
+	kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return 0;
+}
+
+BOOL WINAPI IsWindow(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsWindow(%p)\n", window);
+	if (window)
+		kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return FALSE;
+}
+
+BOOL WINAPI IsWindowVisible(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsWindowVisible(%p)\n", window);
+	kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return FALSE;
+}
+
+BOOL WINAPI IsWindowEnabled(HWND window) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("IsWindowEnabled(%p)\n", window);
+	kernel32::setLastError(ERROR_INVALID_WINDOW_HANDLE);
+	return FALSE;
 }
 
 DWORD WINAPI GetSysColor(int nIndex) {

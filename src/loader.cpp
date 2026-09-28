@@ -376,6 +376,7 @@ void resetExecutableState(wibo::Executable &executable) {
 	executable.imageBase = nullptr;
 	executable.imageSize = 0;
 	executable.entryPoint = nullptr;
+	executable.subsystem = 0;
 	executable.rsrcBase = nullptr;
 	executable.rsrcSize = 0;
 	executable.preferredImageBase = 0;
@@ -427,6 +428,7 @@ bool readOptionalHeader(const PeInputView &source, uint64_t offset, size_t size,
 	}
 	normalized.magic = header.magic;
 	normalized.addressOfEntryPoint = header.addressOfEntryPoint;
+	normalized.subsystem = header.subsystem;
 	normalized.imageBase = header.imageBase;
 	normalized.sectionAlignment = header.sectionAlignment;
 	normalized.fileAlignment = header.fileAlignment;
@@ -560,6 +562,7 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	const auto &header = image.fileHeader;
 	const auto &header32 = image.optionalHeader;
 	executable.isDll = !!(header.characteristics & IMAGE_FILE_DLL);
+	executable.subsystem = header32.subsystem;
 
 	DEBUG_LOG("Sections: %u / Size of optional header: %x\n", header.numberOfSections, header.sizeOfOptionalHeader);
 	DEBUG_LOG("Image Base: %llx / Size: %x\n", static_cast<unsigned long long>(header32.imageBase),

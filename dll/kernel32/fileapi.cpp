@@ -1,4 +1,5 @@
 #include "fileapi.h"
+#include "file_attributes.h"
 
 #include "access.h"
 #include "async_io.h"
@@ -9,6 +10,7 @@
 #include "handleapi.h"
 #include "handles.h"
 #include "internal.h"
+#include "kernel32.h"
 #include "namedpipeapi.h"
 #include "overlapped_util.h"
 #include "strutil.h"
@@ -16,6 +18,7 @@
 #include "types.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
@@ -279,23 +282,11 @@ void clearAlternateName(WIN32_FIND_DATAA &data) { data.cAlternateFileName[0] = '
 
 void clearAlternateName(WIN32_FIND_DATAW &data) { data.cAlternateFileName[0] = 0; }
 
-DWORD buildFileAttributes(const struct stat &st, bool isDirectory) {
-	DWORD attributes = 0;
-	mode_t mode = st.st_mode;
-	if (S_ISDIR(mode) || isDirectory) {
-		attributes |= FILE_ATTRIBUTE_DIRECTORY;
-	}
-	if (S_ISREG(mode) && !isDirectory) {
-		attributes |= FILE_ATTRIBUTE_ARCHIVE;
-	}
-	if ((mode & S_IWUSR) == 0) {
-		attributes |= FILE_ATTRIBUTE_READONLY;
-	}
-	if (attributes == 0) {
-		attributes = FILE_ATTRIBUTE_NORMAL;
-	}
-	return attributes;
-}
+using kernel32::fileAttributes::buildFileAttributes;
+using kernel32::fileAttributes::kStoredHidden;
+using kernel32::fileAttributes::kStoredReadOnly;
+using kernel32::fileAttributes::readStoredAttributes;
+using kernel32::fileAttributes::writeStoredAttributes;
 
 timespec creationTimespec(const struct stat &st) {
 #ifdef __APPLE__
@@ -306,32 +297,39 @@ timespec creationTimespec(const struct stat &st) {
 #endif
 }
 
-void populateAttributeDataFromStat(const struct stat &st, bool isDirectory, WIN32_FILE_ATTRIBUTE_DATA &out) {
-	out.dwFileAttributes = buildFileAttributes(st, isDirectory);
+bool populateAttributeDataFromStat(const struct stat &st, bool isDirectory, WIN32_FILE_ATTRIBUTE_DATA &out,
+								   const char *path = nullptr, int fd = -1) {
+	if (!buildFileAttributes(st, isDirectory, out.dwFileAttributes, path, fd))
+		return false;
 	toFileTime(creationTimespec(st), out.ftCreationTime);
 	toFileTime(accessTimespec(st), out.ftLastAccessTime);
 	toFileTime(modifyTimespec(st), out.ftLastWriteTime);
 	uint64_t fileSize = (isDirectory || !S_ISREG(st.st_mode)) ? 0ULL : static_cast<uint64_t>(st.st_size);
 	out.nFileSizeHigh = static_cast<DWORD>(fileSize >> 32);
 	out.nFileSizeLow = static_cast<DWORD>(fileSize & 0xFFFFFFFFULL);
+	return true;
 }
 
-template <typename FindData> void populateFromStat(const FindSearchEntry &entry, const struct stat &st, FindData &out) {
-	out.dwFileAttributes = buildFileAttributes(st, entry.isDirectory);
+template <typename FindData> bool populateFromStat(const FindSearchEntry &entry, const struct stat &st, FindData &out) {
+	const std::string path = entry.fullPath.string();
+	if (!buildFileAttributes(st, entry.isDirectory, out.dwFileAttributes, path.c_str()))
+		return false;
 	uint64_t fileSize = (entry.isDirectory || !S_ISREG(st.st_mode)) ? 0ULL : static_cast<uint64_t>(st.st_size);
 	out.nFileSizeHigh = static_cast<DWORD>(fileSize >> 32);
 	out.nFileSizeLow = static_cast<DWORD>(fileSize & 0xFFFFFFFFULL);
 	toFileTime(creationTimespec(st), out.ftCreationTime);
 	toFileTime(accessTimespec(st), out.ftLastAccessTime);
 	toFileTime(modifyTimespec(st), out.ftLastWriteTime);
+	return true;
 }
 
-template <typename FindData> void populateFindData(const FindSearchEntry &entry, FindData &out) {
+template <typename FindData> bool populateFindData(const FindSearchEntry &entry, FindData &out) {
 	resetFindDataStruct(out);
 	std::string nativePath = entry.fullPath.empty() ? std::string() : entry.fullPath.string();
 	struct stat st{};
 	if (!nativePath.empty() && stat(nativePath.c_str(), &st) == 0) {
-		populateFromStat(entry, st, out);
+		if (!populateFromStat(entry, st, out))
+			return false;
 	} else {
 		out.dwFileAttributes = entry.isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
 		out.ftCreationTime = kDefaultFindFileTime;
@@ -342,6 +340,7 @@ template <typename FindData> void populateFindData(const FindSearchEntry &entry,
 	}
 	assignFileName(out, entry.name);
 	clearAlternateName(out);
+	return true;
 }
 
 std::filesystem::path parentOrSelf(const std::filesystem::path &path) {
@@ -517,7 +516,10 @@ template <typename FindData> HANDLE findFirstFileCommon(const std::string &rawIn
 		entry.isDirectory = targetStatus.type() == std::filesystem::file_type::directory;
 		entry.name = determineDisplayName(targetPath, filePart);
 
-		populateFindData(entry, *lpFindFileData);
+		if (!populateFindData(entry, *lpFindFileData)) {
+			kernel32::setLastError(wibo::winErrorFromErrno(errno));
+			return INVALID_HANDLE_VALUE;
+		}
 		kernel32::setLastError(ERROR_SUCCESS);
 
 		auto state = std::make_unique<FindSearchHandle>();
@@ -534,7 +536,10 @@ template <typename FindData> HANDLE findFirstFileCommon(const std::string &rawIn
 		return INVALID_HANDLE_VALUE;
 	}
 
-	populateFindData(matches[0], *lpFindFileData);
+	if (!populateFindData(matches[0], *lpFindFileData)) {
+		kernel32::setLastError(wibo::winErrorFromErrno(errno));
+		return INVALID_HANDLE_VALUE;
+	}
 	kernel32::setLastError(ERROR_SUCCESS);
 
 	auto state = std::make_unique<FindSearchHandle>();
@@ -698,7 +703,12 @@ DWORD WINAPI GetFileAttributesA(LPCSTR lpFileName) {
 		setLastErrorFromErrno();
 		return INVALID_FILE_ATTRIBUTES;
 	}
-	return buildFileAttributes(information, S_ISDIR(information.st_mode));
+	DWORD attributes = 0;
+	if (!buildFileAttributes(information, S_ISDIR(information.st_mode), attributes, pathStr.c_str())) {
+		setLastErrorFromErrno();
+		return INVALID_FILE_ATTRIBUTES;
+	}
+	return attributes;
 }
 
 DWORD WINAPI GetFileAttributesW(LPCWSTR lpFileName) {
@@ -740,7 +750,10 @@ BOOL WINAPI GetFileAttributesExA(LPCSTR lpFileName, GET_FILEEX_INFO_LEVELS fInfo
 
 	auto *attributeData = static_cast<LPWIN32_FILE_ATTRIBUTE_DATA>(lpFileInformation);
 	bool isDirectory = S_ISDIR(st.st_mode);
-	populateAttributeDataFromStat(st, isDirectory, *attributeData);
+	if (!populateAttributeDataFromStat(st, isDirectory, *attributeData, hostPathStr.c_str())) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
 	return TRUE;
 }
 
@@ -1283,6 +1296,19 @@ HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShar
 	bool wantsWrite = containsAny(normalized.grantedMask, isDirectory ? kDirectoryWriteMask : kFileWriteMask);
 	bool appendRequested = !isDirectory && containsAny(normalized.grantedMask, FILE_APPEND_DATA);
 	bool appendOnly = appendRequested && !containsAny(normalized.grantedMask, FILE_WRITE_DATA);
+	if (pathExists && !isDirectory) {
+		uint8_t stored = 0;
+		if (!readStoredAttributes(hostPathStr.c_str(), -1, stored)) {
+			setLastError(wibo::winErrorFromErrno(errno));
+			return INVALID_HANDLE_VALUE;
+		}
+		if ((stored & kStoredReadOnly) &&
+			(containsAny(normalized.grantedMask, FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE) ||
+			 truncateExisting || deleteOnClose)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return INVALID_HANDLE_VALUE;
+		}
+	}
 #ifdef CHECK_ACCESS
 	if (allowCreate && !containsAny(normalized.grantedMask, FILE_WRITE_DATA | FILE_APPEND_DATA)) {
 		setLastError(ERROR_ACCESS_DENIED);
@@ -1410,6 +1436,18 @@ BOOL WINAPI DeleteFileA(LPCSTR lpFileName) {
 	}
 	std::string path = files::pathFromWindows(lpFileName);
 	DEBUG_LOG("DeleteFileA(%s) -> %s\n", lpFileName, path.c_str());
+	struct stat information{};
+	if (lstat(path.c_str(), &information) == 0 && S_ISREG(information.st_mode)) {
+		uint8_t stored = 0;
+		if (!readStoredAttributes(path.c_str(), -1, stored)) {
+			setLastError(wibo::winErrorFromErrno(errno));
+			return FALSE;
+		}
+		if ((information.st_mode & S_IWUSR) == 0 || (stored & kStoredReadOnly)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+	}
 	if (unlink(path.c_str()) != 0) {
 		setLastErrorFromErrno();
 		return FALSE;
@@ -1426,6 +1464,210 @@ BOOL WINAPI DeleteFileW(LPCWSTR lpFileName) {
 	}
 	std::string name = wideStringToString(lpFileName);
 	return DeleteFileA(name.c_str());
+}
+
+namespace {
+
+BOOL copyFileCommon(const char *existingName, const char *newName, LPPROGRESS_ROUTINE progressRoutine,
+					LPVOID data, LPBOOL cancel, DWORD flags) {
+	if (!existingName || !newName || !*existingName || !*newName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (flags & ~(COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_COPY_SYMLINK)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const std::filesystem::path sourcePath = files::pathFromWindows(existingName);
+	const std::filesystem::path destinationPath = files::pathFromWindows(newName);
+	if (flags & COPY_FILE_COPY_SYMLINK) {
+		struct stat sourceLink{};
+		if (lstat(sourcePath.c_str(), &sourceLink) != 0) {
+			setLastErrorFromErrno();
+			return FALSE;
+		}
+		if (S_ISLNK(sourceLink.st_mode)) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+		struct stat destinationLink{};
+		if (lstat(destinationPath.c_str(), &destinationLink) == 0) {
+			if (S_ISLNK(destinationLink.st_mode)) {
+				setLastError(ERROR_NOT_SUPPORTED);
+				return FALSE;
+			}
+		} else if (errno != ENOENT) {
+			setLastErrorFromErrno();
+			return FALSE;
+		}
+	}
+	struct stat sourceInfo{};
+	if (stat(sourcePath.c_str(), &sourceInfo) != 0) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	if (!S_ISREG(sourceInfo.st_mode)) {
+		setLastError(S_ISDIR(sourceInfo.st_mode) ? ERROR_ACCESS_DENIED : ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const DWORD sourceAttributes = GetFileAttributesA(existingName);
+	if (sourceAttributes == INVALID_FILE_ATTRIBUTES)
+		return FALSE;
+	struct stat destinationInfo{};
+	if (stat(destinationPath.c_str(), &destinationInfo) == 0) {
+		if (flags & COPY_FILE_FAIL_IF_EXISTS) {
+			setLastError(ERROR_FILE_EXISTS);
+			return FALSE;
+		}
+		if (!S_ISREG(destinationInfo.st_mode)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+		if (sourceInfo.st_dev == destinationInfo.st_dev && sourceInfo.st_ino == destinationInfo.st_ino) {
+			setLastError(ERROR_SHARING_VIOLATION);
+			return FALSE;
+		}
+		const DWORD destinationAttributes = GetFileAttributesA(newName);
+		if (destinationAttributes == INVALID_FILE_ATTRIBUTES)
+			return FALSE;
+		if (destinationAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+	} else if (errno != ENOENT) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	if (cancel && *cancel) {
+		setLastError(ERROR_REQUEST_ABORTED);
+		return FALSE;
+	}
+	HANDLE source = CreateFileA(existingName, GENERIC_READ,
+								FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+								FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+	if (source == INVALID_HANDLE_VALUE)
+		return FALSE;
+	HANDLE destination = INVALID_HANDLE_VALUE;
+	auto fail = [&](DWORD error, bool removeDestination = false) -> BOOL {
+		if (destination != INVALID_HANDLE_VALUE)
+			CloseHandle(destination);
+		CloseHandle(source);
+		if (removeDestination)
+			DeleteFileA(newName);
+		setLastError(error);
+		return FALSE;
+	};
+	FILETIME accessTime{}, writeTime{};
+	if (!GetFileTime(source, nullptr, &accessTime, &writeTime))
+		return fail(getLastError());
+	LARGE_INTEGER total{};
+	if (!GetFileSizeEx(source, &total))
+		return fail(getLastError());
+	destination = CreateFileA(newName, GENERIC_WRITE,
+								 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+								 (flags & COPY_FILE_FAIL_IF_EXISTS) ? CREATE_NEW : CREATE_ALWAYS,
+								 FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+	if (destination == INVALID_HANDLE_VALUE)
+		return fail(getLastError());
+	LARGE_INTEGER transferred{};
+	bool quiet = false;
+	auto reportProgress = [&](DWORD reason) -> DWORD {
+		if (!progressRoutine || quiet)
+			return PROGRESS_CONTINUE;
+		DWORD action = call_LPPROGRESS_ROUTINE(progressRoutine, total, transferred, total, transferred, 1, reason,
+										 source, destination, data);
+		if (action == PROGRESS_QUIET) {
+			quiet = true;
+			return PROGRESS_CONTINUE;
+		}
+		return action;
+	};
+	auto handleProgress = [&](DWORD action) -> std::optional<BOOL> {
+		if (cancel && *cancel)
+			return fail(ERROR_REQUEST_ABORTED, true);
+		if (action == PROGRESS_CANCEL)
+			return fail(ERROR_REQUEST_ABORTED, true);
+		if (action == PROGRESS_STOP)
+			return fail(ERROR_REQUEST_ABORTED);
+		if (action != PROGRESS_CONTINUE)
+			return fail(ERROR_INVALID_PARAMETER, true);
+		return std::nullopt;
+	};
+	if (const auto stopped = handleProgress(reportProgress(CALLBACK_STREAM_SWITCH)))
+		return *stopped;
+	std::array<BYTE, 65536> buffer{};
+	while (transferred.QuadPart < total.QuadPart) {
+		if (cancel && *cancel)
+			return fail(ERROR_REQUEST_ABORTED, true);
+		const DWORD requested = static_cast<DWORD>(std::min<LONGLONG>(buffer.size(), total.QuadPart - transferred.QuadPart));
+		DWORD bytesRead = 0;
+		if (!ReadFile(source, buffer.data(), requested, &bytesRead, nullptr))
+			return fail(getLastError());
+		if (!bytesRead)
+			return fail(ERROR_READ_FAULT);
+		DWORD written = 0;
+		while (written < bytesRead) {
+			DWORD count = 0;
+			if (!WriteFile(destination, buffer.data() + written, bytesRead - written, &count, nullptr))
+				return fail(getLastError());
+			if (!count)
+				return fail(ERROR_GEN_FAILURE);
+			written += count;
+		}
+		transferred.QuadPart += bytesRead;
+		if (const auto stopped = handleProgress(reportProgress(CALLBACK_CHUNK_FINISHED)))
+			return *stopped;
+	}
+	if (!SetFileTime(destination, nullptr, &accessTime, &writeTime))
+		return fail(getLastError());
+	if (!SetFileAttributesA(newName, sourceAttributes))
+		return fail(getLastError());
+	const BOOL closedDestination = CloseHandle(destination);
+	const BOOL closedSource = CloseHandle(source);
+	if (!closedDestination || !closedSource) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	setLastError(ERROR_SUCCESS);
+	return TRUE;
+}
+
+} // namespace
+
+BOOL WINAPI CopyFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
+						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags) {
+	HOST_CONTEXT_GUARD();
+	return copyFileCommon(lpExistingFileName, lpNewFileName, lpProgressRoutine, lpData, pbCancel, dwCopyFlags);
+}
+
+BOOL WINAPI CopyFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
+						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags) {
+	HOST_CONTEXT_GUARD();
+	if (!lpExistingFileName || !lpNewFileName) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	std::string existingName, newName;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpExistingFileName),
+											 wstrlen(lpExistingFileName)), existingName) ||
+		!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpNewFileName),
+											 wstrlen(lpNewFileName)), newName)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	return copyFileCommon(existingName.c_str(), newName.c_str(), lpProgressRoutine, lpData, pbCancel, dwCopyFlags);
+}
+
+BOOL WINAPI CopyFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, BOOL bFailIfExists) {
+	HOST_CONTEXT_GUARD();
+	return copyFileCommon(lpExistingFileName, lpNewFileName, nullptr, nullptr, nullptr,
+						  bFailIfExists ? COPY_FILE_FAIL_IF_EXISTS : 0);
+}
+
+BOOL WINAPI CopyFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, BOOL bFailIfExists) {
+	HOST_CONTEXT_GUARD();
+	return CopyFileExW(lpExistingFileName, lpNewFileName, nullptr, nullptr, nullptr,
+						   bFailIfExists ? COPY_FILE_FAIL_IF_EXISTS : 0);
 }
 
 namespace {
@@ -1485,6 +1727,17 @@ BOOL moveFile(const char *from, const char *to, DWORD flags) {
 		if (S_ISDIR(destination.st_mode) || !(destination.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH))) {
 			setLastError(ERROR_ACCESS_DENIED);
 			return FALSE;
+		}
+		if (S_ISREG(destination.st_mode)) {
+			uint8_t stored = 0;
+			if (!readStoredAttributes(toPath.c_str(), -1, stored)) {
+				setLastError(wibo::winErrorFromErrno(errno));
+				return FALSE;
+			}
+			if (stored & kStoredReadOnly) {
+				setLastError(ERROR_ACCESS_DENIED);
+				return FALSE;
+			}
 		}
 	} else if (errno != ENOENT) {
 		setLastErrorFromErrno();
@@ -1734,12 +1987,68 @@ BOOL WINAPI RemoveDirectoryW(LPCWSTR lpPathName) {
 
 BOOL WINAPI SetFileAttributesA(LPCSTR lpFileName, DWORD dwFileAttributes) {
 	HOST_CONTEXT_GUARD();
-	(void)dwFileAttributes;
-	if (!lpFileName) {
-		setLastError(ERROR_INVALID_PARAMETER);
+	DEBUG_LOG("SetFileAttributesA(%s, 0x%x)\n", lpFileName ? lpFileName : "(null)", dwFileAttributes);
+	if (!lpFileName || !*lpFileName) {
+		setLastError(ERROR_PATH_NOT_FOUND);
 		return FALSE;
 	}
-	DEBUG_LOG("STUB: SetFileAttributesA(%s, %u)\n", lpFileName, dwFileAttributes);
+	constexpr DWORD supported = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN |
+								FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED | FILE_ATTRIBUTE_READONLY |
+								FILE_ATTRIBUTE_TEMPORARY;
+	if (dwFileAttributes & ~supported) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const std::filesystem::path path = files::pathFromWindows(lpFileName);
+	if (path.empty()) {
+		setLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
+	const std::string nativePath = path.string();
+	struct stat st{};
+	if (lstat(nativePath.c_str(), &st) != 0) {
+		const int error = errno;
+		if (error == ENOENT) {
+			auto parent = path.parent_path();
+			if (parent.empty())
+				parent = ".";
+			struct stat parentInfo{};
+			setLastError(stat(parent.c_str(), &parentInfo) == 0 && S_ISDIR(parentInfo.st_mode)
+						 ? ERROR_FILE_NOT_FOUND
+						 : ERROR_PATH_NOT_FOUND);
+		} else {
+			setLastError(wibo::winErrorFromErrno(error));
+		}
+		return FALSE;
+	}
+	if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const bool directory = S_ISDIR(st.st_mode);
+	const bool readOnly = !directory && (dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+	const bool hidden = (dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+	uint8_t stored = 0;
+	if (!readStoredAttributes(nativePath.c_str(), -1, stored)) {
+		setLastError(wibo::winErrorFromErrno(errno));
+		return FALSE;
+	}
+	if (!readOnly && !directory && (st.st_mode & S_IWUSR) == 0) {
+		// A host permission restriction cannot be safely cleared as a file attribute.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+#if defined(__APPLE__)
+	if (!hidden && (st.st_flags & UF_HIDDEN)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+#endif
+	const uint8_t updated = (readOnly ? kStoredReadOnly : 0) | (hidden ? kStoredHidden : 0);
+	if (updated != stored && !writeStoredAttributes(nativePath.c_str(), updated)) {
+		setLastError(wibo::winErrorFromErrno(errno));
+		return FALSE;
+	}
 	return TRUE;
 }
 
@@ -1747,10 +2056,15 @@ BOOL WINAPI SetFileAttributesW(LPCWSTR lpFileName, DWORD dwFileAttributes) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetFileAttributesW -> ");
 	if (!lpFileName) {
-		setLastError(ERROR_INVALID_PARAMETER);
+		setLastError(ERROR_PATH_NOT_FOUND);
 		return FALSE;
 	}
-	std::string fileName = wideStringToString(lpFileName);
+	std::string fileName;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName)),
+					 fileName)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return SetFileAttributesA(fileName.c_str(), dwFileAttributes);
 }
 
@@ -1934,7 +2248,10 @@ BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATIO
 		return FALSE;
 	}
 	WIN32_FILE_ATTRIBUTE_DATA attributes{};
-	populateAttributeDataFromStat(st, S_ISDIR(st.st_mode), attributes);
+	if (!populateAttributeDataFromStat(st, S_ISDIR(st.st_mode), attributes, nullptr, file->fd)) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
 	lpFileInformation->dwFileAttributes = attributes.dwFileAttributes;
 	lpFileInformation->ftCreationTime = attributes.ftCreationTime;
 	lpFileInformation->ftLastAccessTime = attributes.ftLastAccessTime;
@@ -2406,7 +2723,11 @@ BOOL WINAPI FindNextFileA(HANDLE hFindFile, LPWIN32_FIND_DATAA lpFindFileData) {
 		setLastError(ERROR_NO_MORE_FILES);
 		return FALSE;
 	}
-	populateFindData(state->entries[state->nextIndex++], *lpFindFileData);
+	if (!populateFindData(state->entries[state->nextIndex], *lpFindFileData)) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	++state->nextIndex;
 	return TRUE;
 }
 
@@ -2430,7 +2751,11 @@ BOOL WINAPI FindNextFileW(HANDLE hFindFile, LPWIN32_FIND_DATAW lpFindFileData) {
 		setLastError(ERROR_NO_MORE_FILES);
 		return FALSE;
 	}
-	populateFindData(state->entries[state->nextIndex++], *lpFindFileData);
+	if (!populateFindData(state->entries[state->nextIndex], *lpFindFileData)) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+	++state->nextIndex;
 	return TRUE;
 }
 

@@ -1162,7 +1162,7 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 		return FALSE;
 	}
 	constexpr DWORD supportedFlags = CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT |
-									 EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
+										 EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS;
 	if (dwCreationFlags & ~supportedFlags) {
 		DEBUG_LOG("Unsupported process creation flags: 0x%x\n", dwCreationFlags & ~supportedFlags);
 		setLastError(ERROR_NOT_SUPPORTED);
@@ -1171,6 +1171,7 @@ BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECU
 	const bool useSearchPath = lpApplicationName == nullptr;
 	wibo::SpawnOptions options;
 	options.suspended = (dwCreationFlags & CREATE_SUSPENDED) != 0;
+	options.detachedConsole = (dwCreationFlags & DETACHED_PROCESS) != 0;
 	DWORD error = snapshotChildEnvironment(lpEnvironment, (dwCreationFlags & CREATE_UNICODE_ENVIRONMENT) != 0,
 										   options.environment);
 	if (error) {

@@ -612,6 +612,60 @@ elif operation == 'device-info-set-a':
         response = header() + number(0xffffffff)
     elif fault == 'failed':
         response = header(5)
+elif operation == 'device-interface-set-a':
+    identity, enumerator, flags_text = arguments
+    class_guid = bytes.fromhex(identity) if identity != '-' else None
+    name = bytes.fromhex(enumerator) if enumerator != '-' else None
+    flags = int(flags_text)
+    synthetic_guid = bytes(range(16))
+    device_class_guid = bytes(range(16, 32))
+    synthetic_path = r'\\?\SYNTHETIC#DEVICE#0'.encode('utf-16-le')
+    devices = []
+    interfaces = []
+    if class_guid == synthetic_guid and flags & 0x10 and name != b'WIBO_SYNTHETIC_ABSENT':
+        devices.append((device_class_guid, 9))
+        interfaces.append((class_guid, 1, 9, device_class_guid, synthetic_path))
+    device_rows = b''.join(blob(guid) + number(instance) for guid, instance in devices)
+    interface_rows = b''.join(blob(guid) + number(interface_flags) + number(instance) + blob(owner) + blob(path)
+                              for guid, interface_flags, instance, owner, path in interfaces)
+    prefix = header() + number(len(devices)) + device_rows
+    response = prefix + number(len(interfaces)) + interface_rows
+    fault = os.environ.get('WIBO_FIXTURE_DEVICE_INTERFACES_RESPONSE')
+    if fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
+    elif fault == 'bad-guid':
+        response = (prefix + number(1) + blob(bytes(15)) + number(1) + number(9)
+                    + blob(device_class_guid) + blob(synthetic_path))
+    elif fault == 'bad-owner-guid':
+        response = (prefix + number(1) + blob(synthetic_guid) + number(1) + number(9)
+                    + blob(bytes(15)) + blob(synthetic_path))
+    elif fault == 'bad-path':
+        response = (prefix + number(1) + blob(synthetic_guid) + number(1) + number(9)
+                    + blob(device_class_guid) + blob(b'\0'))
+    elif fault == 'bad-device-guid':
+        response = header() + number(1) + blob(bytes(15)) + number(9) + number(1) + interface_rows
+    elif fault == 'missing-device':
+        response = header() + number(0) + number(1) + interface_rows
+    elif fault == 'bad-count':
+        response = header() + number(0xffffffff)
+    elif fault == 'failed':
+        response = header(5)
+elif operation == 'user-default-ui-language':
+    assert not arguments
+    response = header() + number(0x0411)
+    fault = os.environ.get('WIBO_FIXTURE_UI_LANGUAGE_RESPONSE')
+    if fault == 'failed':
+        response = header(5)
+    elif fault == 'invalid-zero':
+        response = header() + number(0)
+    elif fault == 'invalid-high':
+        response = header() + number(0x10000)
+    elif fault == 'truncated':
+        response = response[:-1]
+    elif fault == 'trailing':
+        response += b'\0'
 elif operation == 'memory-resource-state':
     state_file = os.environ.get('WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE')
     state = '0,0'

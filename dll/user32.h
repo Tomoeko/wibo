@@ -24,6 +24,43 @@ static_assert(sizeof(WNDCLASSEXW) == 80);
 static_assert(sizeof(WNDCLASSEXW) == 48);
 #endif
 
+struct MENUITEMINFOW {
+	UINT cbSize;
+	UINT fMask;
+	UINT fType;
+	UINT fState;
+	UINT wID;
+	HANDLE hSubMenu;
+	HANDLE hbmpChecked;
+	HANDLE hbmpUnchecked;
+	ULONG_PTR dwItemData;
+	GUEST_PTR dwTypeData;
+	UINT cch;
+	HANDLE hbmpItem;
+};
+#ifdef WIBO_GUEST_64
+static_assert(sizeof(MENUITEMINFOW) == 80);
+#else
+static_assert(sizeof(MENUITEMINFOW) == 48);
+#endif
+
+HANDLE WINAPI CreateMenu();
+HANDLE WINAPI CreatePopupMenu();
+BOOL WINAPI DestroyMenu(HANDLE menu);
+BOOL WINAPI AppendMenuA(HANDLE menu, UINT flags, UINT_PTR item, LPCSTR text);
+BOOL WINAPI DeleteMenu(HANDLE menu, UINT item, UINT flags);
+int WINAPI GetMenuItemCount(HANDLE menu);
+HANDLE WINAPI GetSubMenu(HANDLE menu, int position);
+DWORD WINAPI CheckMenuItem(HANDLE menu, UINT item, UINT flags);
+DWORD WINAPI EnableMenuItem(HANDLE menu, UINT item, UINT flags);
+BOOL WINAPI InsertMenuItemW(HANDLE menu, UINT item, BOOL byPosition, const MENUITEMINFOW *info);
+BOOL WINAPI GetMenuItemInfoW(HANDLE menu, UINT item, BOOL byPosition, MENUITEMINFOW *info);
+BOOL WINAPI SetMenuItemInfoW(HANDLE menu, UINT item, BOOL byPosition, const MENUITEMINFOW *info);
+HANDLE WINAPI GetMenu(HWND window);
+BOOL WINAPI SetMenu(HWND window, HANDLE menu);
+BOOL WINAPI DrawMenuBar(HWND window);
+BOOL WINAPI TrackPopupMenuEx(HANDLE menu, UINT flags, int x, int y, HWND window, const void *parameters);
+
 ATOM WINAPI RegisterClassExW(const WNDCLASSEXW *definition);
 BOOL WINAPI GetClassInfoExW(HINSTANCE instance, LPCWSTR name, WNDCLASSEXW *definition);
 BOOL WINAPI UnregisterClassW(LPCWSTR name, HINSTANCE instance);
@@ -47,6 +84,16 @@ HWINSTA WINAPI GetProcessWindowStation();
 HANDLE WINAPI GetThreadDesktop(DWORD dwThreadId);
 BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWORD nLength, LPDWORD lpnLengthNeeded);
 HWND WINAPI GetActiveWindow();
+HWND WINAPI GetForegroundWindow();
+HWND WINAPI GetFocus();
+HWND WINAPI SetFocus(HWND window);
+HWND WINAPI SetActiveWindow(HWND window);
+BOOL WINAPI SetForegroundWindow(HWND window);
+BOOL WINAPI AllowSetForegroundWindow(DWORD processId);
+DWORD WINAPI GetWindowThreadProcessId(HWND window, LPDWORD processId);
+BOOL WINAPI IsWindow(HWND window);
+BOOL WINAPI IsWindowVisible(HWND window);
+BOOL WINAPI IsWindowEnabled(HWND window);
 DWORD WINAPI GetSysColor(int nIndex);
 UINT WINAPI RegisterWindowMessageA(LPCSTR lpString);
 UINT WINAPI RegisterWindowMessageW(LPCWSTR lpString);

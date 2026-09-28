@@ -365,6 +365,7 @@ add_executable(wibo
     dll/user32/character_case.cpp
     dll/user32/character_navigation.cpp
     dll/user32/image.cpp
+    dll/user32/menu.cpp
     dll/user32/metrics.cpp
     dll/user32/window_class.cpp
     dll/user32/wide_format.cpp
@@ -764,12 +765,27 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_process_std_handles SOURCES test/test_process_std_handles.c)
         set_tests_properties(wibo.test_process_std_handles PROPERTIES TIMEOUT 50)
+        wibo_add_fixture_bin(NAME test_process_normal_priority SOURCES test/test_process_normal_priority.c
+            COMPILE_OPTIONS -municode)
+        set_tests_properties(wibo.test_process_normal_priority PROPERTIES TIMEOUT 15
+            ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_console_code_pages SOURCES test/test_console_code_pages.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_code_pages PROPERTIES TIMEOUT 25)
         wibo_add_fixture_bin(NAME test_console_set_code_pages SOURCES test/test_console_set_code_pages.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_set_code_pages PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_console_session_child SOURCES test/test_console_session.c NO_TEST
+            COMPILE_OPTIONS -municode -mconsole)
+        wibo_add_fixture_bin(NAME test_console_session_parent SOURCES test/test_console_session.c NO_TEST
+            COMPILE_OPTIONS -DTEST_CONSOLE_SESSION_PARENT -municode -mwindows
+            DEPENDS ${WIBO_TEST_BIN_DIR}/test_console_session_child.exe)
+        add_test(NAME wibo.test_console_session
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_console_session_parent.exe
+                ${WIBO_TEST_BIN_DIR}/test_console_session_child.exe)
+        set_tests_properties(wibo.test_console_session PROPERTIES TIMEOUT 30
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_SYSTEM_PROVIDER_PERSISTENT=0;WIBO_FIXTURE_NLS_SCALAR_RESPONSE=success")
         wibo_add_fixture_bin(NAME test_console_control SOURCES test/test_console_control.c
             COMPILE_OPTIONS -municode)
         set_tests_properties(wibo.test_console_control PROPERTIES TIMEOUT 25)
@@ -797,6 +813,9 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_process_default_std PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_default_std_missing SOURCES test/test_process_default_std_missing.c)
         set_tests_properties(wibo.test_process_default_std_missing PROPERTIES TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_process_nested_missing_std SOURCES test/test_process_nested_missing_std.c)
+        set_tests_properties(wibo.test_process_nested_missing_std PROPERTIES TIMEOUT 30
+            ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_process_startup_size SOURCES test/test_process_startup_size.c)
         set_tests_properties(wibo.test_process_startup_size PROPERTIES TIMEOUT 30)
         wibo_add_fixture_bin(NAME test_process_startup_info SOURCES test/test_process_startup_info.c)
@@ -812,6 +831,14 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_path_is_directory PROPERTIES TIMEOUT 15)
         wibo_add_fixture_bin(NAME test_file_attributes_identity SOURCES test/test_file_attributes_identity.c)
         set_tests_properties(wibo.test_file_attributes_identity PROPERTIES TIMEOUT 15)
+        wibo_add_fixture_bin(NAME test_set_file_attributes SOURCES test/test_set_file_attributes.c)
+        set_tests_properties(wibo.test_set_file_attributes PROPERTIES TIMEOUT 20)
+        wibo_add_fixture_bin(NAME test_copy_file SOURCES test/test_copy_file.c)
+        set_tests_properties(wibo.test_copy_file PROPERTIES TIMEOUT 20)
+        add_test(NAME wibo.test_copy_file_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_copy_file.exe --unsupported)
+        set_tests_properties(wibo.test_copy_file_unsupported PROPERTIES TIMEOUT 20
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_process_path SOURCES test/test_process_path.c)
         set_tests_properties(wibo.test_process_path PROPERTIES TIMEOUT 75)
         wibo_add_fixture_bin(NAME test_process_environment SOURCES test/test_process_environment.c)
@@ -1017,6 +1044,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_dbghelp_unsupported PROPERTIES TIMEOUT 15
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_user32 SOURCES test/test_user32.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_foreground_state SOURCES test/test_foreground_state.c COMPILE_OPTIONS -luser32)
+        set_tests_properties(wibo.test_foreground_state PROPERTIES
+            ENVIRONMENT "WIBO_EXPECT_NO_WINDOW_BACKEND=1")
+        wibo_add_fixture_bin(NAME test_window_query SOURCES test/test_window_query.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_menu_state SOURCES test/test_menu_state.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_window_message SOURCES test/test_window_message.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)
         wibo_add_fixture_bin(NAME test_special_folder SOURCES test/test_special_folder.c COMPILE_OPTIONS -lshell32 -lole32)
@@ -1042,6 +1074,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                     ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${_provider};WIBO_SYSTEM_PROVIDER_PERSISTENT=0;${variable}=${mode}")
             endforeach()
         endfunction()
+        wibo_add_fixture_bin(NAME test_user_default_ui_language SOURCES test/test_user_default_ui_language.c NO_TEST)
+        wibo_add_provider_tests(test_user_default_ui_language test_user_default_ui_language
+            WIBO_FIXTURE_UI_LANGUAGE_RESPONSE provider_fixture.py
+            success failed invalid-zero invalid-high truncated trailing unavailable)
         wibo_add_fixture_bin(NAME test_nls_format SOURCES test/test_nls_format.c NO_TEST)
         wibo_add_provider_tests(test_nls_format test_nls_format WIBO_FIXTURE_NLS_FORMAT_RESPONSE provider_fixture.py
             success failed invalid-result wrong-size trailing unterminated unavailable)
@@ -1278,6 +1314,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_setup_devices SOURCES test/test_setup_devices.c COMPILE_OPTIONS -lsetupapi)
         set_tests_properties(wibo.test_setup_devices PROPERTIES TIMEOUT 20
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        wibo_add_fixture_bin(NAME test_setup_interfaces SOURCES test/test_setup_interfaces.c COMPILE_OPTIONS -lsetupapi)
+        set_tests_properties(wibo.test_setup_interfaces PROPERTIES TIMEOUT 20
+            ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
+        foreach(fault truncated trailing bad-guid bad-owner-guid bad-path bad-device-guid missing-device bad-count failed)
+            add_test(NAME wibo.test_setup_interfaces_${fault}
+                COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_setup_interfaces.exe ${fault})
+            set_tests_properties(wibo.test_setup_interfaces_${fault} PROPERTIES TIMEOUT 20
+                ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1;WIBO_FIXTURE_DEVICE_INTERFACES_RESPONSE=${fault}")
+        endforeach()
         wibo_add_fixture_bin(NAME test_module_image_handle SOURCES test/test_module_image_handle.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_psapi SOURCES test/test_psapi.c COMPILE_OPTIONS -lpsapi)
         wibo_add_fixture_bin(NAME test_get_thread_id SOURCES test/test_get_thread_id.c)
@@ -1622,6 +1667,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_rtl_bitmap SOURCES test/test_rtl_bitmap.c)
         wibo_add_fixture_bin(NAME test_ntquery SOURCES test/test_ntquery.c)
         wibo_add_fixture_bin(NAME test_ntqueryfile SOURCES test/test_ntqueryfile.c)
+        wibo_add_fixture_bin(NAME test_nt_file_attributes SOURCES test/test_nt_file_attributes.c)
         wibo_add_fixture_bin(NAME test_ntquerydirectory SOURCES test/test_ntquerydirectory.c)
         set_tests_properties(wibo.test_ntquerydirectory PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_ntreadfile SOURCES test/test_ntreadfile.c)

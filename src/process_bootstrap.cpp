@@ -21,7 +21,7 @@
 namespace {
 
 constexpr uint32_t kBootstrapMagic = 0x57425031;
-constexpr uint32_t kBootstrapVersion = 3;
+constexpr uint32_t kBootstrapVersion = 4;
 constexpr size_t kMaximumBootstrap = 16 * 1024 * 1024;
 constexpr uint32_t kReadyMessage = 1;
 constexpr uint32_t kThreadExitMessage = 2;
@@ -123,6 +123,7 @@ ProcessBootstrap::~ProcessBootstrap() {
 	closeDescriptor(mManifest);
 	closeDescriptor(mControl);
 	closeDescriptor(mChildEndpoint);
+	closeDescriptor(mConsole);
 }
 
 DWORD ProcessBootstrap::prepare(const SpawnOptions &options) {
@@ -142,6 +143,11 @@ DWORD ProcessBootstrap::prepare(const SpawnOptions &options) {
 	mChildEndpoint = endpoints[1];
 	if (reserveDescriptor(mControl) || reserveDescriptor(mChildEndpoint))
 		return winErrorFromErrno(errno);
+	if (!options.detachedConsole) {
+		const DWORD error = kernel32::snapshotConsoleSessionDescriptor(mConsole);
+		if (error)
+			return error;
+	}
 #ifdef SO_NOSIGPIPE
 	int enabled = 1;
 	if (setsockopt(mControl, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0 ||
@@ -159,7 +165,7 @@ DWORD ProcessBootstrap::prepare(const SpawnOptions &options) {
 		if (std::find(objects.begin(), objects.end(), file.get()) == objects.end())
 			objects.push_back(file.get());
 	}
-	int maximumSource = std::max({mManifest, mControl, mChildEndpoint, STDERR_FILENO});
+	int maximumSource = std::max({mManifest, mControl, mChildEndpoint, mConsole, STDERR_FILENO});
 	for (auto *file : objects) {
 		std::lock_guard lock(file->m);
 		const DWORD error = files::prepareInheritanceLocked(*file);
@@ -168,14 +174,19 @@ DWORD ProcessBootstrap::prepare(const SpawnOptions &options) {
 		maximumSource = std::max({maximumSource, file->fd, file->cursor.controlDescriptorLocked()});
 	}
 	const long descriptorLimit = sysconf(_SC_OPEN_MAX);
-	if (descriptorLimit <= 0 || maximumSource + 3 + objects.size() * 2 >= static_cast<size_t>(descriptorLimit))
+	if (descriptorLimit <= 0 || maximumSource + 4 + objects.size() * 2 >= static_cast<size_t>(descriptorLimit))
 		return ERROR_NOT_SUPPORTED;
 	int nextDescriptor = maximumSource + 1;
+	const int childConsole = mConsole < 0 ? -1 : nextDescriptor++;
+	if (childConsole >= 0)
+		mDescriptors.push_back({mConsole, childConsole});
 
 	Writer writer;
 	writer.number(kBootstrapMagic);
 	writer.number(kBootstrapVersion);
 	writer.number(kernel32::isConsoleControlCIgnored());
+	writer.number(options.detachedConsole);
+	writer.number(childConsole < 0 ? UINT32_MAX : static_cast<uint32_t>(childConsole));
 	writer.number(options.standardHandles.has_value());
 	if (options.standardHandles) {
 		writer.number(static_cast<uint32_t>(options.standardHandles->input));
@@ -285,7 +296,8 @@ int ProcessBootstrap::releaseControl() { return std::exchange(mControl, -1); }
 
 namespace wibo {
 
-DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files::StandardHandles> &standardHandles) {
+DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files::StandardHandles> &standardHandles,
+						 ConsoleBootstrap &console) {
 	struct stat information{};
 	if (fstat(manifestFd, &information) != 0 || !S_ISREG(information.st_mode) || information.st_size < 12 ||
 		information.st_size > static_cast<off_t>(kMaximumBootstrap) || !configureDescriptor(controlFd))
@@ -295,9 +307,11 @@ DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files:
 		return ERROR_INVALID_DATA;
 	close(manifestFd);
 	Reader reader{bytes};
-	uint32_t magic, version, ignoreControlC, standard;
+	uint32_t magic, version, ignoreControlC, detachedConsole, sessionDescriptor, standard;
 	if (!reader.number(magic) || magic != kBootstrapMagic || !reader.number(version) || version != kBootstrapVersion ||
-		!reader.number(ignoreControlC) || ignoreControlC > 1 || !reader.number(standard) || standard > 1)
+		!reader.number(ignoreControlC) || ignoreControlC > 1 || !reader.number(detachedConsole) || detachedConsole > 1 ||
+		!reader.number(sessionDescriptor) || (detachedConsole && sessionDescriptor != UINT32_MAX) ||
+		!reader.number(standard) || standard > 1)
 		return ERROR_INVALID_DATA;
 	if (standard) {
 		uint32_t input, output, error, explicitStartup;
@@ -332,6 +346,10 @@ DWORD initializeChildProcess(int manifestFd, int controlFd, std::optional<files:
 		consumedDescriptors.push_back(static_cast<int>(raw));
 		return true;
 	};
+	if (sessionDescriptor != UINT32_MAX && !consumeDescriptor(sessionDescriptor))
+		return ERROR_INVALID_DATA;
+	console.detached = detachedConsole != 0;
+	console.inheritedDescriptor = sessionDescriptor == UINT32_MAX ? -1 : static_cast<int>(sessionDescriptor);
 	for (uint32_t index = 0; index < count; ++index) {
 		uint32_t data, control, share, flags, append;
 		std::string path;

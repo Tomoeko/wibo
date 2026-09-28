@@ -64,6 +64,7 @@ class Executable {
 	void *imageBase = nullptr;
 	size_t imageSize = 0;
 	void *entryPoint = nullptr;
+	uint16_t subsystem = 0;
 	void *rsrcBase = nullptr;
 	uint32_t rsrcSize = 0;
 	uintptr_t preferredImageBase = 0;

@@ -1582,6 +1582,17 @@ bool fileMuiPath(WCHAR **parameters) {
 	return response.write();
 }
 
+bool userDefaultUiLanguage() {
+	SetLastError(ERROR_SUCCESS);
+	const LANGID language = GetUserDefaultUILanguage();
+	const DWORD error = GetLastError();
+	Response response;
+	response.header(language ? ERROR_SUCCESS : error ? error : ERROR_INVALID_DATA);
+	if (language)
+		response.number(language);
+	return response.write();
+}
+
 bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
 	uint32_t flags = 0, capacity = 0, mode = 0;
 	const auto write = [](DWORD status, BOOL result, bool countPresent, ULONG count, ULONG units,
@@ -1774,49 +1785,67 @@ bool fileVersionInfoExW(WCHAR **parameters) {
 	return response.write();
 }
 
-bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
-	std::string classBytes, enumerator;
+struct DeviceSetRequest {
 	GUID classGuid{};
-	const bool hasClass = wcscmp(identity, L"-") != 0;
-	const bool hasEnumerator = wcscmp(enumeratorText, L"-") != 0;
-	if (hasClass) {
-		if (!decodeHex(identity, classBytes, true) || classBytes.size() != sizeof(classGuid))
+	std::string enumerator;
+	DWORD flags = 0;
+	bool hasClass = false;
+	bool hasEnumerator = false;
+};
+
+bool parseDeviceSetRequest(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText,
+						   DeviceSetRequest &request) {
+	request.hasClass = wcscmp(identity, L"-") != 0;
+	request.hasEnumerator = wcscmp(enumeratorText, L"-") != 0;
+	if (request.hasClass) {
+		std::string classBytes;
+		if (!decodeHex(identity, classBytes, true) || classBytes.size() != sizeof(request.classGuid))
 			return false;
-		std::memcpy(&classGuid, classBytes.data(), sizeof(classGuid));
+		std::memcpy(&request.classGuid, classBytes.data(), sizeof(request.classGuid));
 	}
-	if (hasEnumerator && !decodeHex(enumeratorText, enumerator))
+	if (request.hasEnumerator && !decodeHex(enumeratorText, request.enumerator))
 		return false;
 	WCHAR *end = nullptr;
 	const auto flags = wcstoull(flagsText, &end, 10);
 	if (!*flagsText || *end || flags > UINT32_MAX)
 		return false;
-	const HDEVINFO set =
-		SetupDiGetClassDevsA(hasClass ? &classGuid : nullptr, hasEnumerator ? enumerator.c_str() : nullptr, nullptr,
-							 static_cast<DWORD>(flags));
-	DWORD error = set == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-	struct Entry {
-		GUID classGuid;
-		DWORD deviceInstance;
-	};
-	std::vector<Entry> entries;
-	if (!error) {
-		constexpr size_t kMaxEntries = (kMaxResponse - 4 * sizeof(uint32_t)) / (sizeof(GUID) + 2 * sizeof(uint32_t));
-		for (DWORD index = 0;; ++index) {
-			SP_DEVINFO_DATA device{};
-			device.cbSize = sizeof(device);
-			if (!SetupDiEnumDeviceInfo(set, index, &device)) {
-				error = GetLastError();
-				if (error == ERROR_NO_MORE_ITEMS)
-					error = ERROR_SUCCESS;
-				break;
-			}
-			if (entries.size() == kMaxEntries) {
-				error = ERROR_NOT_ENOUGH_MEMORY;
-				break;
-			}
-			entries.push_back({device.ClassGuid, device.DevInst});
+	request.flags = static_cast<DWORD>(flags);
+	return true;
+}
+
+struct DeviceEntry {
+	GUID classGuid;
+	DWORD deviceInstance;
+};
+
+DWORD enumerateDeviceInfo(HDEVINFO set, std::vector<DeviceEntry> &entries, size_t &responseSize) {
+	constexpr size_t kRecordSize = sizeof(uint32_t) + sizeof(GUID) + sizeof(uint32_t);
+	for (DWORD index = 0;; ++index) {
+		SP_DEVINFO_DATA device{};
+		device.cbSize = sizeof(device);
+		if (!SetupDiEnumDeviceInfo(set, index, &device)) {
+			const DWORD error = GetLastError();
+			return error == ERROR_NO_MORE_ITEMS ? ERROR_SUCCESS : error;
 		}
+		if (responseSize > kMaxResponse - kRecordSize)
+			return ERROR_NOT_ENOUGH_MEMORY;
+		responseSize += kRecordSize;
+		entries.push_back({device.ClassGuid, device.DevInst});
 	}
+}
+
+bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
+	DeviceSetRequest request;
+	if (!parseDeviceSetRequest(identity, enumeratorText, flagsText, request))
+		return false;
+	const HDEVINFO set =
+		SetupDiGetClassDevsA(request.hasClass ? &request.classGuid : nullptr,
+							 request.hasEnumerator ? request.enumerator.c_str() : nullptr, nullptr, request.flags);
+	DWORD error = set == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+	std::vector<DeviceEntry> entries;
+	size_t responseSize = 4 * sizeof(uint32_t);
+	if (!error)
+		error = enumerateDeviceInfo(set, entries, responseSize);
 	if (set != INVALID_HANDLE_VALUE && !SetupDiDestroyDeviceInfoList(set) && !error)
 		error = GetLastError();
 	Response response;
@@ -1826,6 +1855,103 @@ bool deviceInfoSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WC
 		for (const auto &entry : entries) {
 			response.bytes(&entry.classGuid, sizeof(entry.classGuid));
 			response.number(entry.deviceInstance);
+		}
+	}
+	return response.write();
+}
+
+bool deviceInterfaceSetA(const WCHAR *identity, const WCHAR *enumeratorText, const WCHAR *flagsText) {
+	DeviceSetRequest request;
+	if (!parseDeviceSetRequest(identity, enumeratorText, flagsText, request))
+		return false;
+	Response response;
+	if (!request.hasClass || !(request.flags & DIGCF_DEVICEINTERFACE)) {
+		response.header(ERROR_INVALID_PARAMETER);
+		return response.write();
+	}
+	const HDEVINFO set = SetupDiGetClassDevsA(&request.classGuid,
+		request.hasEnumerator ? request.enumerator.c_str() : nullptr, nullptr, request.flags);
+	DWORD error = set == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+	struct Entry {
+		GUID classGuid;
+		DWORD flags;
+		DWORD deviceInstance;
+		GUID deviceClassGuid;
+		std::wstring path;
+	};
+	std::vector<DeviceEntry> devices;
+	std::vector<Entry> entries;
+	size_t responseSize = 5 * sizeof(uint32_t);
+	if (!error)
+		error = enumerateDeviceInfo(set, devices, responseSize);
+	if (!error) {
+		for (DWORD index = 0;; ++index) {
+			SP_DEVICE_INTERFACE_DATA interfaceData{};
+			interfaceData.cbSize = sizeof(interfaceData);
+			if (!SetupDiEnumDeviceInterfaces(set, nullptr, &request.classGuid, index, &interfaceData)) {
+				error = GetLastError();
+				if (error == ERROR_NO_MORE_ITEMS)
+					error = ERROR_SUCCESS;
+				break;
+			}
+			DWORD required = 0;
+			const BOOL sizeResult = SetupDiGetDeviceInterfaceDetailW(set, &interfaceData, nullptr, 0, &required, nullptr);
+			error = sizeResult ? ERROR_INVALID_DATA : GetLastError();
+			if (error != ERROR_INSUFFICIENT_BUFFER)
+				break;
+			if (required < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(WCHAR)) {
+				error = ERROR_INVALID_DATA;
+				break;
+			}
+			if (required > kMaxResponse - responseSize) {
+				error = ERROR_NOT_ENOUGH_MEMORY;
+				break;
+			}
+			std::vector<BYTE> detailStorage(std::max<size_t>(required, sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)));
+			auto *detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W *>(detailStorage.data());
+			detail->cbSize = sizeof(*detail);
+			SP_DEVINFO_DATA device{};
+			device.cbSize = sizeof(device);
+			if (!SetupDiGetDeviceInterfaceDetailW(set, &interfaceData, detail, required, nullptr, &device)) {
+				error = GetLastError();
+				break;
+			}
+			const size_t pathCapacity =
+				(required - offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath)) / sizeof(WCHAR);
+			const auto *path = reinterpret_cast<const WCHAR *>(detailStorage.data() +
+				offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath));
+			const WCHAR *const pathEnd = std::find(path, path + pathCapacity, WCHAR(0));
+			if (pathEnd == path + pathCapacity || pathEnd == path) {
+				error = ERROR_INVALID_DATA;
+				break;
+			}
+			const size_t pathBytes = size_t(pathEnd - path) * sizeof(WCHAR);
+			constexpr size_t kRecordOverhead = 2 * (sizeof(uint32_t) + sizeof(GUID)) + 3 * sizeof(uint32_t);
+			if (responseSize > kMaxResponse - kRecordOverhead || pathBytes > kMaxResponse - responseSize - kRecordOverhead) {
+				error = ERROR_NOT_ENOUGH_MEMORY;
+				break;
+			}
+			responseSize += kRecordOverhead + pathBytes;
+			entries.push_back({interfaceData.InterfaceClassGuid, interfaceData.Flags, device.DevInst, device.ClassGuid,
+								 std::wstring(path, size_t(pathEnd - path))});
+		}
+	}
+	if (set != INVALID_HANDLE_VALUE && !SetupDiDestroyDeviceInfoList(set) && !error)
+		error = GetLastError();
+	response.header(error);
+	if (!error) {
+		response.number(static_cast<uint32_t>(devices.size()));
+		for (const auto &device : devices) {
+			response.bytes(&device.classGuid, sizeof(device.classGuid));
+			response.number(device.deviceInstance);
+		}
+		response.number(static_cast<uint32_t>(entries.size()));
+		for (const auto &entry : entries) {
+			response.bytes(&entry.classGuid, sizeof(entry.classGuid));
+			response.number(entry.flags);
+			response.number(entry.deviceInstance);
+			response.bytes(&entry.deviceClassGuid, sizeof(entry.deviceClassGuid));
+			response.bytes(entry.path.data(), entry.path.size() * sizeof(WCHAR));
 		}
 	}
 	return response.write();
@@ -2706,6 +2832,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = localeBufferSnapshot(argv + 2, LocaleSnapshotOperation::ResolveName);
 	else if (argc == 10 && wcscmp(argv[1], L"file-mui-path") == 0)
 		written = fileMuiPath(argv + 2);
+	else if (argc == 2 && wcscmp(argv[1], L"user-default-ui-language") == 0)
+		written = userDefaultUiLanguage();
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)
@@ -2751,6 +2879,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = systemQuery(argv[2], argv[3]);
 	else if (argc == 5 && wcscmp(argv[1], L"device-info-set-a") == 0)
 		written = deviceInfoSetA(argv[2], argv[3], argv[4]);
+	else if (argc == 5 && wcscmp(argv[1], L"device-interface-set-a") == 0)
+		written = deviceInterfaceSetA(argv[2], argv[3], argv[4]);
 	else if (argc == 5 && wcscmp(argv[1], L"volume-query") == 0)
 		written = volumeQuery(argv[2], argv[3], argv[4]);
 	else if (argc == 3 && wcscmp(argv[1], L"status-error") == 0)

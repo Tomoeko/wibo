@@ -7,6 +7,7 @@
 #include "files.h"
 #include "handles.h"
 #include "heap.h"
+#include "kernel32/file_attributes.h"
 #include "kernel32/fileapi.h"
 #include "kernel32/internal.h"
 #include "kernel32/minwinbase.h"
@@ -113,24 +114,6 @@ LONGLONG timespecToFileTime(const timespec &ts) {
 #endif
 }
 
-DWORD buildFileAttributes(const struct stat &st) {
-	DWORD attributes = 0;
-	mode_t mode = st.st_mode;
-	if (S_ISDIR(mode)) {
-		attributes |= FILE_ATTRIBUTE_DIRECTORY;
-	}
-	if (S_ISREG(mode)) {
-		attributes |= FILE_ATTRIBUTE_ARCHIVE;
-	}
-	if ((mode & S_IWUSR) == 0) {
-		attributes |= FILE_ATTRIBUTE_READONLY;
-	}
-	if (attributes == 0) {
-		attributes = FILE_ATTRIBUTE_NORMAL;
-	}
-	return attributes;
-}
-
 StatFetchResult fetchStat(kernel32::FsObject *fs, struct stat &st) {
 	if (!fs) {
 		return {};
@@ -152,7 +135,8 @@ StatFetchResult fetchStat(kernel32::FsObject *fs, struct stat &st) {
 	return StatFetchResult{};
 }
 
-void populateBasicInformation(const struct stat &st, FILE_BASIC_INFORMATION &info) {
+bool populateBasicInformation(const struct stat &st, FILE_BASIC_INFORMATION &info, const char *path = nullptr,
+							  int fd = -1) {
 	info = {};
 #ifdef __APPLE__
 	info.CreationTime.QuadPart = timespecToFileTime(st.st_birthtimespec);
@@ -162,7 +146,7 @@ void populateBasicInformation(const struct stat &st, FILE_BASIC_INFORMATION &inf
 	info.LastAccessTime.QuadPart = timespecToFileTime(accessTimespec(st));
 	info.LastWriteTime.QuadPart = timespecToFileTime(modifyTimespec(st));
 	info.ChangeTime.QuadPart = timespecToFileTime(changeTimespec(st));
-	info.FileAttributes = buildFileAttributes(st);
+	return kernel32::fileAttributes::buildFileAttributes(st, S_ISDIR(st.st_mode), info.FileAttributes, path, fd);
 }
 
 void populateStandardInformation(const kernel32::FsObject &file, const struct stat &st,
@@ -675,7 +659,11 @@ NTSTATUS WINAPI NtQueryDirectoryFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE 
 		if (overflow && (written || !first))
 			break;
 		FILE_BASIC_INFORMATION basic{};
-		populateBasicInformation(st, basic);
+		std::string path;
+		if (!directory.canonicalPath.empty())
+			path = (directory.canonicalPath / name).string();
+		if (!populateBasicInformation(st, basic, path.empty() ? nullptr : path.c_str()))
+			return finish(wibo::statusFromErrno(errno));
 		FILE_FULL_DIRECTORY_INFORMATION entry{};
 		entry.CreationTime = basic.CreationTime;
 		entry.LastAccessTime = basic.LastAccessTime;
@@ -756,7 +744,11 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			break;
 		}
 		auto info = reinterpret_cast<PFILE_BASIC_INFORMATION>(FileInformation);
-		populateBasicInformation(st, *info);
+		if (!populateBasicInformation(st, *info,
+				obj->canonicalPath.empty() ? nullptr : obj->canonicalPath.c_str(), obj->fd)) {
+			status = wibo::statusFromErrno(errno);
+			break;
+		}
 		IoStatusBlock->Information = sizeof(FILE_BASIC_INFORMATION);
 		break;
 	}
@@ -812,7 +804,11 @@ NTSTATUS WINAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoSta
 			break;
 		}
 		FILE_ALL_INFORMATION info{};
-		populateBasicInformation(st, info.BasicInformation);
+		if (!populateBasicInformation(st, info.BasicInformation,
+				obj->canonicalPath.empty() ? nullptr : obj->canonicalPath.c_str(), obj->fd)) {
+			status = wibo::statusFromErrno(errno);
+			break;
+		}
 		populateStandardInformation(*obj, st, info.StandardInformation);
 		info.IndexNumber.QuadPart = static_cast<LONGLONG>(st.st_ino);
 		// Extended attributes are not represented by this mapped filesystem.
