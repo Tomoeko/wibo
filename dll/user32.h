@@ -80,6 +80,12 @@ int WINAPI LoadStringA(HMODULE hInstance, UINT uID, LPSTR lpBuffer, int cchBuffe
 int WINAPI LoadStringW(HMODULE hInstance, UINT uID, LPWSTR lpBuffer, int cchBufferMax);
 int WINAPI MessageBoxA(HWND hwnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
 HKL WINAPI GetKeyboardLayout(DWORD idThread);
+BOOL WINAPI GetKeyboardLayoutNameW(LPWSTR name);
+SHORT WINAPI VkKeyScanExW(WCHAR character, HKL requested);
+UINT WINAPI MapVirtualKeyA(UINT code, UINT type);
+UINT WINAPI MapVirtualKeyW(UINT code, UINT type);
+UINT WINAPI MapVirtualKeyExA(UINT code, UINT type, HKL layout);
+int WINAPI ToUnicode(UINT key, UINT scan, const BYTE *state, LPWSTR output, int capacity, UINT flags);
 HWINSTA WINAPI GetProcessWindowStation();
 HANDLE WINAPI GetThreadDesktop(DWORD dwThreadId);
 BOOL WINAPI GetUserObjectInformationA(HANDLE hObj, int nIndex, PVOID pvInfo, DWORD nLength, LPDWORD lpnLengthNeeded);

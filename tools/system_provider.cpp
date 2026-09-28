@@ -748,6 +748,138 @@ bool parseUnsignedDecimal(const WCHAR *text, uint32_t maximum, uint32_t &value) 
 	return true;
 }
 
+bool decodeMappingString(const WCHAR *text, std::vector<WCHAR> &value);
+
+constexpr size_t kMaxIssuedKeyboardLayouts = 16;
+std::vector<uint64_t> g_issuedKeyboardLayouts;
+
+bool recordKeyboardLayout(uint64_t layout) {
+	if (std::find(g_issuedKeyboardLayouts.begin(), g_issuedKeyboardLayouts.end(), layout) !=
+		g_issuedKeyboardLayouts.end())
+		return true;
+	if (g_issuedKeyboardLayouts.size() == kMaxIssuedKeyboardLayouts)
+		return false;
+	g_issuedKeyboardLayouts.push_back(layout);
+	return true;
+}
+
+bool knownKeyboardLayout(uint64_t layout) {
+	return layout == reinterpret_cast<uintptr_t>(GetKeyboardLayout(0)) ||
+		   std::find(g_issuedKeyboardLayouts.begin(), g_issuedKeyboardLayouts.end(), layout) !=
+			   g_issuedKeyboardLayouts.end();
+}
+
+bool keyboardLayout() {
+	const HKL layout = GetKeyboardLayout(0);
+	WCHAR name[KL_NAMELENGTH]{};
+	const BOOL named = GetKeyboardLayoutNameW(name);
+	Response response;
+	if (!layout || !named) {
+		response.header(GetLastError() ? GetLastError() : ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	const uint64_t value = reinterpret_cast<uintptr_t>(layout);
+	if (!recordKeyboardLayout(value)) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(value));
+	response.number(static_cast<uint32_t>(value >> 32));
+	response.bytes(name, sizeof(name));
+	return response.write();
+}
+
+bool keyboardVkScan(WCHAR **parameters) {
+	uint32_t character = 0, low = 0, high = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[0], 0xffff, character) ||
+		!parseUnsignedDecimal(parameters[1], UINT32_MAX, low) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, high) ||
+		!parseUnsignedDecimal(parameters[3], UINT32_MAX, incomingError))
+		return false;
+	Response response;
+	const uint64_t requested = (uint64_t(high) << 32) | low;
+	if (requested > UINTPTR_MAX || !knownKeyboardLayout(requested)) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	SetLastError(incomingError);
+	const SHORT result =
+		VkKeyScanExW(static_cast<WCHAR>(character), reinterpret_cast<HKL>(static_cast<uintptr_t>(requested)));
+	const DWORD nativeError = GetLastError();
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<USHORT>(result));
+	response.number(nativeError);
+	return response.write();
+}
+
+bool keyboardMap(WCHAR **parameters) {
+	uint32_t code = 0, type = 0, low = 0, high = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[1], UINT32_MAX, code) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, type) ||
+		!parseUnsignedDecimal(parameters[3], UINT32_MAX, low) ||
+		!parseUnsignedDecimal(parameters[4], UINT32_MAX, high) ||
+		!parseUnsignedDecimal(parameters[5], UINT32_MAX, incomingError))
+		return false;
+	const bool ansi = wcscmp(parameters[0], L"a") == 0;
+	const bool unicode = wcscmp(parameters[0], L"w") == 0;
+	const bool explicitAnsi = wcscmp(parameters[0], L"ex-a") == 0;
+	if (!ansi && !unicode && !explicitAnsi)
+		return false;
+	Response response;
+	const uint64_t requested = (uint64_t(high) << 32) | low;
+	const auto current = reinterpret_cast<uintptr_t>(GetKeyboardLayout(0));
+	if (requested > UINTPTR_MAX || (explicitAnsi ? !knownKeyboardLayout(requested) : requested != current)) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	SetLastError(incomingError);
+	const UINT result = ansi ? MapVirtualKeyA(code, type)
+						: unicode
+							? MapVirtualKeyW(code, type)
+							: MapVirtualKeyExA(code, type, reinterpret_cast<HKL>(static_cast<uintptr_t>(requested)));
+	const DWORD nativeError = GetLastError();
+	response.header(ERROR_SUCCESS);
+	response.number(result);
+	response.number(nativeError);
+	return response.write();
+}
+
+bool keyboardToUnicode(WCHAR **parameters) {
+	uint32_t key = 0, scan = 0, flags = 0, count = 0, low = 0, high = 0, incomingError = 0;
+	if (!parseUnsignedDecimal(parameters[0], UINT32_MAX, key) ||
+		!parseUnsignedDecimal(parameters[1], UINT32_MAX, scan) ||
+		!parseUnsignedDecimal(parameters[2], UINT32_MAX, flags) || !parseUnsignedDecimal(parameters[3], 256, count) ||
+		!count || !parseUnsignedDecimal(parameters[4], UINT32_MAX, low) ||
+		!parseUnsignedDecimal(parameters[5], UINT32_MAX, high) ||
+		!parseUnsignedDecimal(parameters[8], UINT32_MAX, incomingError))
+		return false;
+	Response response;
+	if (!(flags & 4)) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	const uint64_t requested = (uint64_t(high) << 32) | low;
+	if (requested != reinterpret_cast<uintptr_t>(GetKeyboardLayout(0))) {
+		response.header(ERROR_NOT_SUPPORTED);
+		return response.write();
+	}
+	std::string stateBytes;
+	std::vector<WCHAR> output;
+	if (!decodeHex(parameters[6], stateBytes, true) || stateBytes.size() != 256 ||
+		!decodeMappingString(parameters[7], output) || output.size() != count)
+		return false;
+	SetLastError(incomingError);
+	const int result = ToUnicode(key, scan, reinterpret_cast<const BYTE *>(stateBytes.data()), output.data(),
+								 static_cast<int>(count), flags);
+	const DWORD nativeError = GetLastError();
+	response.header(ERROR_SUCCESS);
+	response.number(static_cast<uint32_t>(result));
+	response.number(nativeError);
+	response.bytes(output.data(), output.size() * sizeof(WCHAR));
+	return response.write();
+}
+
 bool alphabeticCharacterTable() {
 	static_assert(sizeof(WCHAR) == 2);
 	BYTE table[0x10000 / 8]{};
@@ -2804,6 +2936,14 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = lcMapStringEx(argv + 2);
 	else if (argc == 2 && wcscmp(argv[1], L"is-char-alpha-w-table") == 0)
 		written = alphabeticCharacterTable();
+	else if (argc == 2 && wcscmp(argv[1], L"keyboard-layout") == 0)
+		written = keyboardLayout();
+	else if (argc == 6 && wcscmp(argv[1], L"keyboard-vk-scan") == 0)
+		written = keyboardVkScan(argv + 2);
+	else if (argc == 8 && wcscmp(argv[1], L"keyboard-map") == 0)
+		written = keyboardMap(argv + 2);
+	else if (argc == 11 && wcscmp(argv[1], L"keyboard-to-unicode") == 0)
+		written = keyboardToUnicode(argv + 2);
 	else if (argc == 5 && wcscmp(argv[1], L"char-upper-buff-w") == 0)
 		written = upperCharacterBuffer(argv + 2);
 	else if (argc == 8 && wcscmp(argv[1], L"compare-string-ex") == 0)

@@ -147,7 +147,6 @@ UINT WINAPI RegisterWindowMessageA(LPCSTR lpString) {
 }
 
 constexpr uint32_t RT_STRING_ID = 6;
-constexpr HKL kDefaultKeyboardLayout = 0x04090409;
 constexpr int UOI_FLAGS = 1;
 
 struct USEROBJECTFLAGS {
@@ -265,13 +264,6 @@ int WINAPI MessageBoxA(HWND hwnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType) {
 	printf("MESSAGE BOX: [%s] %s\n", lpCaption, lpText);
 	fflush(stdout);
 	return 1;
-}
-
-HKL WINAPI GetKeyboardLayout(DWORD idThread) {
-	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetKeyboardLayout(%u)\n", idThread);
-	(void)idThread;
-	return kDefaultKeyboardLayout;
 }
 
 HWINSTA WINAPI GetProcessWindowStation() {

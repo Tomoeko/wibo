@@ -365,6 +365,7 @@ add_executable(wibo
     dll/user32/character_case.cpp
     dll/user32/character_navigation.cpp
     dll/user32/image.cpp
+	    dll/user32/keyboard.cpp
     dll/user32/menu.cpp
     dll/user32/metrics.cpp
     dll/user32/window_class.cpp
@@ -1383,6 +1384,24 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                 ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_SYSTEM_PROVIDER_PERSISTENT=0;WIBO_FIXTURE_LEAD_RESPONSE=${mode}")
         endforeach()
         wibo_add_fixture_bin(NAME test_char_upper_buff SOURCES test/test_char_upper_buff.c NO_TEST)
+		wibo_add_fixture_bin(NAME test_keyboard_translation SOURCES test/test_keyboard_translation.c
+			COMPILE_OPTIONS -luser32 NO_TEST)
+		foreach(mode success unavailable truncated-layout)
+			add_test(NAME wibo.test_keyboard_translation_${mode}
+				COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_keyboard_translation.exe)
+			set(_keyboard_environment
+				"WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/keyboard_provider_fixture.py;WIBO_SYSTEM_PROVIDER_PERSISTENT=0;WIBO_FIXTURE_KEYBOARD_RESPONSE=${mode}")
+			if(mode STREQUAL "success")
+				string(APPEND _keyboard_environment ";WIBO_EXPECT_KEYBOARD_GAPS=1")
+			elseif(mode STREQUAL "unavailable")
+				string(APPEND _keyboard_environment ";WIBO_EXPECT_KEYBOARD_UNAVAILABLE=1")
+			else()
+				string(APPEND _keyboard_environment ";WIBO_EXPECT_KEYBOARD_MALFORMED=1")
+			endif()
+			set_tests_properties(wibo.test_keyboard_translation_${mode} PROPERTIES TIMEOUT 15
+				WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures
+				ENVIRONMENT "${_keyboard_environment}")
+		endforeach()
         foreach(mode success failed wrong-count wrong-size)
             add_test(NAME wibo.test_char_upper_buff_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_char_upper_buff.exe)
