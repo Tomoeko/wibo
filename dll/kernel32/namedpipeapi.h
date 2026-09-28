@@ -14,7 +14,13 @@ BOOL WINAPI PeekNamedPipe(HANDLE hNamedPipe, LPVOID lpBuffer, DWORD nBufferSize,
 HANDLE WINAPI CreateNamedPipeA(LPCSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances,
 								 DWORD nOutBufferSize, DWORD nInBufferSize, DWORD nDefaultTimeOut,
 								 LPSECURITY_ATTRIBUTES lpSecurityAttributes);
+HANDLE WINAPI CreateNamedPipeW(LPCWSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances,
+							   DWORD nOutBufferSize, DWORD nInBufferSize, DWORD nDefaultTimeOut,
+							   LPSECURITY_ATTRIBUTES lpSecurityAttributes);
 BOOL WINAPI ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped);
+BOOL WINAPI DisconnectNamedPipe(HANDLE hNamedPipe);
+enum class NamedPipeCancelResult { NotPipe, NotFound, Cancelled };
+NamedPipeCancelResult cancelNamedPipeConnect(HANDLE handle, LPOVERLAPPED overlapped, bool callerThreadOnly);
 bool tryCreateFileNamedPipeA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
 							 LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
 							 DWORD dwFlagsAndAttributes, HANDLE &outHandle);

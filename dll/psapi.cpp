@@ -10,8 +10,16 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <sys/resource.h>
+#include <unistd.h>
 #include <unordered_set>
 #include <vector>
+
+#ifdef __APPLE__
+#include <libproc.h>
+#else
+#include <fstream>
+#endif
 
 namespace {
 
@@ -44,6 +52,37 @@ std::vector<wibo::ModulePtr> loadedModules() {
 		return left->handle < right->handle;
 	});
 	return result;
+}
+
+bool processMemoryUsage(uint64_t &workingSet, uint64_t &peakWorkingSet, DWORD &faults) {
+	struct rusage usage{};
+	if (getrusage(RUSAGE_SELF, &usage) != 0)
+		return false;
+#ifdef __APPLE__
+	proc_taskinfo task{};
+	if (proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &task, sizeof(task)) != sizeof(task))
+		return false;
+	workingSet = task.pti_resident_size;
+	peakWorkingSet = std::max<uint64_t>(workingSet, usage.ru_maxrss);
+	faults = task.pti_faults < 0 ? 0 : static_cast<DWORD>(task.pti_faults);
+#else
+	std::ifstream statm("/proc/self/statm");
+	uint64_t pages = 0, residentPages = 0;
+	if (!(statm >> pages >> residentPages))
+		return false;
+	const long pageSize = sysconf(_SC_PAGESIZE);
+	if (pageSize <= 0)
+		return false;
+	workingSet = residentPages * static_cast<uint64_t>(pageSize);
+	peakWorkingSet = std::max<uint64_t>(workingSet, static_cast<uint64_t>(usage.ru_maxrss) * 1024);
+	const uint64_t totalFaults = static_cast<uint64_t>(usage.ru_minflt) + static_cast<uint64_t>(usage.ru_majflt);
+	faults = static_cast<DWORD>(std::min<uint64_t>(totalFaults, std::numeric_limits<DWORD>::max()));
+#endif
+	return true;
+}
+
+SIZE_T guestSize(uint64_t value) {
+	return static_cast<SIZE_T>(std::min<uint64_t>(value, std::numeric_limits<SIZE_T>::max()));
 }
 
 } // namespace
@@ -116,6 +155,35 @@ BOOL WINAPI GetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO 
 								 ? std::numeric_limits<DWORD>::max()
 								 : static_cast<DWORD>(module->executable->imageSize);
 	lpmodinfo->EntryPoint = toGuestPtr(module->executable->entryPoint);
+	return TRUE;
+}
+
+BOOL WINAPI GetProcessMemoryInfo(HANDLE process, PPROCESS_MEMORY_COUNTERS counters, DWORD cb) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetProcessMemoryInfo(%p, %p, %u)\n", process, counters, cb);
+	if (!validateCurrentProcess(process))
+		return FALSE;
+	if (!counters || cb < sizeof(PROCESS_MEMORY_COUNTERS)) {
+		kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	if (cb >= sizeof(PROCESS_MEMORY_COUNTERS_EX)) {
+		// The available host counters do not measure private commit charge.
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	uint64_t workingSet = 0, peakWorkingSet = 0;
+	DWORD faults = 0;
+	if (!processMemoryUsage(workingSet, peakWorkingSet, faults)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	PROCESS_MEMORY_COUNTERS result{};
+	result.cb = sizeof(result);
+	result.PageFaultCount = faults;
+	result.PeakWorkingSetSize = guestSize(peakWorkingSet);
+	result.WorkingSetSize = guestSize(workingSet);
+	std::memcpy(counters, &result, sizeof(result));
 	return TRUE;
 }
 

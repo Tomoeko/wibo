@@ -1,5 +1,6 @@
 #include "processenv.h"
 
+#include "common.h"
 #include "context.h"
 #include "errors.h"
 #include "files.h"
@@ -695,6 +696,102 @@ BOOL WINAPI SetEnvironmentVariableW(LPCWSTR lpName, LPCWSTR lpValue) {
 	const DWORD error = setEnvironmentValue(name, value);
 	setLastError(error ? error : incomingError);
 	return error == ERROR_SUCCESS;
+}
+
+DWORD WINAPI SearchPathW(LPCWSTR lpPath, LPCWSTR lpFileName, LPCWSTR lpExtension, DWORD nBufferLength, LPWSTR lpBuffer,
+						 GUEST_PTR *lpFilePart) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SearchPathW(%p, %p, %p, %u)\n", lpPath, lpFileName, lpExtension, nBufferLength);
+	if (lpFilePart)
+		*lpFilePart = GUEST_NULL;
+	if (!lpFileName || !*lpFileName || (nBufferLength && !lpBuffer)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+
+	std::u16string name(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName));
+	const size_t separator = name.find_last_of(u"\\/");
+	const size_t dot = name.find_last_of(u'.');
+	if (lpExtension && *lpExtension &&
+		(dot == std::u16string::npos || (separator != std::u16string::npos && dot < separator))) {
+		name.append(reinterpret_cast<const char16_t *>(lpExtension), wstrlen(lpExtension));
+	}
+	std::string utf8Name;
+	if (!utf16ToUtf8(name, utf8Name)) {
+		setLastError(kNoUnicodeTranslation);
+		return 0;
+	}
+
+	std::vector<std::filesystem::path> directories;
+	if (lpFileName[0] && (wstrchr(lpFileName, '\\') || wstrchr(lpFileName, '/') || wstrchr(lpFileName, ':'))) {
+		directories.emplace_back();
+	} else if (lpPath) {
+		std::u16string_view paths(reinterpret_cast<const char16_t *>(lpPath), wstrlen(lpPath));
+		for (size_t start = 0; start <= paths.size();) {
+			const size_t end = paths.find(u';', start);
+			const auto entry = paths.substr(start, end == std::u16string_view::npos ? end : end - start);
+			std::string utf8Entry;
+			if (!utf16ToUtf8(entry, utf8Entry)) {
+				setLastError(kNoUnicodeTranslation);
+				return 0;
+			}
+			directories.push_back(utf8Entry.empty() ? std::filesystem::current_path()
+													: files::pathFromWindows(utf8Entry.c_str()));
+			if (end == std::u16string_view::npos)
+				break;
+			start = end + 1;
+		}
+	} else {
+		if (wibo::guestExecutablePath.has_parent_path())
+			directories.push_back(wibo::guestExecutablePath.parent_path());
+		directories.push_back(std::filesystem::current_path());
+		const auto system = files::systemSearchDirectories();
+		for (const auto &directory : {system.system, system.legacySystem, system.windows})
+			if (!directory.empty())
+				directories.push_back(directory);
+		if (const auto value = getEnvironmentValue(u"PATH")) {
+			std::u16string_view paths(*value);
+			for (size_t start = 0; start <= paths.size();) {
+				const size_t end = paths.find(u';', start);
+				const auto entry = paths.substr(start, end == std::u16string_view::npos ? end : end - start);
+				std::string utf8Entry;
+				if (utf16ToUtf8(entry, utf8Entry) && !utf8Entry.empty())
+					directories.push_back(files::pathFromWindows(utf8Entry.c_str()));
+				if (end == std::u16string_view::npos)
+					break;
+				start = end + 1;
+			}
+		}
+	}
+
+	for (const auto &directory : directories) {
+		const auto candidate =
+			files::pathFromWindows((directory.empty() ? utf8Name : files::pathToWindows(directory / utf8Name)).c_str());
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(candidate, ec))
+			continue;
+		const auto absolute = std::filesystem::absolute(candidate, ec);
+		if (ec)
+			continue;
+		const auto result = utf8ToUtf16(files::pathToWindows(absolute));
+		if (!result)
+			continue;
+		const auto required = static_cast<DWORD>(result->size() + 1);
+		if (required > nBufferLength) {
+			setLastError(ERROR_INSUFFICIENT_BUFFER);
+			return required;
+		}
+		std::copy(result->begin(), result->end(), lpBuffer);
+		lpBuffer[result->size()] = 0;
+		if (lpFilePart) {
+			const auto last = result->find_last_of(u"\\/");
+			*lpFilePart = toGuestPtr(lpBuffer + (last == std::u16string::npos ? 0 : last + 1));
+		}
+		return required - 1;
+	}
+
+	setLastError(ERROR_FILE_NOT_FOUND);
+	return 0;
 }
 
 } // namespace kernel32

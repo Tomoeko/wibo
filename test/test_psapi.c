@@ -60,5 +60,23 @@ int main(void) {
 	TEST_CHECK(info.lpBaseOfDll == (LPVOID)mainModule);
 	TEST_CHECK(info.SizeOfImage > 0);
 	TEST_CHECK(info.EntryPoint != NULL);
+	PROCESS_MEMORY_COUNTERS counters;
+	memset(&counters, 0xa5, sizeof(counters));
+	TEST_CHECK(GetProcessMemoryInfo(process, &counters, sizeof(counters)));
+	TEST_CHECK_EQ(sizeof(counters), counters.cb);
+	TEST_CHECK(counters.WorkingSetSize > 0);
+	TEST_CHECK(counters.PeakWorkingSetSize >= counters.WorkingSetSize);
+	PROCESS_MEMORY_COUNTERS_EX extended;
+	memset(&extended, 0xa5, sizeof(extended));
+	SetLastError(ERROR_SUCCESS);
+	if (GetProcessMemoryInfo(process, (PROCESS_MEMORY_COUNTERS *)&extended, sizeof(extended))) {
+		TEST_CHECK(extended.cb == sizeof(counters) || extended.cb == sizeof(extended));
+		TEST_CHECK(extended.PrivateUsage > 0);
+	} else {
+		TEST_CHECK_EQ(ERROR_NOT_SUPPORTED, GetLastError());
+		TEST_CHECK_EQ(0xa5a5a5a5, extended.cb);
+	}
+	TEST_CHECK(!GetProcessMemoryInfo(process, &counters, sizeof(counters) - 1));
+	TEST_CHECK(!GetProcessMemoryInfo(NULL, &counters, sizeof(counters)));
 	return 0;
 }

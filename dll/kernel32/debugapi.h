@@ -4,6 +4,7 @@
 
 namespace kernel32 {
 
+VOID WINAPI DebugBreak();
 BOOL WINAPI IsDebuggerPresent();
 VOID WINAPI OutputDebugStringA(LPCSTR lpOutputString);
 VOID WINAPI OutputDebugStringW(LPCWSTR lpOutputString);

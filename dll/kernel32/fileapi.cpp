@@ -22,6 +22,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
@@ -62,6 +63,11 @@ constexpr DWORD kLockExclusive = 0x2;
 constexpr DWORD kMoveReplaceExisting = 0x1;
 constexpr DWORD kMoveCopyAllowed = 0x2;
 constexpr DWORD kMoveWriteThrough = 0x8;
+constexpr DWORD kReplaceIgnoreMergeErrors = 0x2;
+constexpr DWORD kReplaceIgnoreAclErrors = 0x4;
+constexpr DWORD kUnableToRemoveReplaced = 1175;
+constexpr DWORD kUnableToMoveReplacement = 1176;
+constexpr DWORD kUnableToMoveReplacementAfterMerge = 1177;
 
 constexpr uint32_t kFileReadMask = FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES;
 constexpr uint32_t kDirectoryReadMask = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_EA | FILE_READ_ATTRIBUTES;
@@ -1422,7 +1428,12 @@ HANDLE WINAPI CreateFileW(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwSha
 		setLastError(ERROR_INVALID_PARAMETER);
 		return INVALID_HANDLE_VALUE;
 	}
-	std::string lpFileNameA = wideStringToString(lpFileName);
+	std::string lpFileNameA;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName)),
+					 lpFileNameA)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return INVALID_HANDLE_VALUE;
+	}
 	return CreateFileA(lpFileNameA.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
 					   dwFlagsAndAttributes, hTemplateFile);
 }
@@ -1462,7 +1473,11 @@ BOOL WINAPI DeleteFileW(LPCWSTR lpFileName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	std::string name = wideStringToString(lpFileName);
+	std::string name;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpFileName), wstrlen(lpFileName)), name)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return DeleteFileA(name.c_str());
 }
 
@@ -1800,7 +1815,15 @@ BOOL WINAPI MoveFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName) {
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	const auto from = wideStringToString(lpExistingFileName), to = wideStringToString(lpNewFileName);
+	std::string from, to;
+	if (!utf16ToUtf8(
+			std::u16string_view(reinterpret_cast<const char16_t *>(lpExistingFileName), wstrlen(lpExistingFileName)),
+			from) ||
+		!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpNewFileName), wstrlen(lpNewFileName)),
+					 to)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return moveFile(from.c_str(), to.c_str(), kMoveCopyAllowed);
 }
 
@@ -1811,8 +1834,182 @@ BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	const auto from = wideStringToString(lpExistingFileName), to = wideStringToString(lpNewFileName);
+	std::string from, to;
+	if (!utf16ToUtf8(
+			std::u16string_view(reinterpret_cast<const char16_t *>(lpExistingFileName), wstrlen(lpExistingFileName)),
+			from) ||
+		!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpNewFileName), wstrlen(lpNewFileName)),
+					 to)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
 	return moveFile(from.c_str(), to.c_str(), dwFlags);
+}
+
+BOOL WINAPI ReplaceFileW(LPCWSTR lpReplacedFileName, LPCWSTR lpReplacementFileName, LPCWSTR lpBackupFileName,
+						 DWORD dwReplaceFlags, LPVOID lpExclude, LPVOID lpReserved) {
+	HOST_CONTEXT_GUARD();
+	if (!lpReplacedFileName || !lpReplacementFileName || !*lpReplacedFileName || !*lpReplacementFileName ||
+		(lpBackupFileName && !*lpBackupFileName) || lpExclude || lpReserved) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (dwReplaceFlags & ~(kReplaceIgnoreMergeErrors | kReplaceIgnoreAclErrors)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const DWORD priorError = getLastError();
+	auto convertName = [](LPCWSTR wide, std::string &utf8) {
+		return utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(wide), wstrlen(wide)), utf8);
+	};
+	std::string replacedName, replacementName, backupName;
+	if (!convertName(lpReplacedFileName, replacedName) || !convertName(lpReplacementFileName, replacementName) ||
+		(lpBackupFileName && !convertName(lpBackupFileName, backupName))) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const std::filesystem::path replacedPath = files::pathFromWindows(replacedName.c_str());
+	const std::filesystem::path replacementPath = files::pathFromWindows(replacementName.c_str());
+	const std::filesystem::path backupPath =
+		lpBackupFileName ? files::pathFromWindows(backupName.c_str()) : std::filesystem::path{};
+
+	HANDLE replacedHandle = INVALID_HANDLE_VALUE;
+	HANDLE replacementHandle = INVALID_HANDLE_VALUE;
+	HANDLE backupHandle = INVALID_HANDLE_VALUE;
+	uint8_t replacementBits = 0;
+	bool mergedAttributes = false;
+	auto closeHandles = [&] {
+		if (backupHandle != INVALID_HANDLE_VALUE)
+			CloseHandle(backupHandle);
+		if (replacementHandle != INVALID_HANDLE_VALUE)
+			CloseHandle(replacementHandle);
+		if (replacedHandle != INVALID_HANDLE_VALUE)
+			CloseHandle(replacedHandle);
+	};
+	auto fail = [&](DWORD error) -> BOOL {
+		if (mergedAttributes)
+			writeStoredAttributes(replacementPath.c_str(), replacementBits);
+		closeHandles();
+		setLastError(error);
+		return FALSE;
+	};
+
+	struct stat replacedInfo{}, replacementInfo{}, backupInfo{};
+	if (lstat(replacedPath.c_str(), &replacedInfo) != 0)
+		return fail(wibo::winErrorFromErrno(errno));
+	if (lstat(replacementPath.c_str(), &replacementInfo) != 0)
+		return fail(wibo::winErrorFromErrno(errno));
+	if (!S_ISREG(replacedInfo.st_mode) || !S_ISREG(replacementInfo.st_mode))
+		return fail(ERROR_ACCESS_DENIED);
+	if (replacedInfo.st_dev != replacementInfo.st_dev)
+		return fail(ERROR_NOT_SAME_DEVICE);
+	if (replacedInfo.st_ino == replacementInfo.st_ino)
+		return fail(ERROR_SHARING_VIOLATION);
+	const DWORD replacedAttributes = GetFileAttributesA(replacedName.c_str());
+	if (replacedAttributes == INVALID_FILE_ATTRIBUTES)
+		return fail(getLastError());
+	if (replacedAttributes & FILE_ATTRIBUTE_READONLY)
+		return fail(ERROR_ACCESS_DENIED);
+
+	bool backupExists = false;
+	if (lpBackupFileName) {
+		const std::filesystem::path parent =
+			backupPath.has_parent_path() ? backupPath.parent_path() : std::filesystem::path(".");
+		struct stat parentInfo{};
+		if (stat(parent.c_str(), &parentInfo) != 0)
+			return fail(wibo::winErrorFromErrno(errno));
+		if (!S_ISDIR(parentInfo.st_mode))
+			return fail(ERROR_PATH_NOT_FOUND);
+		if (parentInfo.st_dev != replacedInfo.st_dev)
+			return fail(ERROR_NOT_SAME_DEVICE);
+		if (lstat(backupPath.c_str(), &backupInfo) == 0) {
+			backupExists = true;
+			if (!S_ISREG(backupInfo.st_mode))
+				return fail(ERROR_ACCESS_DENIED);
+			if ((backupInfo.st_dev == replacedInfo.st_dev && backupInfo.st_ino == replacedInfo.st_ino) ||
+				(backupInfo.st_dev == replacementInfo.st_dev && backupInfo.st_ino == replacementInfo.st_ino))
+				return fail(ERROR_SHARING_VIOLATION);
+		} else if (errno != ENOENT) {
+			return fail(wibo::winErrorFromErrno(errno));
+		}
+	}
+
+	replacedHandle = CreateFileA(replacedName.c_str(), GENERIC_READ | DELETE | SYNCHRONIZE,
+								 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+								 FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+	if (replacedHandle == INVALID_HANDLE_VALUE)
+		return fail(getLastError());
+	replacementHandle = CreateFileA(replacementName.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE, 0,
+									nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+	if (replacementHandle == INVALID_HANDLE_VALUE) {
+		replacementHandle = CreateFileA(replacementName.c_str(), GENERIC_READ | DELETE | SYNCHRONIZE, 0, nullptr,
+										OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+		if (replacementHandle == INVALID_HANDLE_VALUE)
+			return fail(getLastError());
+	}
+	if (backupExists) {
+		backupHandle = CreateFileA(backupName.c_str(), GENERIC_READ | DELETE | SYNCHRONIZE,
+								   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+								   FILE_ATTRIBUTE_NORMAL, NO_HANDLE);
+		if (backupHandle == INVALID_HANDLE_VALUE)
+			return fail(getLastError());
+	}
+
+	uint8_t replacedBits = 0;
+	if (!readStoredAttributes(replacedPath.c_str(), -1, replacedBits) ||
+		!readStoredAttributes(replacementPath.c_str(), -1, replacementBits)) {
+		if (!(dwReplaceFlags & kReplaceIgnoreMergeErrors))
+			return fail(wibo::winErrorFromErrno(errno));
+	} else if (replacedBits != replacementBits) {
+		if (!writeStoredAttributes(replacementPath.c_str(), replacedBits)) {
+			if (!(dwReplaceFlags & kReplaceIgnoreMergeErrors))
+				return fail(wibo::winErrorFromErrno(errno));
+		} else {
+			mergedAttributes = true;
+		}
+	}
+
+	if (!lpBackupFileName) {
+		const int error = renameFile(replacementPath, replacedPath, true);
+		if (error)
+			return fail(wibo::winErrorFromErrno(error));
+		closeHandles();
+		setLastError(priorError);
+		return TRUE;
+	}
+
+	std::string previousBackup;
+	if (backupExists) {
+		const std::filesystem::path parent =
+			backupPath.has_parent_path() ? backupPath.parent_path() : std::filesystem::path(".");
+		previousBackup = (parent / ".wibo-replace-XXXXXX").string();
+		const int temporary = mkstemp(previousBackup.data());
+		if (temporary < 0)
+			return fail(wibo::winErrorFromErrno(errno));
+		close(temporary);
+		const int error = renameFile(backupPath, previousBackup, true);
+		if (error) {
+			unlink(previousBackup.c_str());
+			return fail(wibo::winErrorFromErrno(error));
+		}
+	}
+	int error = renameFile(replacedPath, backupPath, false);
+	if (error) {
+		const int rollback = backupExists ? renameFile(previousBackup, backupPath, false) : 0;
+		return fail(rollback ? kUnableToMoveReplacementAfterMerge : kUnableToRemoveReplaced);
+	}
+	error = renameFile(replacementPath, replacedPath, false);
+	if (error) {
+		const int replacedRollback = renameFile(backupPath, replacedPath, false);
+		const int backupRollback = backupExists ? renameFile(previousBackup, backupPath, false) : 0;
+		return fail((replacedRollback || backupRollback) ? kUnableToMoveReplacementAfterMerge
+														 : kUnableToMoveReplacement);
+	}
+	if (backupExists && unlink(previousBackup.c_str()) != 0)
+		DEBUG_LOG("ReplaceFileW: unable to remove previous backup: errno=%d\n", errno);
+	closeHandles();
+	setLastError(priorError);
+	return TRUE;
 }
 
 DWORD WINAPI SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod) {
@@ -2317,7 +2514,7 @@ BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_HANDLE_CLASS
 DWORD WINAPI GetFileType(HANDLE hFile) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetFileType(%p) ", hFile);
-	auto file = wibo::handles().getAs<FileObject>(hFile);
+	auto file = wibo::handles().getAs<FsObject>(hFile);
 	if (!file || !file->valid()) {
 		setLastError(ERROR_INVALID_HANDLE);
 		DEBUG_LOG("-> ERROR_INVALID_HANDLE\n");
@@ -2446,6 +2643,61 @@ DWORD WINAPI GetFullPathNameW(LPCWSTR lpFileName, DWORD nBufferLength, LPWSTR lp
 	}
 
 	return static_cast<DWORD>(wideLen - 1);
+}
+
+DWORD WINAPI GetFinalPathNameByHandleW(HANDLE hFile, LPWSTR lpszFilePath, DWORD cchFilePath, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetFinalPathNameByHandleW(%p, %p, %u, 0x%x)\n", hFile, lpszFilePath, cchFilePath, dwFlags);
+	constexpr DWORD kFileNameOpened = 0x8;
+	constexpr DWORD kVolumeNameNone = 0x4;
+	if ((dwFlags & ~0xfu) || (dwFlags & 0x7u) > kVolumeNameNone || (dwFlags & 0x7u) == 0x3u) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	if ((dwFlags & kFileNameOpened) || ((dwFlags & 0x7u) != 0 && (dwFlags & 0x7u) != kVolumeNameNone)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	auto file = wibo::handles().getAs<FsObject>(hFile);
+	if (!file || !file->valid()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	std::filesystem::path path;
+	{
+		std::lock_guard lock(file->m);
+		path = file->canonicalPath;
+	}
+	if (path.empty()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	std::string windowsPath = files::pathToWindows(path);
+	if (windowsPath.size() < 3 || windowsPath[1] != ':' || windowsPath[2] != '\\') {
+		setLastError(ERROR_PATH_NOT_FOUND);
+		return 0;
+	}
+	if ((dwFlags & 0x7u) == kVolumeNameNone)
+		windowsPath.erase(0, 2);
+	else
+		windowsPath.insert(0, "\\\\?\\");
+	const auto result = utf8ToUtf16(windowsPath);
+	if (!result) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	const auto required = static_cast<DWORD>(result->size() + 1);
+	if (required > cchFilePath) {
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return required;
+	}
+	if (!lpszFilePath) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	std::copy(result->begin(), result->end(), lpszFilePath);
+	lpszFilePath[result->size()] = 0;
+	return required - 1;
 }
 
 DWORD WINAPI GetShortPathNameA(LPCSTR lpszLongPath, LPSTR lpszShortPath, DWORD cchBuffer) {

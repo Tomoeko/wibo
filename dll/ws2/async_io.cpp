@@ -139,11 +139,13 @@ class SocketIoWorker {
 				request->cancelled = true;
 		wake();
 	}
-	bool cancel(const std::shared_ptr<ws2::detail::Socket> &socket, const OVERLAPPED *overlapped) {
+	bool cancel(const std::shared_ptr<ws2::detail::Socket> &socket, const OVERLAPPED *overlapped,
+				const pthread_t *owner = nullptr) {
 		std::lock_guard lock(mutex);
 		bool found = false;
 		for (const auto &request : requests) {
-			if (request->socket == socket && (!overlapped || request->overlapped == overlapped)) {
+			if (request->socket == socket && (!overlapped || request->overlapped == overlapped) &&
+				(!owner || pthread_equal(*owner, request->owner))) {
 				request->cancelled = true;
 				found = true;
 			}
@@ -165,6 +167,11 @@ bool queueSocketIo(std::unique_ptr<SocketIoRequest> request) { return worker().e
 bool cancelSocketIo(const std::shared_ptr<Socket> &socket, const OVERLAPPED *overlapped) {
 	if (auto *worker = g_worker.load())
 		return worker->cancel(socket, overlapped);
+	return false;
+}
+bool cancelSocketIoForThread(const std::shared_ptr<Socket> &socket, pthread_t owner) {
+	if (auto *worker = g_worker.load())
+		return worker->cancel(socket, nullptr, &owner);
 	return false;
 }
 void wakeSocketIo() {

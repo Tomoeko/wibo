@@ -92,15 +92,18 @@ BOOL WINAPI GetStringTypeW(DWORD dwInfoType, LPCWCH lpSrcStr, int cchSrc, LPWORD
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetStringTypeW(%u, %p, %i, %p)\n", dwInfoType, lpSrcStr, cchSrc, lpCharType);
 
-	assert(dwInfoType == 1); // CT_CTYPE1
-
-	if (!lpSrcStr || !lpCharType) {
+	if (!lpSrcStr || !lpCharType || cchSrc == 0 || cchSrc < -1 ||
+		reinterpret_cast<const void *>(lpSrcStr) == reinterpret_cast<const void *>(lpCharType)) {
 		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (dwInfoType != 1) {
+		setLastError(dwInfoType == 2 || dwInfoType == 3 ? ERROR_NOT_SUPPORTED : ERROR_INVALID_FLAGS);
 		return FALSE;
 	}
 
 	if (cchSrc < 0) {
-		cchSrc = static_cast<int>(wstrlen(lpSrcStr));
+		cchSrc = static_cast<int>(wstrlen(lpSrcStr)) + 1;
 	}
 
 	for (int i = 0; i < cchSrc; i++) {
@@ -119,6 +122,13 @@ BOOL WINAPI GetStringTypeW(DWORD dwInfoType, LPCWCH lpSrcStr, int cchSrc, LPWORD
 	}
 
 	return TRUE;
+}
+
+BOOL WINAPI GetStringTypeExW(LCID locale, DWORD infoType, LPCWCH source, int count, LPWORD characterTypes) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetStringTypeExW(0x%x, %u, %p, %d, %p)\n", locale, infoType, source, count, characterTypes);
+	(void)locale;
+	return GetStringTypeW(infoType, source, count, characterTypes);
 }
 
 BOOL WINAPI GetStringTypeA(LCID Locale, DWORD dwInfoType, LPCSTR lpSrcStr, int cchSrc, LPWORD lpCharType) {

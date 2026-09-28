@@ -186,6 +186,7 @@ void wibo::initializeTibStackInfo(TEB *tibPtr) {
 	}
 	tibPtr->Tib.StackLimit = toGuestPtr(guestLimit);
 	tibPtr->Tib.StackBase = toGuestPtr(guestBase);
+	tibPtr->DeallocationStack = toGuestPtr(guestLimit);
 	tibPtr->CurrentStackPointer = guestBase;
 	DEBUG_LOG("initializeTibStackInfo: using guest stack base=%p limit=%p\n", tibPtr->Tib.StackBase,
 			  tibPtr->Tib.StackLimit);

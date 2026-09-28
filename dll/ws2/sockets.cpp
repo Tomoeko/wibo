@@ -2,7 +2,9 @@
 
 #include "common.h"
 #include "context.h"
+#include "errors.h"
 #include "handles.h"
+#include "kernel32/internal.h"
 
 #include <algorithm>
 #include <array>
@@ -16,10 +18,22 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <utility>
 
 namespace {
 constexpr SOCKET kInvalidSocket = static_cast<SOCKET>(-1);
 constexpr int kWinInet6 = 23;
+struct BlockingAccept {
+	const ws2::detail::Socket *socket;
+	BlockingAccept *previous;
+	bool cancelled = false;
+	explicit BlockingAccept(const ws2::detail::Socket *socket);
+	~BlockingAccept();
+};
+thread_local BlockingAccept *g_blockingAccept = nullptr;
+BlockingAccept::BlockingAccept(const ws2::detail::Socket *socket)
+	: socket(socket), previous(std::exchange(g_blockingAccept, this)) {}
+BlockingAccept::~BlockingAccept() { g_blockingAccept = previous; }
 int querySocketAddress(SOCKET handle, LPVOID address, int *length, bool peer) {
 	const auto state = ws2::detail::findSocket(handle);
 	if (!state)
@@ -106,6 +120,11 @@ SOCKET createSocket(int family, int type, int protocol, LPCVOID protocolInfo, UI
 } // namespace
 
 namespace ws2::detail {
+void cancelBlockingSocketIoForThread(const Socket &socket) {
+	for (auto *operation = g_blockingAccept; operation; operation = operation->previous)
+		if (operation->socket == &socket)
+			operation->cancelled = true;
+}
 bool copySocketOptions(int source, int destination) {
 	constexpr int options[] = {SO_REUSEADDR, SO_KEEPALIVE, SO_DONTROUTE, SO_BROADCAST, SO_OOBINLINE,
 							   SO_SNDBUF,	 SO_RCVBUF,	   SO_SNDTIMEO,	 SO_RCVTIMEO,  SO_LINGER};
@@ -519,36 +538,69 @@ SOCKET WINAPI accept(SOCKET handle, LPVOID address, int *addressLength) {
 	if (address && (!addressLength || *addressLength < (state->family == AF_INET ? 16 : 28)))
 		return fail(10014);
 	sockaddr_storage peer{};
-	int descriptor;
-	while (true) {
-		bool blocking;
+	int descriptor = -1;
+	int acceptedParentMode = -1;
+	BlockingAccept operation(state.get());
+	for (;;) {
+		if (operation.cancelled)
+			return fail(ERROR_OPERATION_ABORTED);
+		if (state->closed)
+			return fail(10038);
+		int acceptError = 0;
+		bool blocking = false;
 		{
-			std::unique_lock lock(state->ioMutex);
+			std::lock_guard lock(state->ioMutex);
+			if (state->closed)
+				return fail(10038);
 			const int flags = state->pendingAccepts ? state->acceptOriginalFlags : ::fcntl(state->descriptor, F_GETFL);
-			blocking = flags >= 0 && !(flags & O_NONBLOCK);
-			if (!state->pendingAccepts)
-				lock.unlock();
+			if (flags < 0)
+				return fail(detail::socketError(errno));
+			blocking = !(flags & O_NONBLOCK);
+			const bool temporaryNonblocking = blocking && !state->pendingAccepts;
+			if (temporaryNonblocking && ::fcntl(state->descriptor, F_SETFL, flags | O_NONBLOCK) < 0)
+				return fail(detail::socketError(errno));
 			size = sizeof(peer);
 			descriptor = ::accept(state->descriptor, reinterpret_cast<sockaddr *>(&peer), &size);
+			acceptError = descriptor < 0 ? errno : 0;
+			if (descriptor >= 0)
+				acceptedParentMode = flags;
+			if (temporaryNonblocking && !state->closed && ::fcntl(state->descriptor, F_SETFL, flags) < 0) {
+				const int restoreError = errno;
+				if (descriptor >= 0)
+					::close(descriptor);
+				return fail(detail::socketError(restoreError));
+			}
 		}
 		if (descriptor >= 0)
 			break;
-		if (errno == EINTR)
+		if (acceptError == EINTR) {
+			if (blocking)
+				kernel32::dispatchPendingApcs();
+			if (operation.cancelled)
+				return fail(ERROR_OPERATION_ABORTED);
 			continue;
-		if ((errno != EAGAIN && errno != EWOULDBLOCK) || !blocking || state->closed)
-			break;
-		pollfd ready{state->descriptor, POLLIN, 0};
-		while (::poll(&ready, 1, -1) < 0 && errno == EINTR) {
 		}
+		if ((acceptError != EAGAIN && acceptError != EWOULDBLOCK) || !blocking || state->closed)
+			return fail(state->closed ? 10038 : detail::socketError(acceptError));
+		// Blocking Winsock calls service APCs while waiting for socket readiness.
+		if (kernel32::dispatchPendingApcs())
+			continue;
+		if (operation.cancelled)
+			return fail(ERROR_OPERATION_ABORTED);
+		if (state->closed)
+			return fail(10038);
+		pollfd ready{state->descriptor, POLLIN, 0};
+		const int polled = ::poll(&ready, 1, 25);
+		if (polled < 0 && errno == EINTR)
+			continue;
+		if (polled < 0)
+			return fail(detail::socketError(errno));
+		if (ready.revents & POLLNVAL)
+			return fail(10038);
 	}
-	if (descriptor < 0)
-		return fail(detail::socketError(errno));
 	auto accepted = std::make_shared<detail::Socket>(descriptor, state->family);
 	accepted->overlapped = state->overlapped;
-	const int parentMode = [&] {
-		std::lock_guard socketLock(state->ioMutex);
-		return state->pendingAccepts ? state->acceptOriginalFlags : ::fcntl(state->descriptor, F_GETFL);
-	}();
+	const int parentMode = acceptedParentMode;
 	const int mode = ::fcntl(descriptor, F_GETFL);
 	if (parentMode < 0 || mode < 0 ||
 		::fcntl(descriptor, F_SETFL, (mode & ~O_NONBLOCK) | (parentMode & O_NONBLOCK)) < 0)

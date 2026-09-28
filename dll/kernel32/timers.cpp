@@ -176,6 +176,12 @@ HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES attributes, BOOL manual
 	return CreateWaitableTimerExW(attributes, name ? wide.data() : nullptr, manualReset ? 1 : 0, kTimerAll);
 }
 
+HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES attributes, BOOL manualReset, LPCWSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateWaitableTimerW(%p, %d, %p)\n", attributes, static_cast<int>(manualReset), name);
+	return CreateWaitableTimerExW(attributes, name, manualReset ? 1 : 0, kTimerAll);
+}
+
 HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CreateWaitableTimerExW(%p, %p, %u, 0x%x)\n", attributes, name, flags, access);

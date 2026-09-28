@@ -9,17 +9,28 @@
 #include "strutil.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <fcntl.h>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <poll.h>
+#include <pthread.h>
 #include <string>
 #include <string_view>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -28,6 +39,161 @@ namespace kernel32 {
 namespace {
 
 struct NamedPipeInstance;
+
+constexpr uint32_t kTransferMagic = 0x50495045;
+constexpr size_t kMaxTransferName = 256;
+constexpr size_t kMaxTransferClients = 64;
+
+struct PipeTransferRequest {
+	uint32_t magic;
+	uint32_t access;
+	uint32_t nameLength;
+};
+
+struct PipeTransferReply {
+	uint32_t magic;
+	uint32_t error;
+	uint32_t pipeMode;
+	uint32_t accessMode;
+};
+static_assert(sizeof(PipeTransferRequest) == 12);
+static_assert(sizeof(PipeTransferReply) == 16);
+
+std::string pipeSocketPath(std::string_view key) {
+	uint64_t hash = 14695981039346656037ULL;
+	for (unsigned char character : key) {
+		hash ^= character;
+		hash *= 1099511628211ULL;
+	}
+	char path[96];
+	std::snprintf(path, sizeof(path), "/tmp/wibo-pipes-%lu/%016llx", static_cast<unsigned long>(geteuid()),
+				  static_cast<unsigned long long>(hash));
+	return path;
+}
+
+bool ensurePipeSocketDirectory() {
+	const std::string path = pipeSocketPath("");
+	const auto separator = path.find_last_of('/');
+	const std::string directory = path.substr(0, separator);
+	if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
+		return false;
+	struct stat info{};
+	return lstat(directory.c_str(), &info) == 0 && S_ISDIR(info.st_mode) && info.st_uid == geteuid() &&
+		   (info.st_mode & 077) == 0;
+}
+
+bool makePipeSocketAddress(std::string_view key, sockaddr_un &address, socklen_t &length) {
+	const std::string path = pipeSocketPath(key);
+	if (path.size() >= sizeof(address.sun_path))
+		return false;
+	address = {};
+	address.sun_family = AF_UNIX;
+	std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+	length = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
+	return true;
+}
+
+bool receiveBytes(int fd, void *buffer, size_t length) {
+	auto *bytes = static_cast<char *>(buffer);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (length != 0) {
+		const auto remaining =
+			std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+		if (remaining <= 0)
+			return false;
+		pollfd descriptor{fd, POLLIN, 0};
+		const int ready = poll(&descriptor, 1, static_cast<int>(remaining));
+		if (ready < 0 && errno == EINTR)
+			continue;
+		if (ready <= 0)
+			return false;
+		ssize_t received;
+		do {
+			received = recv(fd, bytes, length, 0);
+		} while (received < 0 && errno == EINTR);
+		if (received <= 0)
+			return false;
+		bytes += received;
+		length -= static_cast<size_t>(received);
+	}
+	return true;
+}
+
+bool sendBytes(int fd, const void *buffer, size_t length) {
+	const auto *bytes = static_cast<const char *>(buffer);
+	while (length != 0) {
+#ifdef MSG_NOSIGNAL
+		constexpr int flags = MSG_NOSIGNAL;
+#else
+		constexpr int flags = 0;
+#endif
+		ssize_t sent;
+		do {
+			sent = send(fd, bytes, length, flags);
+		} while (sent < 0 && errno == EINTR);
+		if (sent <= 0)
+			return false;
+		bytes += sent;
+		length -= static_cast<size_t>(sent);
+	}
+	return true;
+}
+
+bool sendReply(int socketFd, const PipeTransferReply &reply, int transferredFd) {
+	iovec data{const_cast<PipeTransferReply *>(&reply), sizeof(reply)};
+	msghdr message{};
+	message.msg_iov = &data;
+	message.msg_iovlen = 1;
+	std::array<char, CMSG_SPACE(sizeof(int))> control{};
+	if (transferredFd >= 0) {
+		message.msg_control = control.data();
+		message.msg_controllen = control.size();
+		cmsghdr *header = CMSG_FIRSTHDR(&message);
+		header->cmsg_level = SOL_SOCKET;
+		header->cmsg_type = SCM_RIGHTS;
+		header->cmsg_len = CMSG_LEN(sizeof(int));
+		std::memcpy(CMSG_DATA(header), &transferredFd, sizeof(transferredFd));
+	}
+#ifdef MSG_NOSIGNAL
+	constexpr int flags = MSG_NOSIGNAL;
+#else
+	constexpr int flags = 0;
+#endif
+	ssize_t sent;
+	do {
+		sent = sendmsg(socketFd, &message, flags);
+	} while (sent < 0 && errno == EINTR);
+	return sent > 0 && (static_cast<size_t>(sent) == sizeof(reply) ||
+						sendBytes(socketFd, reinterpret_cast<const char *>(&reply) + sent, sizeof(reply) - sent));
+}
+
+bool receiveReply(int socketFd, PipeTransferReply &reply, int &transferredFd) {
+	transferredFd = -1;
+	iovec data{&reply, sizeof(reply)};
+	std::array<char, CMSG_SPACE(sizeof(int))> control{};
+	msghdr message{};
+	message.msg_iov = &data;
+	message.msg_iovlen = 1;
+	message.msg_control = control.data();
+	message.msg_controllen = control.size();
+	ssize_t received;
+	do {
+		received = recvmsg(socketFd, &message, 0);
+	} while (received < 0 && errno == EINTR);
+	if (received <= 0)
+		return false;
+	if (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC))
+		return false;
+	for (cmsghdr *header = CMSG_FIRSTHDR(&message); header; header = CMSG_NXTHDR(&message, header)) {
+		if (header->cmsg_level == SOL_SOCKET && header->cmsg_type == SCM_RIGHTS &&
+			header->cmsg_len >= CMSG_LEN(sizeof(int))) {
+			std::memcpy(&transferredFd, CMSG_DATA(header), sizeof(transferredFd));
+			break;
+		}
+	}
+	return static_cast<size_t>(received) == sizeof(reply) ||
+		   receiveBytes(socketFd, reinterpret_cast<char *>(&reply) + received, sizeof(reply) - received);
+}
 
 void configureInheritability(int fd, bool inherit) {
 	if (fd < 0) {
@@ -61,14 +227,10 @@ std::optional<ParsedPipeName> parsePipeName(LPCSTR name, DWORD &error) {
 		error = ERROR_INVALID_NAME;
 		return std::nullopt;
 	}
-	if (input.size() > 256) {
-		error = ERROR_INVALID_PARAMETER;
-		return std::nullopt;
-	}
 	std::string lower;
 	lower.reserve(input.size());
-	for (char ch : input) {
-		lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+	for (unsigned char ch : input) {
+		lower.push_back(ch < 0x80 ? static_cast<char>(std::tolower(ch)) : static_cast<char>(ch));
 	}
 	constexpr std::string_view kLocalPrefix = "\\\\.\\pipe\\";
 	constexpr std::string_view kNtPrefix = "\\\\?\\pipe\\";
@@ -79,6 +241,10 @@ std::optional<ParsedPipeName> parsePipeName(LPCSTR name, DWORD &error) {
 		prefixLen = kNtPrefix.size();
 	} else {
 		// Not a pipe path; treat as non-match without error.
+		return std::nullopt;
+	}
+	if (input.size() > 256) {
+		error = ERROR_INVALID_PARAMETER;
 		return std::nullopt;
 	}
 	std::string raw = std::string(input.substr(prefixLen));
@@ -115,9 +281,27 @@ struct NamedPipeState : ObjectBase {
 	DWORD maxInstances = PIPE_UNLIMITED_INSTANCES;
 	uint32_t instanceCount = 0;
 	std::vector<NamedPipeInstance *> instances;
+	std::mutex listenerMutex;
+	int listenerFd = -1;
+	std::string listenerPath;
+	std::thread listenerThread;
+	std::atomic<bool> listenerStopping{false};
 
 	explicit NamedPipeState(std::string k) : ObjectBase(kType), key(std::move(k)) {}
-	~NamedPipeState() override { wibo::g_namespace.remove(this); }
+	~NamedPipeState() override {
+		listenerStopping.store(true, std::memory_order_release);
+		if (listenerThread.joinable())
+			listenerThread.join();
+		if (listenerFd >= 0)
+			close(listenerFd);
+		if (!listenerPath.empty())
+			unlink(listenerPath.c_str());
+		wibo::g_namespace.remove(this);
+	}
+
+	bool ensureListener(DWORD &error);
+	void listenForClients();
+	void serveClient(int socketFd);
 
 	void registerInstance(NamedPipeInstance *inst) {
 		std::lock_guard lk(mutex);
@@ -180,8 +364,10 @@ struct NamedPipeInstance final : FileObject {
 	DWORD accessMode;
 	DWORD pipeMode;
 	bool clientConnected = false;
+	bool requiresConnect = false;
 	bool connectPending = false;
 	LPOVERLAPPED pendingOverlapped = nullptr;
+	pthread_t pendingThread{};
 	std::mutex connectMutex;
 	std::condition_variable connectCv;
 
@@ -215,7 +401,7 @@ struct NamedPipeInstance final : FileObject {
 
 	bool canAcceptClient(DWORD desiredAccess) {
 		std::lock_guard lk(connectMutex);
-		if (companionFd < 0 || clientConnected) {
+		if (companionFd < 0 || clientConnected || requiresConnect) {
 			return false;
 		}
 		DWORD access = accessMode & PIPE_ACCESS_DUPLEX;
@@ -233,7 +419,7 @@ struct NamedPipeInstance final : FileObject {
 
 	int takeCompanion() {
 		std::lock_guard lk(connectMutex);
-		if (companionFd < 0 || clientConnected) {
+		if (companionFd < 0 || clientConnected || requiresConnect) {
 			return -1;
 		}
 		int fd = companionFd;
@@ -257,6 +443,135 @@ struct NamedPipeInstance final : FileObject {
 	}
 };
 
+bool NamedPipeState::ensureListener(DWORD &error) {
+	std::lock_guard lock(listenerMutex);
+	if (listenerFd >= 0)
+		return true;
+	if (!ensurePipeSocketDirectory()) {
+		error = ERROR_ACCESS_DENIED;
+		return false;
+	}
+	sockaddr_un address{};
+	socklen_t addressLength = 0;
+	if (!makePipeSocketAddress(key, address, addressLength)) {
+		error = ERROR_INVALID_NAME;
+		return false;
+	}
+	const int candidate = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (candidate < 0) {
+		error = wibo::winErrorFromErrno(errno);
+		return false;
+	}
+	configureInheritability(candidate, false);
+	if (bind(candidate, reinterpret_cast<const sockaddr *>(&address), addressLength) != 0) {
+		const int bindError = errno;
+		if (bindError != EADDRINUSE) {
+			error = wibo::winErrorFromErrno(bindError);
+			close(candidate);
+			return false;
+		}
+		struct stat existing{};
+		if (lstat(address.sun_path, &existing) != 0 || !S_ISSOCK(existing.st_mode) || existing.st_uid != geteuid()) {
+			error = ERROR_ACCESS_DENIED;
+			close(candidate);
+			return false;
+		}
+		const int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+		int probeError = EADDRINUSE;
+		if (probe >= 0) {
+			if (connect(probe, reinterpret_cast<const sockaddr *>(&address), addressLength) != 0)
+				probeError = errno;
+			close(probe);
+		}
+		if (probeError != ECONNREFUSED || unlink(address.sun_path) != 0 ||
+			bind(candidate, reinterpret_cast<const sockaddr *>(&address), addressLength) != 0) {
+			error = ERROR_ACCESS_DENIED;
+			close(candidate);
+			return false;
+		}
+	}
+	if (chmod(address.sun_path, 0600) != 0 || listen(candidate, 64) != 0) {
+		error = wibo::winErrorFromErrno(errno);
+		unlink(address.sun_path);
+		close(candidate);
+		return false;
+	}
+	listenerFd = candidate;
+	listenerPath = address.sun_path;
+	listenerThread = std::thread(&NamedPipeState::listenForClients, this);
+	return true;
+}
+
+void NamedPipeState::listenForClients() {
+	std::vector<std::future<void>> clients;
+	clients.reserve(kMaxTransferClients);
+	while (!listenerStopping.load(std::memory_order_acquire)) {
+		pollfd descriptor{listenerFd, POLLIN, 0};
+		int ready;
+		do {
+			ready = poll(&descriptor, 1, 100);
+		} while (ready < 0 && errno == EINTR);
+		if (ready <= 0 || !(descriptor.revents & POLLIN))
+			continue;
+		int socketFd;
+		do {
+			socketFd = accept(listenerFd, nullptr, nullptr);
+		} while (socketFd < 0 && errno == EINTR);
+		if (socketFd < 0)
+			continue;
+		configureInheritability(socketFd, false);
+		clients.erase(std::remove_if(clients.begin(), clients.end(),
+									 [](std::future<void> &client) {
+										 return client.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+									 }),
+					  clients.end());
+		if (clients.size() >= kMaxTransferClients) {
+			close(socketFd);
+			continue;
+		}
+		clients.emplace_back(std::async(std::launch::async, [this, socketFd] {
+			serveClient(socketFd);
+			close(socketFd);
+		}));
+	}
+}
+
+void NamedPipeState::serveClient(int socketFd) {
+	PipeTransferRequest request{};
+	if (!receiveBytes(socketFd, &request, sizeof(request)) || request.magic != kTransferMagic ||
+		request.nameLength == 0 || request.nameLength > kMaxTransferName)
+		return;
+	std::string requestedName(request.nameLength, '\0');
+	if (!receiveBytes(socketFd, requestedName.data(), requestedName.size()))
+		return;
+	PipeTransferReply reply{kTransferMagic, ERROR_PIPE_BUSY, 0, 0};
+	int companion = -1;
+	if (requestedName != key) {
+		reply.error = ERROR_ACCESS_DENIED;
+	} else {
+		std::lock_guard lock(mutex);
+		for (auto *instance : instances) {
+			if (!instance || !instance->canAcceptClient(request.access))
+				continue;
+			companion = instance->takeCompanion();
+			if (companion >= 0) {
+				reply.error = ERROR_SUCCESS;
+				reply.pipeMode = instance->pipeMode;
+				reply.accessMode = instance->accessMode;
+				break;
+			}
+		}
+	}
+	const bool delivered = sendReply(socketFd, reply, companion);
+	if (delivered && companion >= 0) {
+		// Retain the source descriptor until the receiver installs its copy.
+		char acknowledged = 0;
+		receiveBytes(socketFd, &acknowledged, sizeof(acknowledged));
+	}
+	if (companion >= 0)
+		close(companion);
+}
+
 Pin<NamedPipeInstance> acquireConnectableInstance(Pin<NamedPipeState> &state, DWORD desiredAccess, DWORD &error) {
 	if (!state) {
 		error = ERROR_FILE_NOT_FOUND;
@@ -273,6 +588,70 @@ Pin<NamedPipeInstance> acquireConnectableInstance(Pin<NamedPipeState> &state, DW
 	}
 	error = ERROR_PIPE_BUSY;
 	return {};
+}
+
+struct RemotePipeEndpoint {
+	int fd = -1;
+	DWORD pipeMode = 0;
+	DWORD accessMode = 0;
+};
+
+std::optional<RemotePipeEndpoint> connectRemotePipe(const ParsedPipeName &name, DWORD desiredAccess, DWORD &error) {
+	sockaddr_un address{};
+	socklen_t addressLength = 0;
+	if (!makePipeSocketAddress(name.key, address, addressLength)) {
+		error = ERROR_INVALID_NAME;
+		return std::nullopt;
+	}
+	const int socketFd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (socketFd < 0) {
+		error = wibo::winErrorFromErrno(errno);
+		return std::nullopt;
+	}
+	configureInheritability(socketFd, false);
+	if (connect(socketFd, reinterpret_cast<const sockaddr *>(&address), addressLength) != 0) {
+		const int failure = errno;
+		close(socketFd);
+		error = failure == ENOENT || failure == ECONNREFUSED ? ERROR_FILE_NOT_FOUND : wibo::winErrorFromErrno(failure);
+		return std::nullopt;
+	}
+	PipeTransferRequest request{kTransferMagic, desiredAccess, static_cast<uint32_t>(name.key.size())};
+	PipeTransferReply reply{};
+	int transferred = -1;
+	pollfd descriptor{socketFd, POLLIN, 0};
+	int ready;
+	if (!sendBytes(socketFd, &request, sizeof(request)) || !sendBytes(socketFd, name.key.data(), name.key.size())) {
+		close(socketFd);
+		error = ERROR_PIPE_NOT_CONNECTED;
+		return std::nullopt;
+	}
+	do {
+		ready = poll(&descriptor, 1, 3000);
+	} while (ready < 0 && errno == EINTR);
+	const bool received = ready > 0 && receiveReply(socketFd, reply, transferred);
+	if (received && reply.magic == kTransferMagic && reply.error == ERROR_SUCCESS && transferred >= 0) {
+		const char acknowledged = 1;
+		if (!sendBytes(socketFd, &acknowledged, sizeof(acknowledged))) {
+			close(socketFd);
+			close(transferred);
+			error = ERROR_PIPE_NOT_CONNECTED;
+			return std::nullopt;
+		}
+	}
+	close(socketFd);
+	if (!received || reply.magic != kTransferMagic || (reply.error == ERROR_SUCCESS && transferred < 0)) {
+		if (transferred >= 0)
+			close(transferred);
+		error = ERROR_PIPE_NOT_CONNECTED;
+		return std::nullopt;
+	}
+	if (reply.error != ERROR_SUCCESS) {
+		if (transferred >= 0)
+			close(transferred);
+		error = reply.error;
+		return std::nullopt;
+	}
+	return RemotePipeEndpoint{transferred, reply.pipeMode, reply.accessMode};
 }
 
 struct PipePeek {
@@ -356,8 +735,40 @@ bool tryCreateFileNamedPipeA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwS
 
 	auto state = wibo::g_namespace.getAs<NamedPipeState>(parsed->namespaceKey);
 	if (!state) {
-		setLastError(ERROR_FILE_NOT_FOUND);
-		outHandle = INVALID_HANDLE_VALUE;
+		DWORD remoteError = ERROR_SUCCESS;
+		auto remote = connectRemotePipe(*parsed, dwDesiredAccess, remoteError);
+		if (!remote) {
+			setLastError(remoteError);
+			outHandle = INVALID_HANDLE_VALUE;
+			return true;
+		}
+		const bool inherit = lpSecurityAttributes && lpSecurityAttributes->bInheritHandle;
+		configureInheritability(remote->fd, inherit);
+		auto client = make_pin<FileObject>(remote->fd);
+		if (!client) {
+			close(remote->fd);
+			setLastError(ERROR_NOT_ENOUGH_MEMORY);
+			outHandle = INVALID_HANDLE_VALUE;
+			return true;
+		}
+		client->pipeMessageMode = (remote->pipeMode & PIPE_TYPE_MESSAGE) != 0;
+		client->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
+		client->overlapped = (dwFlagsAndAttributes & FILE_FLAG_OVERLAPPED) != 0;
+		uint32_t grantedAccess = SYNCHRONIZE;
+		switch (remote->accessMode & PIPE_ACCESS_DUPLEX) {
+		case PIPE_ACCESS_DUPLEX:
+			grantedAccess |= FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+			break;
+		case PIPE_ACCESS_INBOUND:
+			grantedAccess |= FILE_GENERIC_WRITE;
+			break;
+		case PIPE_ACCESS_OUTBOUND:
+			grantedAccess |= FILE_GENERIC_READ;
+			break;
+		default:
+			break;
+		}
+		outHandle = wibo::handles().alloc(std::move(client), grantedAccess, inherit ? HANDLE_FLAG_INHERIT : 0);
 		return true;
 	}
 
@@ -627,6 +1038,11 @@ HANDLE WINAPI CreateNamedPipeA(LPCSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode
 
 	pipeObj->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
 	pipeObj->overlapped = overlapped;
+	DWORD listenerError = ERROR_SUCCESS;
+	if (!pipeObj->state->ensureListener(listenerError)) {
+		setLastError(listenerError);
+		return INVALID_HANDLE_VALUE;
+	}
 
 	uint32_t grantedAccess = SYNCHRONIZE;
 	switch (accessMode) {
@@ -645,6 +1061,24 @@ HANDLE WINAPI CreateNamedPipeA(LPCSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode
 
 	uint32_t handleFlags = inheritHandles ? HANDLE_FLAG_INHERIT : 0;
 	return wibo::handles().alloc(std::move(pipeObj), grantedAccess, handleFlags);
+}
+
+HANDLE WINAPI CreateNamedPipeW(LPCWSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode, DWORD nMaxInstances,
+							   DWORD nOutBufferSize, DWORD nInBufferSize, DWORD nDefaultTimeOut,
+							   LPSECURITY_ATTRIBUTES lpSecurityAttributes) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CreateNamedPipeW(%p, 0x%08x, 0x%08x, %u, %u, %u, %u, %p)\n", lpName, dwOpenMode, dwPipeMode,
+			  nMaxInstances, nOutBufferSize, nInBufferSize, nDefaultTimeOut, lpSecurityAttributes);
+	if (!lpName)
+		return CreateNamedPipeA(nullptr, dwOpenMode, dwPipeMode, nMaxInstances, nOutBufferSize, nInBufferSize,
+								nDefaultTimeOut, lpSecurityAttributes);
+	std::string name;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpName), wstrlen(lpName)), name)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return INVALID_HANDLE_VALUE;
+	}
+	return CreateNamedPipeA(name.c_str(), dwOpenMode, dwPipeMode, nMaxInstances, nOutBufferSize, nInBufferSize,
+							nDefaultTimeOut, lpSecurityAttributes);
 }
 
 BOOL WINAPI ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped) {
@@ -681,13 +1115,19 @@ BOOL WINAPI ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped) {
 	}
 
 	if ((pipe->pipeMode & PIPE_NOWAIT) != 0) {
+		if (pipe->requiresConnect) {
+			pipe->requiresConnect = false;
+			return TRUE;
+		}
 		setLastError(ERROR_PIPE_LISTENING);
 		return FALSE;
 	}
 
+	pipe->requiresConnect = false;
 	if (isOverlappedHandle) {
 		pipe->connectPending = true;
 		pipe->pendingOverlapped = lpOverlapped;
+		pipe->pendingThread = pthread_self();
 		lpOverlapped->Internal = STATUS_PENDING;
 		lpOverlapped->InternalHigh = 0;
 		kernel32::detail::resetOverlappedEvent(lpOverlapped);
@@ -704,6 +1144,73 @@ BOOL WINAPI ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped) {
 		return FALSE;
 	}
 	return TRUE;
+}
+
+BOOL WINAPI DisconnectNamedPipe(HANDLE hNamedPipe) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("DisconnectNamedPipe(%p)\n", hNamedPipe);
+	auto pipe = wibo::handles().getAs<NamedPipeInstance>(hNamedPipe);
+	if (!pipe) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+
+	std::lock_guard connectLock(pipe->connectMutex);
+	if (!pipe->clientConnected) {
+		pipe->requiresConnect = true;
+		setLastError(ERROR_PIPE_LISTENING);
+		return FALSE;
+	}
+	// A synchronous stream operation may be blocked on the existing descriptor.
+	// Replacing it while that operation runs would race descriptor reuse.
+	std::unique_lock streamLock(pipe->streamIoMutex, std::try_to_lock);
+	if (!streamLock.owns_lock()) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+
+	int endpoints[2] = {-1, -1};
+	const DWORD access = pipe->accessMode & PIPE_ACCESS_DUPLEX;
+	if ((access == PIPE_ACCESS_DUPLEX ? socketpair(AF_UNIX, SOCK_STREAM, 0, endpoints) : ::pipe(endpoints)) != 0) {
+		setLastError(wibo::winErrorFromErrno(errno));
+		return FALSE;
+	}
+	int serverFd = access == PIPE_ACCESS_OUTBOUND ? endpoints[1] : endpoints[0];
+	int companionFd = access == PIPE_ACCESS_OUTBOUND ? endpoints[0] : endpoints[1];
+	std::lock_guard fileLock(pipe->m);
+	const int oldFd = pipe->fd;
+	const int descriptorFlags = fcntl(oldFd, F_GETFD);
+	const bool inherit = descriptorFlags >= 0 && (descriptorFlags & FD_CLOEXEC) == 0;
+	configureInheritability(serverFd, inherit);
+	configureInheritability(companionFd, inherit);
+#ifdef __linux__
+	if (access != PIPE_ACCESS_DUPLEX) {
+		const int capacity = fcntl(oldFd, F_GETPIPE_SZ);
+		if (capacity > 0)
+			fcntl(serverFd, F_SETPIPE_SZ, capacity);
+	}
+#endif
+	pipe->fd = serverFd;
+	pipe->companionFd = companionFd;
+	pipe->clientConnected = false;
+	pipe->requiresConnect = true;
+	close(oldFd);
+	return TRUE;
+}
+
+NamedPipeCancelResult cancelNamedPipeConnect(HANDLE handle, LPOVERLAPPED overlapped, bool callerThreadOnly) {
+	auto pipe = wibo::handles().getAs<NamedPipeInstance>(handle);
+	if (!pipe || !pipe->valid())
+		return NamedPipeCancelResult::NotPipe;
+	std::lock_guard lock(pipe->connectMutex);
+	if (!pipe->connectPending || !pipe->pendingOverlapped || (overlapped && pipe->pendingOverlapped != overlapped) ||
+		(callerThreadOnly && !pthread_equal(pipe->pendingThread, pthread_self())))
+		return NamedPipeCancelResult::NotFound;
+	kernel32::detail::signalOverlappedEvent(pipe.get(), pipe->pendingOverlapped, STATUS_CANCELLED, 0);
+	pipe->pendingOverlapped = nullptr;
+	pipe->connectPending = false;
+	pipe->connectCv.notify_all();
+	return NamedPipeCancelResult::Cancelled;
 }
 
 } // namespace kernel32

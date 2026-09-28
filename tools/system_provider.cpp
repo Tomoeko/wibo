@@ -1725,6 +1725,17 @@ bool userDefaultUiLanguage() {
 	return response.write();
 }
 
+bool systemDefaultLcid() {
+	SetLastError(ERROR_SUCCESS);
+	const LCID locale = GetSystemDefaultLCID();
+	const DWORD error = GetLastError();
+	Response response;
+	response.header(locale ? ERROR_SUCCESS : error ? error : ERROR_INVALID_DATA);
+	if (locale)
+		response.number(locale);
+	return response.write();
+}
+
 bool userPreferredUiLanguages(const WCHAR *flagsText, const WCHAR *capacityText, const WCHAR *modeText) {
 	uint32_t flags = 0, capacity = 0, mode = 0;
 	const auto write = [](DWORD status, BOOL result, bool countPresent, ULONG count, ULONG units,
@@ -2974,6 +2985,8 @@ bool dispatch(int argc, WCHAR **argv) {
 		written = fileMuiPath(argv + 2);
 	else if (argc == 2 && wcscmp(argv[1], L"user-default-ui-language") == 0)
 		written = userDefaultUiLanguage();
+	else if (argc == 2 && wcscmp(argv[1], L"system-default-lcid") == 0)
+		written = systemDefaultLcid();
 	else if (argc == 5 && wcscmp(argv[1], L"user-preferred-ui-languages") == 0)
 		written = userPreferredUiLanguages(argv[2], argv[3], argv[4]);
 	else if (argc == 6 && wcscmp(argv[1], L"file-version-info-size-ex-w") == 0)

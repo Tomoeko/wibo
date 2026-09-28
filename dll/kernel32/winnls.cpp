@@ -11,15 +11,22 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <locale.h>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <wctype.h>
+
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 
 namespace {
 
@@ -36,6 +43,10 @@ constexpr DWORD kMapSortHandle = 0x20000000;
 constexpr size_t kMaxLocaleNameUnits = 85;
 constexpr size_t kMaxNlsRequest = 64 * 1024;
 constexpr DWORD kFindModes = 0x00f00000;
+constexpr DWORD kFindStartsWith = 0x00100000;
+constexpr DWORD kFindEndsWith = 0x00200000;
+constexpr DWORD kFindFromStart = 0x00400000;
+constexpr DWORD kFindFromEnd = 0x00800000;
 constexpr DWORD kFindFilters = kNormIgnoreCase | 0x08000000;
 constexpr DWORD kMuiLanguageId = 0x4;
 constexpr DWORD kMuiLanguageName = 0x8;
@@ -307,6 +318,20 @@ bool supportedFindFlags(DWORD flags) {
 	return mode && !(mode & (mode - 1)) && !(flags & ~(kFindModes | kFindFilters));
 }
 
+WCHAR foldOrdinalCase(WCHAR character) {
+	if (character >= 'a' && character <= 'z')
+		return static_cast<WCHAR>(character - ('a' - 'A'));
+	if (character < 0x80)
+		return character;
+	static locale_t unicodeLocale = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nullptr);
+	if (unicodeLocale) {
+		const wint_t upper = towupper_l(character, unicodeLocale);
+		if (upper <= std::numeric_limits<WCHAR>::max())
+			return static_cast<WCHAR>(upper);
+	}
+	return wcharToUpper(character);
+}
+
 bool captureNlsOutput(LPWSTR data, int capacity, size_t nameHexSize, size_t &byteCapacity, std::string &seed) {
 	constexpr size_t kRequestOverhead = 256;
 	const size_t remainingHexBytes = kMaxNlsRequest - kRequestOverhead - nameHexSize;
@@ -431,8 +456,30 @@ UINT WINAPI GetACP() {
 
 LANGID WINAPI GetSystemDefaultLangID() {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: GetSystemDefaultLangID()\n");
-	return 0;
+	return static_cast<LANGID>(GetSystemDefaultLCID() & 0xffff);
+}
+
+LCID WINAPI GetSystemDefaultLCID() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetSystemDefaultLCID()\n");
+	static std::atomic<LCID> cachedLocale{0};
+	if (const LCID cached = cachedLocale.load(std::memory_order_acquire); cached)
+		return cached;
+	std::vector<uint8_t> response;
+	if (!wibo::provider::request({"system-default-lcid"}, response)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return 0;
+	}
+	wibo::provider::Reader reader(response);
+	if (!readNlsResponseHeader(reader))
+		return 0;
+	uint32_t locale = 0;
+	if (!reader.number(locale) || !locale || !reader.done()) {
+		setLastError(ERROR_INVALID_DATA);
+		return 0;
+	}
+	cachedLocale.store(locale, std::memory_order_release);
+	return locale;
 }
 
 LANGID WINAPI GetUserDefaultUILanguage() {
@@ -876,6 +923,53 @@ int WINAPI FindNLSStringEx(LPCWSTR lpLocaleName, DWORD dwFindNLSStringFlags, LPC
 		std::memcpy(pcchFound, &foundLength, sizeof(foundLength));
 	setLastError(nativeError);
 	return index == UINT32_MAX ? -1 : static_cast<int>(index);
+}
+
+int WINAPI FindStringOrdinal(DWORD flags, LPCWSTR source, int sourceCount, LPCWSTR value, int valueCount,
+							 BOOL ignoreCase) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("FindStringOrdinal(0x%x, %p, %d, %p, %d, %d)\n", flags, source, sourceCount, value, valueCount,
+			  ignoreCase);
+	if (flags != kFindStartsWith && flags != kFindEndsWith && flags != kFindFromStart && flags != kFindFromEnd) {
+		setLastError(ERROR_INVALID_FLAGS);
+		return -1;
+	}
+	if (!source || !value || sourceCount < -1 || valueCount < -1) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return -1;
+	}
+	const size_t sourceLength = sourceCount == -1 ? wstrlen(source) : static_cast<size_t>(sourceCount);
+	const size_t valueLength = valueCount == -1 ? wstrlen(value) : static_cast<size_t>(valueCount);
+	setLastError(ERROR_SUCCESS);
+	if (valueLength > sourceLength)
+		return -1;
+
+	const auto matchesAt = [&](size_t position) {
+		for (size_t index = 0; index < valueLength; ++index) {
+			const WCHAR left = source[position + index];
+			const WCHAR right = value[index];
+			if (left != right && (!ignoreCase || foldOrdinalCase(left) != foldOrdinalCase(right)))
+				return false;
+		}
+		return true;
+	};
+	const size_t last = sourceLength - valueLength;
+	if (flags == kFindStartsWith)
+		return matchesAt(0) ? 0 : -1;
+	if (flags == kFindEndsWith)
+		return matchesAt(last) ? static_cast<int>(last) : -1;
+	if (flags == kFindFromStart) {
+		for (size_t position = 0; position <= last; ++position) {
+			if (matchesAt(position))
+				return static_cast<int>(position);
+		}
+	} else {
+		for (size_t position = last + 1; position-- > 0;) {
+			if (matchesAt(position))
+				return static_cast<int>(position);
+		}
+	}
+	return -1;
 }
 
 BOOL WINAPI IsValidCodePage(UINT CodePage) {

@@ -39,6 +39,8 @@ enum class ObjectType : uint16_t {
 	ServiceLookup,
 	MemoryResource,
 	ProcessThread,
+	Job,
+	EventLog,
 };
 
 enum ObjectFlags : uint16_t {

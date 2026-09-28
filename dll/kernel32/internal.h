@@ -17,6 +17,7 @@ void initializeEnvironment();
 
 struct CompletionBinding;
 class DirectoryWatcher;
+struct JobObject;
 
 struct FsObject : ObjectBase {
 	std::mutex m;
@@ -141,6 +142,9 @@ struct ProcessObject final : WaitableObject {
 	bool childProcess = true;
 	bool waitable = true;
 	bool nativeExitObserved = false;
+	// Protected by the job registry mutex in jobapi.cpp.
+	JobObject *job = nullptr;
+	bool assignedToJob = false;
 	Pin<ProcessThreadObject> primaryThread;
 	std::shared_future<void> primaryMonitor;
 
@@ -283,7 +287,7 @@ struct HeapObject : public ObjectBase {
 	DWORD createFlags = 0;
 	SIZE_T initialSize = 0;
 	SIZE_T maximumSize = 0;
-	DWORD compatibility = 0;
+	std::atomic<DWORD> compatibility{0};
 	bool isProcessHeap = false;
 
 	HeapObject() : ObjectBase(kType) {}

@@ -52,6 +52,8 @@ constexpr PredefinedKeyInfo kPredefinedKeyInfos[] = {
 constexpr size_t kPredefinedKeyCount = std::size(kPredefinedKeyInfos);
 constexpr REGSAM kLegacyOpenAccess = 0x02000000; // MAXIMUM_ALLOWED
 constexpr REGSAM kKeyEnumerateSubkeys = 0x00000008;
+constexpr REGSAM kKeyQueryValue = 0x00000001;
+constexpr REGSAM kKeySetValue = 0x00000002;
 constexpr REGSAM kKeyRead = 0x00020019;
 constexpr REGSAM kKeyWrite = 0x00020006;
 constexpr REGSAM kKnownKeyAccess = 0x000f003f;
@@ -642,6 +644,255 @@ LSTATUS enumerateRegistryValue(HKEY key, DWORD index, RegistryValue &value) {
 	return ERROR_SUCCESS;
 }
 
+LSTATUS deleteRegistryValue(HKEY key, LPCWSTR name) {
+	std::lock_guard lock(g_registryMutex);
+	HandleMeta metadata{};
+	auto handle = predefinedHandleForValue(key);
+	if (!handle) {
+		handle = wibo::handles().getAs<RegistryKeyObject>(key, &metadata);
+		if (!handle)
+			return ERROR_INVALID_HANDLE;
+		if (!(metadata.grantedAccess & kKeySetValue))
+			return ERROR_ACCESS_DENIED;
+	}
+	const auto canonicalName = canonicalizeValueName(name);
+	const auto identity = localCacheKey(handle->canonicalPath, handle->providerView);
+	auto local = g_registryValues.find(identity);
+	if (local == g_registryValues.end() || !local->second.contains(canonicalName)) {
+		RegistryValue nativeValue;
+		const LSTATUS nativeStatus = providerQuery(*handle, canonicalName, nativeValue);
+		return nativeStatus == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : nativeStatus;
+	}
+	// A local override cannot delete a read-only provider value underneath it.
+	if (wibo::provider::configured()) {
+		RegistryValue nativeValue;
+		const LSTATUS nativeStatus = providerQuery(*handle, canonicalName, nativeValue);
+		if (nativeStatus != ERROR_FILE_NOT_FOUND)
+			return nativeStatus == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : nativeStatus;
+	}
+	local->second.erase(canonicalName);
+	FILETIME written{};
+	kernel32::GetSystemTimeAsFileTime(&written);
+	g_localWriteTimes.insert_or_assign(identity, written);
+	if (auto keyInfo = g_localKeys.find(identity); keyInfo != g_localKeys.end())
+		keyInfo->second.information.lastWriteTime = written;
+	return ERROR_SUCCESS;
+}
+
+LSTATUS deleteRegistryKey(HKEY key, LPCWSTR name) {
+	if (!name || !name[0])
+		return ERROR_INVALID_PARAMETER;
+	std::u16string path;
+	std::string view;
+	{
+		std::lock_guard lock(g_registryMutex);
+		auto handle = handleDataFromHKeyLocked(key);
+		if (!handle)
+			return ERROR_INVALID_HANDLE;
+		path = handle->canonicalPath;
+		view = handle->providerView;
+	}
+	const auto component = canonicalizeKeySegment(name);
+	if (component.empty())
+		return ERROR_INVALID_PARAMETER;
+	path.push_back(u'\\');
+	path += component;
+	RegistryKeyObject target(path);
+	target.providerView = view;
+	std::vector<RegistrySubkey> nativeChildren;
+	if (wibo::provider::configured()) {
+		const LSTATUS status = providerRegistrySubkeys(target, nativeChildren);
+		if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND)
+			return status;
+		if (!nativeChildren.empty())
+			return ERROR_ACCESS_DENIED;
+	}
+	std::lock_guard lock(g_registryMutex);
+	const auto identity = localCacheKey(path, view);
+	if (!g_existingKeys.contains(identity)) {
+		const LSTATUS nativeStatus = providerOpen(path, view);
+		return nativeStatus == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : nativeStatus;
+	}
+	const LSTATUS nativeStatus = providerOpen(path, view);
+	if (nativeStatus != ERROR_FILE_NOT_FOUND)
+		return nativeStatus == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : nativeStatus;
+	const auto prefix = path + u'\\';
+	for (const auto &[candidate, entry] : g_localKeys) {
+		if (entry.canonicalPath.starts_with(prefix) && candidate == localCacheKey(entry.canonicalPath, view))
+			return ERROR_ACCESS_DENIED;
+	}
+	g_existingKeys.erase(identity);
+	g_localKeys.erase(identity);
+	g_localWriteTimes.erase(identity);
+	g_registryValues.erase(identity);
+	const auto parent = path.substr(0, path.rfind(u'\\'));
+	FILETIME written{};
+	kernel32::GetSystemTimeAsFileTime(&written);
+	const auto parentIdentity = localCacheKey(parent, view);
+	g_localWriteTimes.insert_or_assign(parentIdentity, written);
+	if (auto parentKey = g_localKeys.find(parentIdentity); parentKey != g_localKeys.end())
+		parentKey->second.information.lastWriteTime = written;
+	return ERROR_SUCCESS;
+}
+
+struct RegistryKeyInformation {
+	std::u16string className;
+	FILETIME lastWriteTime{};
+	DWORD subkeys = 0;
+	DWORD longestSubkey = 0;
+	DWORD longestSubkeyClass = 0;
+	DWORD values = 0;
+	DWORD longestValueName = 0;
+	DWORD longestValueData = 0;
+};
+
+LSTATUS registryKeyInformation(HKEY key, RegistryKeyInformation &information, bool needsClassOrTime) {
+	Pin<RegistryKeyObject> handle;
+	bool local = false;
+	{
+		std::lock_guard lock(g_registryMutex);
+		HandleMeta metadata{};
+		handle = predefinedHandleForValue(key);
+		if (!handle) {
+			handle = wibo::handles().getAs<RegistryKeyObject>(key, &metadata);
+			if (!handle)
+				return ERROR_INVALID_HANDLE;
+			if (!(metadata.grantedAccess & kKeyQueryValue))
+				return ERROR_ACCESS_DENIED;
+		}
+		const auto identity = localCacheKey(handle->canonicalPath, handle->providerView);
+		local = g_existingKeys.contains(identity);
+		if (auto keyInfo = g_localKeys.find(identity); keyInfo != g_localKeys.end()) {
+			information.className = keyInfo->second.information.className;
+			information.lastWriteTime = keyInfo->second.information.lastWriteTime;
+		}
+		if (auto written = g_localWriteTimes.find(identity); written != g_localWriteTimes.end())
+			information.lastWriteTime = written->second;
+	}
+	std::vector<RegistrySubkey> nativeChildren;
+	if (wibo::provider::configured()) {
+		const LSTATUS status = providerRegistrySubkeys(*handle, nativeChildren);
+		if (status != ERROR_SUCCESS && !(status == ERROR_FILE_NOT_FOUND && local))
+			return status;
+		if (!local && needsClassOrTime) {
+			const size_t separator = handle->canonicalPath.rfind(u'\\');
+			if (separator != std::u16string::npos) {
+				RegistryKeyObject parent(handle->canonicalPath.substr(0, separator));
+				parent.providerView = handle->providerView;
+				std::vector<RegistrySubkey> siblings;
+				const LSTATUS parentStatus = providerRegistrySubkeys(parent, siblings);
+				if (parentStatus != ERROR_SUCCESS)
+					return parentStatus;
+				const auto ownName = handle->canonicalPath.substr(separator + 1);
+				for (const auto &entry : siblings) {
+					if (canonicalizeValueName(reinterpret_cast<LPCWSTR>(entry.name.c_str())) == ownName) {
+						information.className = entry.className;
+						information.lastWriteTime = entry.lastWriteTime;
+						break;
+					}
+				}
+			}
+		}
+	} else if (!local) {
+		return ERROR_NOT_SUPPORTED;
+	}
+	std::map<std::u16string, RegistrySubkey> children;
+	for (auto &entry : nativeChildren)
+		children.insert_or_assign(canonicalizeValueName(reinterpret_cast<LPCWSTR>(entry.name.c_str())),
+								  std::move(entry));
+	std::map<std::u16string, RegistryValue> values;
+	{
+		std::lock_guard lock(g_registryMutex);
+		if (wibo::provider::configured()) {
+			const LSTATUS status = providerOpen(handle->canonicalPath, handle->providerView);
+			if (status == ERROR_SUCCESS) {
+				auto snapshot = g_providerSnapshots.find(providerCacheKey(handle->canonicalPath, handle->providerView));
+				if (snapshot == g_providerSnapshots.end())
+					return ERROR_NOT_SUPPORTED;
+				for (const auto &[name, entry] : snapshot->second)
+					values.insert_or_assign(name, entry);
+			} else if (status != ERROR_FILE_NOT_FOUND || !local) {
+				return status;
+			}
+		}
+		const auto prefix = handle->canonicalPath + u'\\';
+		for (const auto &[identity, entry] : g_localKeys) {
+			if (!entry.canonicalPath.starts_with(prefix) ||
+				identity != localCacheKey(entry.canonicalPath, handle->providerView))
+				continue;
+			const auto relative = std::u16string_view(entry.canonicalPath).substr(prefix.size());
+			if (relative.empty() || relative.find(u'\\') != std::u16string_view::npos)
+				continue;
+			children.insert_or_assign(std::u16string(relative), entry.information);
+		}
+		if (auto localValues = g_registryValues.find(localCacheKey(handle->canonicalPath, handle->providerView));
+			localValues != g_registryValues.end()) {
+			for (const auto &[name, entry] : localValues->second)
+				values.insert_or_assign(name, entry);
+		}
+		if (auto written = g_localWriteTimes.find(localCacheKey(handle->canonicalPath, handle->providerView));
+			written != g_localWriteTimes.end())
+			information.lastWriteTime = written->second;
+	}
+	information.subkeys = static_cast<DWORD>(children.size());
+	for (const auto &[name, entry] : children) {
+		information.longestSubkey = std::max<DWORD>(information.longestSubkey, entry.name.size());
+		information.longestSubkeyClass = std::max<DWORD>(information.longestSubkeyClass, entry.className.size());
+	}
+	information.values = static_cast<DWORD>(values.size());
+	for (const auto &[name, entry] : values) {
+		information.longestValueName = std::max<DWORD>(information.longestValueName, entry.name.size());
+		information.longestValueData = std::max<DWORD>(information.longestValueData, entry.data.size());
+	}
+	return ERROR_SUCCESS;
+}
+
+LSTATUS queryRegistryKeyInformation(HKEY key, void *keyClass, DWORD *classLength, DWORD *reserved, DWORD *subkeys,
+									DWORD *longestSubkey, DWORD *longestSubkeyClass, DWORD *values,
+									DWORD *longestValueName, DWORD *longestValueData, DWORD *securityLength,
+									FILETIME *lastWriteTime, bool ansi) {
+	if (reserved || (keyClass && !classLength))
+		return ERROR_INVALID_PARAMETER;
+	if (securityLength)
+		return ERROR_NOT_SUPPORTED;
+	RegistryKeyInformation information;
+	const LSTATUS status = registryKeyInformation(key, information, keyClass || classLength || lastWriteTime);
+	if (status != ERROR_SUCCESS)
+		return status;
+	std::string narrowClass;
+	if (ansi) {
+		const LSTATUS converted = registryAnsiString(information.className, narrowClass);
+		if (converted != ERROR_SUCCESS)
+			return converted;
+	}
+	const DWORD required = static_cast<DWORD>(ansi ? narrowClass.size() : information.className.size());
+	if (keyClass && *classLength <= required)
+		return ERROR_INSUFFICIENT_BUFFER;
+	if (keyClass) {
+		if (ansi)
+			std::memcpy(keyClass, narrowClass.c_str(), narrowClass.size() + 1);
+		else
+			std::memcpy(keyClass, information.className.c_str(), (information.className.size() + 1) * sizeof(WCHAR));
+	}
+	if (classLength)
+		*classLength = required;
+	if (subkeys)
+		*subkeys = information.subkeys;
+	if (longestSubkey)
+		*longestSubkey = information.longestSubkey;
+	if (longestSubkeyClass)
+		*longestSubkeyClass = information.longestSubkeyClass;
+	if (values)
+		*values = information.values;
+	if (longestValueName)
+		*longestValueName = information.longestValueName;
+	if (longestValueData)
+		*longestValueData = information.longestValueData;
+	if (lastWriteTime)
+		*lastWriteTime = information.lastWriteTime;
+	return ERROR_SUCCESS;
+}
+
 constexpr DWORD kRrfTypeMask = 0xFFFF;
 constexpr DWORD kRrfExpandString = 0x4;
 constexpr DWORD kRrfDword = 0x18;
@@ -1026,6 +1277,61 @@ LSTATUS WINAPI RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserve
 			  lpType, lpData, lpcbData);
 	const auto name = stringToWideString(lpValueName);
 	return queryRegistryValue(hKey, name.data(), lpReserved, lpType, lpData, lpcbData, true);
+}
+
+LSTATUS WINAPI RegDeleteKeyW(HKEY key, LPCWSTR subkey) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegDeleteKeyW(%p, %p)\n", key, subkey);
+	RegistryLastErrorGuard errorGuard;
+	return deleteRegistryKey(key, subkey);
+}
+
+LSTATUS WINAPI RegDeleteKeyA(HKEY key, LPCSTR subkey) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegDeleteKeyA(%p, %p)\n", key, subkey);
+	const auto wide = subkey ? stringToWideString(subkey) : std::vector<uint16_t>{};
+	return RegDeleteKeyW(key, subkey ? wide.data() : nullptr);
+}
+
+LSTATUS WINAPI RegDeleteValueW(HKEY key, LPCWSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegDeleteValueW(%p, %p)\n", key, name);
+	RegistryLastErrorGuard errorGuard;
+	return deleteRegistryValue(key, name);
+}
+
+LSTATUS WINAPI RegDeleteValueA(HKEY key, LPCSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegDeleteValueA(%p, %p)\n", key, name);
+	const auto wide = name ? stringToWideString(name) : std::vector<uint16_t>{};
+	return RegDeleteValueW(key, name ? wide.data() : nullptr);
+}
+
+LSTATUS WINAPI RegQueryInfoKeyW(HKEY key, LPWSTR keyClass, LPDWORD classLength, LPDWORD reserved, LPDWORD subkeys,
+								LPDWORD longestSubkey, LPDWORD longestSubkeyClass, LPDWORD values,
+								LPDWORD longestValueName, LPDWORD longestValueData, LPDWORD securityLength,
+								FILETIME *lastWriteTime) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegQueryInfoKeyW(%p, %p, %p, %p, %p, %p, %p, %p, %p, %p, %p, %p)\n", key, keyClass, classLength,
+			  reserved, subkeys, longestSubkey, longestSubkeyClass, values, longestValueName, longestValueData,
+			  securityLength, lastWriteTime);
+	RegistryLastErrorGuard errorGuard;
+	return queryRegistryKeyInformation(key, keyClass, classLength, reserved, subkeys, longestSubkey, longestSubkeyClass,
+									   values, longestValueName, longestValueData, securityLength, lastWriteTime,
+									   false);
+}
+
+LSTATUS WINAPI RegQueryInfoKeyA(HKEY key, LPSTR keyClass, LPDWORD classLength, LPDWORD reserved, LPDWORD subkeys,
+								LPDWORD longestSubkey, LPDWORD longestSubkeyClass, LPDWORD values,
+								LPDWORD longestValueName, LPDWORD longestValueData, LPDWORD securityLength,
+								FILETIME *lastWriteTime) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RegQueryInfoKeyA(%p, %p, %p, %p, %p, %p, %p, %p, %p, %p, %p, %p)\n", key, keyClass, classLength,
+			  reserved, subkeys, longestSubkey, longestSubkeyClass, values, longestValueName, longestValueData,
+			  securityLength, lastWriteTime);
+	RegistryLastErrorGuard errorGuard;
+	return queryRegistryKeyInformation(key, keyClass, classLength, reserved, subkeys, longestSubkey, longestSubkeyClass,
+									   values, longestValueName, longestValueData, securityLength, lastWriteTime, true);
 }
 
 LSTATUS WINAPI RegEnumValueW(HKEY key, DWORD index, LPWSTR name, LPDWORD length, LPDWORD reserved, LPDWORD type,

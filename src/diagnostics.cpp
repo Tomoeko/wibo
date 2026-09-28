@@ -15,6 +15,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <pthread.h>
+#include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -40,6 +42,23 @@ struct DiagnosticRelay {
 DiagnosticRelay gDiagnosticRelay;
 std::atomic_flag gDebugFormatting = ATOMIC_FLAG_INIT;
 std::atomic_uint64_t gFormattingDropped{0};
+std::string gDebugFilter;
+
+bool matchesDebugFilter(std::string_view format) {
+	if (gDebugFilter.empty())
+		return true;
+	std::string_view filters(gDebugFilter);
+	while (!filters.empty()) {
+		const size_t separator = filters.find(';');
+		const std::string_view filter = filters.substr(0, separator);
+		if (!filter.empty() && format.find(filter) != std::string_view::npos)
+			return true;
+		if (separator == std::string_view::npos)
+			break;
+		filters.remove_prefix(separator + 1);
+	}
+	return false;
+}
 
 void writeDescriptor(int descriptor, const char *message, size_t length) {
 	while (length) {
@@ -207,6 +226,8 @@ void logMessage(bool debug, const char *format, va_list arguments) {
 
 void wibo::initializeDiagnostics() {
 	const int savedError = errno;
+	if (const char *filter = std::getenv("WIBO_DEBUG_FILTER"))
+		gDebugFilter = filter;
 	const char *path = std::getenv("WIBO_DIAGNOSTIC_LOG");
 	if (path && *path) {
 		const int descriptor = independentDescriptor(open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600));
@@ -233,7 +254,7 @@ void wibo::diagnosticLog(const char *format, ...) {
 }
 
 void wibo::debug_log(const char *fmt, ...) {
-	if (!wibo::debugEnabled)
+	if (!wibo::debugEnabled || !matchesDebugFilter(fmt))
 		return;
 	va_list arguments;
 	va_start(arguments, fmt);

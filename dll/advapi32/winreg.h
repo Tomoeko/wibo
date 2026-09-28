@@ -55,6 +55,18 @@ LSTATUS WINAPI RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserve
 								LPDWORD lpcbData);
 LSTATUS WINAPI RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, BYTE *lpData,
 								LPDWORD lpcbData);
+LSTATUS WINAPI RegDeleteKeyA(HKEY hKey, LPCSTR lpSubKey);
+LSTATUS WINAPI RegDeleteKeyW(HKEY hKey, LPCWSTR lpSubKey);
+LSTATUS WINAPI RegDeleteValueA(HKEY hKey, LPCSTR lpValueName);
+LSTATUS WINAPI RegDeleteValueW(HKEY hKey, LPCWSTR lpValueName);
+LSTATUS WINAPI RegQueryInfoKeyA(HKEY key, LPSTR keyClass, LPDWORD classLength, LPDWORD reserved, LPDWORD subkeys,
+								LPDWORD longestSubkey, LPDWORD longestSubkeyClass, LPDWORD values,
+								LPDWORD longestValueName, LPDWORD longestValueData, LPDWORD securityLength,
+								FILETIME *lastWriteTime);
+LSTATUS WINAPI RegQueryInfoKeyW(HKEY key, LPWSTR keyClass, LPDWORD classLength, LPDWORD reserved, LPDWORD subkeys,
+								LPDWORD longestSubkey, LPDWORD longestSubkeyClass, LPDWORD values,
+								LPDWORD longestValueName, LPDWORD longestValueData, LPDWORD securityLength,
+								FILETIME *lastWriteTime);
 LSTATUS WINAPI RegEnumValueW(HKEY key, DWORD index, LPWSTR name, LPDWORD length, LPDWORD reserved, LPDWORD type,
 							 BYTE *data, LPDWORD size);
 LSTATUS WINAPI RegEnumKeyA(HKEY key, DWORD index, LPSTR name, DWORD capacity);

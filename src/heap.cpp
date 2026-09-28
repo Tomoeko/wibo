@@ -99,6 +99,7 @@ std::map<uintptr_t, VirtualAllocation> g_virtualAllocations;
 struct NativeStack {
 	uintptr_t limit;
 	uintptr_t base;
+	uintptr_t guardPage;
 	DWORD allocationProtect;
 };
 std::map<uintptr_t, NativeStack> g_nativeStacks;
@@ -159,6 +160,17 @@ wibo::heap::VmStatus queryNativeStackLocked(uintptr_t pageBase, MEMORY_BASIC_INF
 		return wibo::heap::VmStatus::InvalidAddress;
 	}
 	const NativeStack &stack = it->second;
+	if (pageBase == stack.guardPage) {
+		*outInfo = {};
+		outInfo->BaseAddress = toGuestPtr(reinterpret_cast<void *>(pageBase));
+		outInfo->AllocationBase = toGuestPtr(reinterpret_cast<void *>(stack.limit));
+		outInfo->AllocationProtect = stack.allocationProtect;
+		outInfo->RegionSize = wibo::heap::systemPageSize();
+		outInfo->State = MEM_COMMIT;
+		outInfo->Protect = stack.allocationProtect | PAGE_GUARD;
+		outInfo->Type = MEM_PRIVATE;
+		return wibo::heap::VmStatus::Success;
+	}
 	uintptr_t end = 0;
 	DWORD protect = 0;
 	if (!queryNativePage(pageBase, end, protect)) {
@@ -169,7 +181,8 @@ wibo::heap::VmStatus queryNativeStackLocked(uintptr_t pageBase, MEMORY_BASIC_INF
 	outInfo->BaseAddress = toGuestPtr(reinterpret_cast<void *>(pageBase));
 	outInfo->AllocationBase = toGuestPtr(reinterpret_cast<void *>(stack.limit));
 	outInfo->AllocationProtect = stack.allocationProtect;
-	outInfo->RegionSize = std::min(end, stack.base) - pageBase;
+	outInfo->RegionSize =
+		std::min({end, stack.base, pageBase < stack.guardPage ? stack.guardPage : stack.base}) - pageBase;
 	outInfo->State = MEM_COMMIT;
 	outInfo->Protect = protect;
 	outInfo->Type = MEM_PRIVATE;
@@ -1520,8 +1533,8 @@ bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBa
 	size_t size = pthread_get_stacksize_np(self);
 	const size_t pageSize = systemPageSize();
 	uintptr_t current = reinterpret_cast<uintptr_t>(&self);
-	if (size == 0 || size >= base || base >= kGuestAddressLimit || base % pageSize != 0 || size % pageSize != 0 ||
-		current < base - size || current >= base) {
+	if (size <= pageSize * 3 || size >= base || base >= kGuestAddressLimit || base % pageSize != 0 ||
+		size % pageSize != 0 || current < base - size || current >= base) {
 		return false;
 	}
 	uintptr_t end = 0;
@@ -1530,6 +1543,7 @@ bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBa
 		return false;
 	}
 	uintptr_t limit = base - size;
+	const uintptr_t guardPage = limit + pageSize;
 	{
 		std::lock_guard lock(g_mappingsMutex);
 		auto next = g_nativeStacks.lower_bound(limit);
@@ -1537,7 +1551,15 @@ bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBa
 			(next != g_nativeStacks.begin() && std::prev(next)->second.base > limit)) {
 			return false;
 		}
-		g_nativeStacks.emplace(limit, NativeStack{limit, base, protect});
+		// Native stacks are fully mapped. Keep a hard lower sentinel and a
+		// separate soft guard so guest memory queries see stack boundaries.
+		if (mprotect(reinterpret_cast<void *>(limit), pageSize, PROT_NONE) != 0)
+			return false;
+		if (mprotect(reinterpret_cast<void *>(guardPage), pageSize, PROT_NONE) != 0) {
+			mprotect(reinterpret_cast<void *>(limit), pageSize, PROT_READ | PROT_WRITE);
+			return false;
+		}
+		g_nativeStacks.emplace(limit, NativeStack{limit, base, guardPage, protect});
 		g_currentNativeStackLimit = limit;
 	}
 	*outStackLimit = reinterpret_cast<void *>(limit);
@@ -1546,9 +1568,35 @@ bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBa
 	return true;
 }
 
+bool setNativeStackGuaranteeForCurrentThread(std::size_t guaranteeBytes) {
+	std::lock_guard lock(g_mappingsMutex);
+	auto it = g_nativeStacks.find(g_currentNativeStackLimit);
+	if (it == g_nativeStacks.end())
+		return false;
+	auto &stack = it->second;
+	const std::size_t pageSize = systemPageSize();
+	if (guaranteeBytes > stack.base - stack.limit - pageSize * 2)
+		return false;
+	const uintptr_t newGuardPage = stack.limit + pageSize + guaranteeBytes;
+	if (newGuardPage == stack.guardPage)
+		return true;
+	if (mprotect(reinterpret_cast<void *>(newGuardPage), pageSize, PROT_NONE) != 0)
+		return false;
+	if (mprotect(reinterpret_cast<void *>(stack.guardPage), pageSize, PROT_READ | PROT_WRITE) != 0) {
+		mprotect(reinterpret_cast<void *>(newGuardPage), pageSize, PROT_READ | PROT_WRITE);
+		return false;
+	}
+	stack.guardPage = newGuardPage;
+	return true;
+}
+
 void unregisterNativeStackForCurrentThread() {
 	std::lock_guard lock(g_mappingsMutex);
 	if (g_currentNativeStackLimit != 0) {
+		const auto &stack = g_nativeStacks.at(g_currentNativeStackLimit);
+		const std::size_t pageSize = systemPageSize();
+		mprotect(reinterpret_cast<void *>(stack.limit), pageSize, PROT_READ | PROT_WRITE);
+		mprotect(reinterpret_cast<void *>(stack.guardPage), pageSize, PROT_READ | PROT_WRITE);
 		g_nativeStacks.erase(g_currentNativeStackLimit);
 		g_currentNativeStackLimit = 0;
 	}

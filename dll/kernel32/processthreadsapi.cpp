@@ -8,6 +8,7 @@
 #include "errors.h"
 #include "files.h"
 #include "handles.h"
+#include "heap.h"
 #include "internal.h"
 #include "kernel32.h"
 #include "kernel32_trampolines.h"
@@ -29,10 +30,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <mutex>
 #include <pthread.h>
+#include <sstream>
 #include <string>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -43,7 +46,9 @@
 
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
+#include <libproc.h>
 #include <mach/mach.h>
+#include <sys/proc_info.h>
 extern "C" {
 #include <mach/thread_state.h>
 }
@@ -200,6 +205,70 @@ FILETIME fileTimeFromTimespec(const struct timespec &value) {
 		total = static_cast<uint64_t>(value.tv_sec) * 10000000ULL + static_cast<uint64_t>(value.tv_nsec) / 100ULL;
 	}
 	return fileTimeFromDuration(total);
+}
+
+bool queryProcessTimes(pid_t pid, FILETIME &creation, FILETIME &kernel, FILETIME &user) {
+#ifdef __APPLE__
+	proc_taskallinfo information{};
+	if (proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &information, sizeof(information)) != sizeof(information))
+		return false;
+	const auto &bsd = information.pbsd;
+	const auto &task = information.ptinfo;
+	const uint64_t start = UNIX_TIME_ZERO + bsd.pbi_start_tvsec * HUNDRED_NS_PER_SECOND + bsd.pbi_start_tvusec * 10;
+	creation = fileTimeFromDuration(start);
+	kernel = fileTimeFromDuration(task.pti_total_system / 100);
+	user = fileTimeFromDuration(task.pti_total_user / 100);
+	return true;
+#elif defined(__linux__)
+	std::ifstream statistics("/proc/" + std::to_string(pid) + "/stat");
+	std::string record;
+	if (!std::getline(statistics, record))
+		return false;
+	const size_t commandEnd = record.rfind(')');
+	if (commandEnd == std::string::npos || commandEnd + 2 >= record.size())
+		return false;
+	std::istringstream fields(record.substr(commandEnd + 2));
+	uint64_t userTicks = 0, kernelTicks = 0, startTicks = 0;
+	for (int field = 3; field <= 22; ++field) {
+		std::string value;
+		if (!(fields >> value))
+			return false;
+		if (field != 14 && field != 15 && field != 22)
+			continue;
+		char *end = nullptr;
+		const unsigned long long parsed = std::strtoull(value.c_str(), &end, 10);
+		if (end == value.c_str() || *end)
+			return false;
+		if (field == 14)
+			userTicks = parsed;
+		else if (field == 15)
+			kernelTicks = parsed;
+		else
+			startTicks = parsed;
+	}
+	const long frequency = sysconf(_SC_CLK_TCK);
+	struct timespec realtime{}, bootTime{};
+	if (frequency <= 0 || clock_gettime(CLOCK_REALTIME, &realtime) != 0 ||
+		clock_gettime(CLOCK_BOOTTIME, &bootTime) != 0)
+		return false;
+	const auto to100ns = [](const timespec &value) {
+		return static_cast<__int128>(value.tv_sec) * HUNDRED_NS_PER_SECOND + value.tv_nsec / 100;
+	};
+	const __int128 start = static_cast<__int128>(UNIX_TIME_ZERO) + to100ns(realtime) - to100ns(bootTime) +
+						   static_cast<__int128>(startTicks) * HUNDRED_NS_PER_SECOND / frequency;
+	if (start < 0 || start > std::numeric_limits<uint64_t>::max())
+		return false;
+	creation = fileTimeFromDuration(static_cast<uint64_t>(start));
+	kernel = fileTimeFromDuration(static_cast<__int128>(kernelTicks) * HUNDRED_NS_PER_SECOND / frequency);
+	user = fileTimeFromDuration(static_cast<__int128>(userTicks) * HUNDRED_NS_PER_SECOND / frequency);
+	return true;
+#else
+	(void)pid;
+	(void)creation;
+	(void)kernel;
+	(void)user;
+	return false;
+#endif
 }
 
 DWORD queryCurrentProcessorNumber() {
@@ -664,6 +733,12 @@ void WINAPI GetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber) {
 	const DWORD number = queryCurrentProcessorNumber();
 	*ProcNumber = {0, static_cast<BYTE>(number), 0};
 	DEBUG_LOG("GetCurrentProcessorNumberEx(%p) -> group=0 number=%u\n", ProcNumber, number);
+}
+
+WORD WINAPI GetActiveProcessorGroupCount() {
+	HOST_CONTEXT_GUARD();
+	// The processor view exposed by this process contains one group.
+	return 1;
 }
 
 HANDLE WINAPI GetCurrentThread() {
@@ -1141,6 +1216,42 @@ BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *l
 	return FALSE;
 }
 
+BOOL WINAPI GetProcessTimes(HANDLE process, FILETIME *creationTime, FILETIME *exitTime, FILETIME *kernelTime,
+							FILETIME *userTime) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetProcessTimes(%p, %p, %p, %p, %p)\n", process, creationTime, exitTime, kernelTime, userTime);
+	if (!creationTime || !exitTime || !kernelTime || !userTime) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+
+	pid_t pid = getpid();
+	if (!isPseudoCurrentProcessHandle(process)) {
+		HandleMeta metadata{};
+		auto object = wibo::handles().getAs<ProcessObject>(process, &metadata);
+		if (!object) {
+			setLastError(ERROR_INVALID_HANDLE);
+			return FALSE;
+		}
+		if (!(metadata.grantedAccess & (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION))) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+		pid = object->pid;
+	}
+
+	FILETIME creation{}, kernel{}, user{};
+	if (!queryProcessTimes(pid, creation, kernel, user)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	*creationTime = creation;
+	*exitTime = FILETIME{};
+	*kernelTime = kernel;
+	*userTime = user;
+	return TRUE;
+}
+
 BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes,
 						   LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags,
 						   LPVOID lpEnvironment, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo,
@@ -1365,8 +1476,35 @@ void WINAPI GetStartupInfoW(LPSTARTUPINFOW lpStartupInfo) {
 
 BOOL WINAPI SetThreadStackGuarantee(PULONG StackSizeInBytes) {
 	HOST_CONTEXT_GUARD();
-	DEBUG_LOG("STUB: SetThreadStackGuarantee(%p)\n", StackSizeInBytes);
-	(void)StackSizeInBytes;
+	DEBUG_LOG("SetThreadStackGuarantee(%p)\n", StackSizeInBytes);
+	if (!StackSizeInBytes || !currentThreadTeb) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const ULONG requested = *StackSizeInBytes;
+	const ULONG previous = currentThreadTeb->GuaranteedStackBytes;
+	*StackSizeInBytes = previous;
+	if (requested == 0 || requested <= previous)
+		return TRUE;
+	const std::uint64_t pageSize = wibo::heap::systemPageSize();
+	std::uint64_t rounded = (static_cast<std::uint64_t>(requested) + pageSize - 1) / pageSize * pageSize;
+#ifdef WIBO_GUEST_64
+	rounded = std::max(rounded, pageSize * 2);
+#endif
+	const std::uint64_t base = currentThreadTeb->Tib.StackBase;
+	const std::uint64_t lower = currentThreadTeb->DeallocationStack;
+	if (rounded > std::numeric_limits<ULONG>::max() || lower >= base || base - lower <= pageSize * 2 ||
+		rounded > base - lower - pageSize * 2) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	if (!wibo::heap::setNativeStackGuaranteeForCurrentThread(rounded)) {
+		setLastErrorFromErrno();
+		return FALSE;
+	}
+#endif
+	currentThreadTeb->GuaranteedStackBytes = static_cast<ULONG>(rounded);
 	return TRUE;
 }
 

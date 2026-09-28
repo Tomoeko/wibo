@@ -78,7 +78,9 @@ LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEP
 extern "C" {
 // Native SysV entry. Nonreturning target unwind transfers cross only validated
 // assembly activations; other handler dispositions remain unsupported.
-void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *capture,
+// Returns true only when the guest frame walk reaches its ordinary boundary.
+// Malformed frames and unsupported handler dispositions are not exhaustion.
+bool wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *capture,
 										 SoftwareExceptionDecision64 *decision,
 										 SoftwareExceptionFrameActivation64 *activation);
 LONG wiboCallFrameHandler64(SoftwareFrameHandler64 handler, EXCEPTION_RECORD *record, ULONGLONG frame,

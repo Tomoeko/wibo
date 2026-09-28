@@ -65,6 +65,7 @@ int main(void) {
 	HANDLE thread = CreateThread(NULL, 0, readThread, &reads, 0, NULL);
 	TEST_CHECK(thread != NULL);
 	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(reads.ready, 5000));
+	TEST_CHECK(CancelIo((HANDLE)reads.socket));
 	TEST_CHECK(CancelIoEx((HANDLE)reads.socket, reads.operations));
 	completion(port, reads.operations, FALSE, 0);
 	TEST_CHECK_EQ(1, send(client, "!", 1, 0));
@@ -86,6 +87,10 @@ int main(void) {
 	TEST_CHECK_EQ(3, seen);
 	TEST_CHECK(!CancelIoEx((HANDLE)reads.socket, NULL));
 	TEST_CHECK_EQ(ERROR_NOT_FOUND, GetLastError());
+	queueRead(&reads, 2);
+	TEST_CHECK(CancelIo((HANDLE)reads.socket));
+	completion(port, reads.operations + 2, FALSE, 0);
+	TEST_CHECK(CancelIo((HANDLE)reads.socket));
 	TEST_CHECK(!CancelIoEx(INVALID_HANDLE_VALUE, NULL));
 	DWORD invalidError = GetLastError();
 	if (getenv("WIBO_FIXTURE_RUNTIME"))

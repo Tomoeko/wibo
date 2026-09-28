@@ -25,4 +25,5 @@ struct SocketIoRequest {
 };
 bool queueSocketIo(std::unique_ptr<SocketIoRequest> request);
 bool cancelSocketIo(const std::shared_ptr<Socket> &socket, const OVERLAPPED *overlapped);
+bool cancelSocketIoForThread(const std::shared_ptr<Socket> &socket, pthread_t owner);
 } // namespace ws2::detail

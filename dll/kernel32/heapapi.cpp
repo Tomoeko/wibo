@@ -123,7 +123,7 @@ BOOL WINAPI HeapSetInformation(HANDLE HeapHandle, HEAP_INFORMATION_CLASS HeapInf
 			setLastError(ERROR_INVALID_PARAMETER);
 			return FALSE;
 		}
-		record->compatibility = *static_cast<ULONG *>(HeapInformation);
+		record->compatibility.store(*static_cast<ULONG *>(HeapInformation), std::memory_order_relaxed);
 		return TRUE;
 	}
 	case HeapEnableTerminationOnCorruption:
@@ -135,6 +135,30 @@ BOOL WINAPI HeapSetInformation(HANDLE HeapHandle, HEAP_INFORMATION_CLASS HeapInf
 		setLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
+}
+
+BOOL WINAPI HeapQueryInformation(HANDLE HeapHandle, HEAP_INFORMATION_CLASS HeapInformationClass, PVOID HeapInformation,
+								 SIZE_T HeapInformationLength, PSIZE_T ReturnLength) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("HeapQueryInformation(%p, %d, %p, %zu, %p)\n", HeapHandle, static_cast<int>(HeapInformationClass),
+			  HeapInformation, HeapInformationLength, ReturnLength);
+	auto record = wibo::handles().getAs<HeapObject>(HeapHandle);
+	if (!record || !record->canAccess()) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (HeapInformationClass != HeapCompatibilityInformation) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (ReturnLength)
+		*ReturnLength = sizeof(ULONG);
+	if (!HeapInformation || HeapInformationLength < sizeof(ULONG)) {
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	*static_cast<ULONG *>(HeapInformation) = record->compatibility.load(std::memory_order_relaxed);
+	return TRUE;
 }
 
 LPVOID WINAPI HeapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes) {

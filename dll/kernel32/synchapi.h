@@ -91,15 +91,27 @@ struct CONDITION_VARIABLE {
 
 using PCONDITION_VARIABLE = CONDITION_VARIABLE *;
 
+typedef void(_CC_STDCALL *WAITORTIMERCALLBACK)(PVOID, BOOLEAN);
+
 namespace kernel32 {
 
 void WINAPI Sleep(DWORD dwMilliseconds);
 DWORD WINAPI SleepEx(DWORD dwMilliseconds, BOOL bAlertable);
 HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES attributes, BOOL manualReset, LPCSTR name);
+HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES attributes, BOOL manualReset, LPCWSTR name);
 HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access);
 BOOL WINAPI SetWaitableTimer(HANDLE handle, const LARGE_INTEGER *dueTime, LONG period, GUEST_PTR callback,
 							 LPVOID callbackArgument, BOOL resume);
 BOOL WINAPI CancelWaitableTimer(HANDLE handle);
+HANDLE WINAPI CreateTimerQueue();
+BOOL WINAPI CreateTimerQueueTimer(PHANDLE timer, HANDLE queue, WAITORTIMERCALLBACK callback, PVOID parameter,
+								  DWORD dueTime, DWORD period, ULONG flags);
+BOOL WINAPI ChangeTimerQueueTimer(HANDLE queue, HANDLE timer, ULONG dueTime, ULONG period);
+BOOL WINAPI DeleteTimerQueueTimer(HANDLE queue, HANDLE timer, HANDLE completionEvent);
+BOOL WINAPI RegisterWaitForSingleObject(PHANDLE waitHandle, HANDLE object, WAITORTIMERCALLBACK callback, PVOID context,
+										ULONG milliseconds, ULONG flags);
+BOOL WINAPI UnregisterWait(HANDLE waitHandle);
+BOOL WINAPI UnregisterWaitEx(HANDLE waitHandle, HANDLE completionEvent);
 HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES attributes, LPCSTR name, DWORD flags, DWORD access);
 HANDLE WINAPI CreateMutexExW(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name, DWORD flags, DWORD access);
 HANDLE WINAPI OpenMutexA(DWORD access, BOOL inheritHandle, LPCSTR name);
@@ -120,10 +132,13 @@ HANDLE WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
 							   LPCWSTR lpName);
 HANDLE WINAPI CreateSemaphoreExW(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG lInitialCount, LONG lMaximumCount,
-								LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess);
+								 LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess);
+HANDLE WINAPI OpenSemaphoreA(DWORD desiredAccess, BOOL inheritHandle, LPCSTR name);
+HANDLE WINAPI OpenSemaphoreW(DWORD desiredAccess, BOOL inheritHandle, LPCWSTR name);
 BOOL WINAPI ReleaseSemaphore(HANDLE hSemaphore, LONG lReleaseCount, PLONG lpPreviousCount);
 DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
 DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bAlertable);
+DWORD WINAPI SignalObjectAndWait(HANDLE hObjectToSignal, HANDLE hObjectToWaitOn, DWORD dwMilliseconds, BOOL bAlertable);
 DWORD WINAPI WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds);
 DWORD WINAPI WaitForMultipleObjectsEx(DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds,
 									  BOOL bAlertable);

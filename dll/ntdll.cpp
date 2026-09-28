@@ -9,6 +9,7 @@
 #include "heap.h"
 #include "kernel32/file_attributes.h"
 #include "kernel32/fileapi.h"
+#include "kernel32/handleapi.h"
 #include "kernel32/internal.h"
 #include "kernel32/minwinbase.h"
 #include "kernel32/processthreadsapi.h"
@@ -18,6 +19,7 @@
 #include "strutil.h"
 #include "types.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -49,6 +51,46 @@ struct ProcessHandleDetails {
 };
 
 constexpr LONG kDefaultBasePriority = 8;
+
+#ifdef WIBO_GUEST_64
+static_assert(sizeof(OBJECT_ATTRIBUTES) == 48 && offsetof(OBJECT_ATTRIBUTES, RootDirectory) == 8 &&
+			  offsetof(OBJECT_ATTRIBUTES, ObjectName) == 16);
+#else
+static_assert(sizeof(OBJECT_ATTRIBUTES) == 24 && offsetof(OBJECT_ATTRIBUTES, RootDirectory) == 4 &&
+			  offsetof(OBJECT_ATTRIBUTES, ObjectName) == 8);
+#endif
+
+constexpr NTSTATUS kStatusObjectNameNotFound = static_cast<NTSTATUS>(0xc0000034u);
+constexpr NTSTATUS kStatusObjectNameCollision = static_cast<NTSTATUS>(0xc0000035u);
+constexpr NTSTATUS kStatusObjectPathNotFound = static_cast<NTSTATUS>(0xc000003au);
+constexpr NTSTATUS kStatusObjectPathSyntaxBad = static_cast<NTSTATUS>(0xc000003bu);
+constexpr NTSTATUS kStatusSharingViolation = static_cast<NTSTATUS>(0xc0000043u);
+constexpr NTSTATUS kStatusNoMemory = static_cast<NTSTATUS>(0xc0000017u);
+constexpr NTSTATUS kStatusNotADirectory = static_cast<NTSTATUS>(0xc0000103u);
+constexpr NTSTATUS kStatusFileIsADirectory = static_cast<NTSTATUS>(0xc00000bau);
+
+NTSTATUS statusFromFileOpenError(DWORD error, const std::filesystem::path &hostPath) {
+	switch (error) {
+	case ERROR_FILE_NOT_FOUND: {
+		std::error_code ec;
+		return std::filesystem::is_directory(hostPath.parent_path(), ec) ? kStatusObjectNameNotFound
+																		 : kStatusObjectPathNotFound;
+	}
+	case ERROR_PATH_NOT_FOUND:
+		return kStatusObjectPathNotFound;
+	case ERROR_FILE_EXISTS:
+	case ERROR_ALREADY_EXISTS:
+		return kStatusObjectNameCollision;
+	case ERROR_SHARING_VIOLATION:
+		return kStatusSharingViolation;
+	case ERROR_NOT_ENOUGH_MEMORY:
+		return kStatusNoMemory;
+	case ERROR_INVALID_NAME:
+		return STATUS_OBJECT_NAME_INVALID;
+	default:
+		return wibo::statusFromWinError(error);
+	}
+}
 
 struct RTL_OSVERSIONINFOEXW : RTL_OSVERSIONINFOW {
 	WORD wServicePackMajor;
@@ -328,6 +370,171 @@ const char *CDECL __wine_dbg_strdup(const char *str) {
 	std::strncpy(buffer, str, kBufferSize - 1);
 	buffer[kBufferSize - 1] = '\0';
 	return buffer;
+}
+
+NTSTATUS WINAPI NtCreateFile(HANDLE *fileHandle, DWORD desiredAccess, const OBJECT_ATTRIBUTES *objectAttributes,
+							 PIO_STATUS_BLOCK ioStatus, PLARGE_INTEGER allocationSize, ULONG fileAttributes,
+							 ULONG shareAccess, ULONG createDisposition, ULONG createOptions, PVOID eaBuffer,
+							 ULONG eaLength) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("NtCreateFile(%p, 0x%x, %p, %p, %p, 0x%x, 0x%x, %u, 0x%x, %p, %u)\n", fileHandle, desiredAccess,
+			  objectAttributes, ioStatus, allocationSize, fileAttributes, shareAccess, createDisposition, createOptions,
+			  eaBuffer, eaLength);
+	if (!fileHandle || !ioStatus || !objectAttributes)
+		return STATUS_ACCESS_VIOLATION;
+	auto fail = [&](NTSTATUS status) {
+		ioStatus->Status = status;
+		ioStatus->Information = 0;
+		return status;
+	};
+	if (objectAttributes->Length < sizeof(OBJECT_ATTRIBUTES) || !objectAttributes->ObjectName)
+		return fail(STATUS_INVALID_PARAMETER);
+	if (objectAttributes->SecurityDescriptor || objectAttributes->SecurityQualityOfService ||
+		(objectAttributes->Attributes & ~(0x02u | 0x40u)))
+		return fail(STATUS_NOT_SUPPORTED);
+	if (eaBuffer || eaLength || (allocationSize && allocationSize->QuadPart != 0))
+		return fail(STATUS_NOT_SUPPORTED);
+	constexpr ULONG kDirectoryFile = 0x00000001u;
+	constexpr ULONG kWriteThrough = 0x00000002u;
+	constexpr ULONG kSequentialOnly = 0x00000004u;
+	constexpr ULONG kSynchronousIoAlert = 0x00000010u;
+	constexpr ULONG kSynchronousIoNonAlert = 0x00000020u;
+	constexpr ULONG kNonDirectoryFile = 0x00000040u;
+	constexpr ULONG kDeleteOnClose = 0x00001000u;
+	constexpr ULONG kOpenForBackupIntent = 0x00004000u;
+	constexpr ULONG kRandomAccess = 0x00000800u;
+	constexpr ULONG kSupportedOptions = kDirectoryFile | kWriteThrough | kSequentialOnly | kSynchronousIoAlert |
+										kSynchronousIoNonAlert | kNonDirectoryFile | kDeleteOnClose |
+										kOpenForBackupIntent | kRandomAccess;
+	if ((createOptions & ~kSupportedOptions) ||
+		((createOptions & kDirectoryFile) && (createOptions & kNonDirectoryFile)))
+		return fail(STATUS_NOT_SUPPORTED);
+	if (createDisposition > 5)
+		return fail(STATUS_INVALID_PARAMETER);
+
+	const auto *name = fromGuestPtr<UNICODE_STRING>(objectAttributes->ObjectName);
+	if ((name->Length % sizeof(WCHAR)) || name->Length > name->MaximumLength || (name->Length && !name->Buffer))
+		return fail(STATUS_INVALID_PARAMETER);
+	if (!name->Length)
+		return fail(STATUS_OBJECT_NAME_INVALID);
+	std::u16string_view nativeName(fromGuestPtr<char16_t>(name->Buffer), name->Length / sizeof(WCHAR));
+	if (nativeName.find(u'\0') != std::u16string_view::npos)
+		return fail(STATUS_OBJECT_NAME_INVALID);
+	std::u16string windowsPath;
+	if (objectAttributes->RootDirectory) {
+		if (nativeName.front() == u'\\' || nativeName.front() == u'/' ||
+			nativeName.find(u':') != std::u16string_view::npos)
+			return fail(kStatusObjectPathSyntaxBad);
+		auto directory =
+			wibo::handles().getAs<kernel32::DirectoryObject>(static_cast<HANDLE>(objectAttributes->RootDirectory));
+		if (!directory || !directory->valid())
+			return fail(STATUS_INVALID_HANDLE);
+		std::string relative;
+		if (!utf16ToUtf8(nativeName, relative))
+			return fail(STATUS_OBJECT_NAME_INVALID);
+		std::replace(relative.begin(), relative.end(), '\\', '/');
+		auto joined = directory->canonicalPath / std::filesystem::path(relative);
+		auto converted = utf8ToUtf16(files::pathToWindows(joined));
+		if (!converted)
+			return fail(STATUS_OBJECT_NAME_INVALID);
+		windowsPath = std::move(*converted);
+	} else {
+		if (nativeName.starts_with(u"\\??\\") || nativeName.starts_with(u"\\\\?\\"))
+			nativeName.remove_prefix(4);
+		if (nativeName.size() < 3 || nativeName[1] != u':' || (nativeName[2] != u'\\' && nativeName[2] != u'/'))
+			return fail(kStatusObjectPathSyntaxBad);
+		windowsPath.assign(nativeName);
+	}
+
+	DWORD winDisposition = 0;
+	switch (createDisposition) {
+	case 0: // FILE_SUPERSEDE
+		winDisposition = CREATE_ALWAYS;
+		break;
+	case 1: // FILE_OPEN
+		winDisposition = OPEN_EXISTING;
+		break;
+	case 2: // FILE_CREATE
+		winDisposition = CREATE_NEW;
+		break;
+	case 3: // FILE_OPEN_IF
+		winDisposition = OPEN_ALWAYS;
+		break;
+	case 4: // FILE_OVERWRITE
+		winDisposition = TRUNCATE_EXISTING;
+		break;
+	case 5: // FILE_OVERWRITE_IF
+		winDisposition = CREATE_ALWAYS;
+		break;
+	}
+	const bool wantDirectory = (createOptions & kDirectoryFile) != 0;
+	std::string utf8Name;
+	if (!utf16ToUtf8(windowsPath, utf8Name))
+		return fail(STATUS_OBJECT_NAME_INVALID);
+	const std::filesystem::path hostPath = files::pathFromWindows(utf8Name.c_str());
+	std::error_code ec;
+	const bool existedBefore = std::filesystem::exists(hostPath, ec);
+	if (ec)
+		return fail(wibo::statusFromErrno(ec.value()));
+	if (wantDirectory && existedBefore && !std::filesystem::is_directory(hostPath, ec))
+		return fail(kStatusNotADirectory);
+	if ((createOptions & kNonDirectoryFile) && existedBefore && std::filesystem::is_directory(hostPath, ec))
+		return fail(kStatusFileIsADirectory);
+	if (wantDirectory && (createDisposition == 0 || createDisposition == 4 || createDisposition == 5))
+		return fail(STATUS_INVALID_PARAMETER);
+
+	const DWORD previousError = kernel32::getLastError();
+	bool createdDirectory = false;
+	if (wantDirectory && !existedBefore && (createDisposition == 2 || createDisposition == 3)) {
+		if (!kernel32::CreateDirectoryW(reinterpret_cast<LPCWSTR>(windowsPath.c_str()), nullptr)) {
+			const DWORD error = kernel32::getLastError();
+			kernel32::setLastError(previousError);
+			return fail(statusFromFileOpenError(error, hostPath));
+		}
+		createdDirectory = true;
+		winDisposition = OPEN_EXISTING;
+	}
+	if (wantDirectory && !createdDirectory && createDisposition == 3)
+		winDisposition = OPEN_EXISTING;
+	DWORD flags = fileAttributes;
+	if (wantDirectory || (createOptions & kOpenForBackupIntent))
+		flags |= FILE_FLAG_BACKUP_SEMANTICS;
+	if (createOptions & kDeleteOnClose)
+		flags |= FILE_FLAG_DELETE_ON_CLOSE;
+	if (createOptions & kWriteThrough)
+		flags |= FILE_FLAG_WRITE_THROUGH;
+	if (!(createOptions & (kSynchronousIoAlert | kSynchronousIoNonAlert)))
+		flags |= FILE_FLAG_OVERLAPPED;
+	SECURITY_ATTRIBUTES security{};
+	security.nLength = sizeof(security);
+	security.bInheritHandle = (objectAttributes->Attributes & 0x02u) ? TRUE : FALSE;
+	HANDLE opened = kernel32::CreateFileW(reinterpret_cast<LPCWSTR>(windowsPath.c_str()), desiredAccess, shareAccess,
+										  &security, winDisposition, flags, NO_HANDLE);
+	const DWORD openError = kernel32::getLastError();
+	kernel32::setLastError(previousError);
+	if (opened == INVALID_HANDLE_VALUE) {
+		return fail(statusFromFileOpenError(openError, hostPath));
+	}
+	*fileHandle = opened;
+	ioStatus->Status = STATUS_SUCCESS;
+	if (createdDirectory || !existedBefore)
+		ioStatus->Information = 2; // FILE_CREATED
+	else if (createDisposition == 0)
+		ioStatus->Information = 0; // FILE_SUPERSEDED
+	else if (createDisposition >= 4)
+		ioStatus->Information = 3; // FILE_OVERWRITTEN
+	else
+		ioStatus->Information = 1; // FILE_OPENED
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtClose(HANDLE handle) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("NtClose(%p)\n", handle);
+	const DWORD previousError = kernel32::getLastError();
+	const BOOL closed = kernel32::CloseHandle(handle);
+	kernel32::setLastError(previousError);
+	return closed ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
 }
 
 NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,

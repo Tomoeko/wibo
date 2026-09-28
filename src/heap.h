@@ -90,6 +90,7 @@ bool reserveGuestStack(std::size_t stackSizeBytes, void **outStackLimit, void **
 
 #if defined(__APPLE__) && defined(WIBO_GUEST_64)
 bool registerNativeStackForCurrentThread(void **outStackLimit, void **outStackBase);
+bool setNativeStackGuaranteeForCurrentThread(std::size_t guaranteeBytes);
 void unregisterNativeStackForCurrentThread();
 #endif
 

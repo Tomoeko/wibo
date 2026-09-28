@@ -16,6 +16,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
@@ -264,6 +265,19 @@ int WINAPI MessageBoxA(HWND hwnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType) {
 	printf("MESSAGE BOX: [%s] %s\n", lpCaption, lpText);
 	fflush(stdout);
 	return 1;
+}
+
+BOOL WINAPI MessageBeep(UINT type) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("MessageBeep(0x%x)\n", type);
+	if (isatty(STDERR_FILENO)) {
+		const char bell = '\a';
+		if (write(STDERR_FILENO, &bell, 1) != 1) {
+			kernel32::setLastErrorFromErrno();
+			return FALSE;
+		}
+	}
+	return TRUE;
 }
 
 HWINSTA WINAPI GetProcessWindowStation() {

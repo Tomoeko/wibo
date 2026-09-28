@@ -65,6 +65,14 @@ int main(void) {
 	DWORD count;
 	TEST_CHECK(WriteFile(client, "abc", 3, &count, NULL));
 	TEST_CHECK_EQ(3, count);
+	BYTE directOutput[64] = {0};
+	DWORD directBytes = 0;
+	TEST_CHECK(DeviceIoControl(pipe, 0x11400c, NULL, 0, directOutput, sizeof(directOutput), &directBytes, NULL));
+	TEST_CHECK_EQ(19, directBytes);
+	ULONG directAvailable = 0;
+	memcpy(&directAvailable, directOutput + sizeof(ULONG), sizeof(directAvailable));
+	TEST_CHECK_EQ(3, directAvailable);
+	TEST_CHECK(memcmp(directOutput + 16, "abc", 3) == 0);
 	failed(pipe, 0x11400c, 15, 0xc0000004U);
 	for (ULONG capacity = 16; capacity <= 20; ++capacity)
 		peek(pipe, capacity, 3, 3, capacity < 19 ? capacity - 16 : 3);

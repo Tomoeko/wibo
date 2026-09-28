@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <dlfcn.h>
 #include <limits>
 #include <type_traits>
 
@@ -44,6 +45,12 @@ bool guestExecutableAddress(ULONGLONG address) {
 	const DWORD protection = region.Protect & 0xff;
 	return protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ || protection == PAGE_EXECUTE_READWRITE ||
 		   protection == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool hostEntryAddress(ULONGLONG address) {
+	Dl_info current{}, candidate{};
+	return dladdr(reinterpret_cast<const void *>(&wiboSearchSoftwareExceptionFrames64), &current) != 0 &&
+		   dladdr(reinterpret_cast<const void *>(address), &candidate) != 0 && current.dli_fbase == candidate.dli_fbase;
 }
 
 // Lookup callbacks and the unwinder finish their native ownership scopes
@@ -142,7 +149,7 @@ LONG invokeSoftwareExceptionFrameHandler64(SoftwareFrameHandler64 handler, EXCEP
 }
 } // namespace wibo
 
-void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *capture,
+bool wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *capture,
 										 SoftwareExceptionDecision64 *decision,
 										 SoftwareExceptionFrameActivation64 *activation) {
 	*activation = {};
@@ -152,11 +159,11 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 	TEB *teb = currentThreadTeb;
 #endif
 	if (!teb)
-		return;
+		return false;
 	activation->stackLimit = teb->Tib.StackLimit;
 	activation->stackBase = teb->Tib.StackBase;
 	if (activation->stackLimit >= activation->stackBase)
-		return;
+		return false;
 	// Exact capture ancestry skips the native Raise wrapper without inventing
 	// unwind metadata for it. Handler argument 3 remains the original context.
 	std::memcpy(&activation->walkingContext,
@@ -166,10 +173,18 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 			wibo::restartSoftwareExceptionAtBridge(activation->walkingContext, std::numeric_limits<ULONGLONG>::max());
 		if (bridge == wibo::SoftwareExceptionBridgeResult64::Unsupported) {
 			decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
-			return;
+			return false;
+		}
+		if (bridge == wibo::SoftwareExceptionBridgeResult64::NoMatch && activation->frameCount &&
+			!guestExecutableAddress(activation->walkingContext.Rip) &&
+			readableStack(activation->walkingContext.Rsp, sizeof(ULONGLONG), *activation) &&
+			hostEntryAddress(activation->walkingContext.Rip)) {
+			DEBUG_LOG("software frame search: host entry boundary rip=%llx rsp=%llx\n", activation->walkingContext.Rip,
+					  activation->walkingContext.Rsp);
+			return true;
 		}
 		if (!prepareFrame(*activation, kExceptionHandler))
-			return;
+			return false;
 		auto &dispatcher = activation->dispatcher;
 		if (dispatcher.LanguageHandler) {
 			const auto expectedDispatcher = dispatcher;
@@ -180,14 +195,14 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 			if (!wibo::linkSoftwareExceptionActivation(&activation->activation, walkStart, stackLow, walkStart->Rsp,
 													   SoftwareExceptionActivationPhase64::FrameSearch)) {
 				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
-				return;
+				return false;
 			}
 			const LONG result =
 				invokeFrameHandler(dispatcher.LanguageHandler, capture->record, dispatcher.EstablisherFrame,
 								   &decision->resumeContext, &dispatcher, &activation->activation);
 			if (!wibo::unlinkSoftwareExceptionActivation(&activation->activation)) {
 				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
-				return;
+				return false;
 			}
 			DEBUG_LOG("software frame handler: pc=%llx frame=%llx result=%d\n", expectedDispatcher.ControlPc,
 					  expectedDispatcher.EstablisherFrame, result);
@@ -196,22 +211,23 @@ void wiboSearchSoftwareExceptionFrames64(const SoftwareExceptionCapture64 *captu
 				DEBUG_LOG("software frame search: unsupported dispatcher or walking-context mutation mask=%x\n",
 						  wibo::softwareDispatcherMutationMask64(dispatcher, expectedDispatcher));
 				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
-				return;
+				return false;
 			}
 			if (result == kContinueExecution) {
 				wiboSelectSoftwareExceptionContinuation64(capture, decision);
-				return;
+				return false;
 			}
 			if (result != kContinueSearch) {
 				DEBUG_LOG("software frame search: unsupported handler disposition=%d\n", result);
 				decision->kind = SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch;
-				return;
+				return false;
 			}
 		}
 		if (activation->walkingContext.Rsp == activation->stackBase) {
-			return;
+			return true;
 		}
 	}
 	DEBUG_LOG("software frame search: frame limit reached\n");
+	return false;
 }
 #endif

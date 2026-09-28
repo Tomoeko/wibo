@@ -1,5 +1,7 @@
 #include "software_exception_dispatch.h"
 
+#include "kernel32/errhandlingapi.h"
+
 #include <cstring>
 
 #ifdef WIBO_GUEST_64
@@ -13,9 +15,25 @@ DWORD wiboPrepareSoftwareExceptionDispatchDecision64(const SoftwareExceptionCapt
 													 SoftwareExceptionDecision64 *decision,
 													 SoftwareExceptionFrameActivation64 *activation) {
 	wiboPrepareSoftwareExceptionDecision64(capture, decision, true);
+	bool framesExhausted = false;
 	if (decision->kind == SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch ||
 		decision->kind == SoftwareExceptionDecisionKind64::LegacyNotificationReturn) {
-		wiboSearchSoftwareExceptionFrames64(capture, decision, activation);
+		framesExhausted = wiboSearchSoftwareExceptionFrames64(capture, decision, activation);
+	}
+	if (framesExhausted && decision->kind == SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch) {
+		if (const auto filter = kernel32::currentUnhandledExceptionFilter()) {
+			EXCEPTION_POINTERS info{toGuestPtr(capture->record), toGuestPtr(&decision->resumeContext)};
+			const LONG result = wibo::invokeVectoredGuestHandler64(filter, &info);
+			if (result == EXCEPTION_CONTINUE_EXECUTION) {
+				wiboSelectSoftwareExceptionContinuation64(capture, decision);
+				if (decision->kind == SoftwareExceptionDecisionKind64::Resume &&
+					(info.ExceptionRecord != toGuestPtr(capture->record) ||
+					 info.ContextRecord != toGuestPtr(&decision->resumeContext))) {
+					decision->kind = SoftwareExceptionDecisionKind64::UnsupportedContextState;
+					decision->failureCode = decision->originalCode;
+				}
+			}
+		}
 	}
 	if (decision->kind == SoftwareExceptionDecisionKind64::UnsupportedFrameDispatch)
 		decision->failureCode = decision->originalCode;

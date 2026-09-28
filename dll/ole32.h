@@ -8,6 +8,7 @@ HRESULT WINAPI CoSetProxyBlanket(GUEST_PTR proxy, DWORD authentication, DWORD au
 								 DWORD level, DWORD impersonation, GUEST_PTR identity, DWORD capabilities);
 HRESULT WINAPI CoCreateGuid(GUID *pguid);
 PVOID WINAPI CoTaskMemAlloc(SIZE_T cb);
+PVOID WINAPI CoTaskMemRealloc(PVOID pv, SIZE_T cb);
 void WINAPI CoTaskMemFree(PVOID pv);
 
 HRESULT WINAPI CoInitialize(LPVOID pvReserved);

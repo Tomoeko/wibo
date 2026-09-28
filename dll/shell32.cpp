@@ -317,6 +317,82 @@ std::vector<std::u16string> parseArguments(LPCWSTR command) {
 
 namespace shell32 {
 
+int WINAPI SHFileOperationW(SHFILEOPSTRUCTW *operation) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SHFileOperationW(%p)\n", operation);
+	constexpr UINT kMove = 1, kCopy = 2, kDelete = 3, kRename = 4;
+	constexpr WORD kSilent = 0x0004, kNoConfirmation = 0x0010, kFileOnly = 0x0080;
+	constexpr WORD kNoConfirmDirectory = 0x0200, kNoErrorUi = 0x0400, kNoCopySecurity = 0x0800;
+	constexpr WORD kSupportedFlags =
+		kSilent | kNoConfirmation | kFileOnly | kNoConfirmDirectory | kNoErrorUi | kNoCopySecurity;
+	auto fail = [](DWORD error) {
+		kernel32::setLastError(error);
+		return static_cast<int>(error);
+	};
+	if (!operation)
+		return fail(ERROR_INVALID_PARAMETER);
+	operation->fAnyOperationsAborted = FALSE;
+	operation->hNameMappings = GUEST_NULL;
+	if ((operation->fFlags & ~kSupportedFlags) != 0)
+		return fail(ERROR_NOT_SUPPORTED);
+	if (operation->wFunc < kMove || operation->wFunc > kRename)
+		return fail(ERROR_INVALID_PARAMETER);
+	const auto *source = fromGuestPtr<const WCHAR>(operation->pFrom);
+	const auto *target = fromGuestPtr<const WCHAR>(operation->pTo);
+	if (!source || !*source || (operation->wFunc != kDelete && (!target || !*target)))
+		return fail(ERROR_INVALID_PARAMETER);
+	const size_t sourceLength = wstrlen(source);
+	if (source[sourceLength + 1] != 0)
+		return fail(ERROR_NOT_SUPPORTED);
+	if (target && operation->wFunc != kDelete && target[wstrlen(target) + 1] != 0)
+		return fail(ERROR_NOT_SUPPORTED);
+	std::string sourceUtf8;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(source), sourceLength), sourceUtf8) ||
+		!supportsShellPath(sourceUtf8))
+		return fail(ERROR_NOT_SUPPORTED);
+	const DWORD sourceAttributes = kernel32::GetFileAttributesW(source);
+	if (sourceAttributes == INVALID_FILE_ATTRIBUTES)
+		return fail(kernel32::getLastError());
+	if (operation->wFunc == kDelete) {
+		const BOOL removed = (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY) ? kernel32::RemoveDirectoryW(source)
+																		   : kernel32::DeleteFileW(source);
+		return removed ? ERROR_SUCCESS : fail(kernel32::getLastError());
+	}
+	std::string targetUtf8;
+	const size_t targetLength = wstrlen(target);
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(target), targetLength), targetUtf8) ||
+		!supportsShellPath(targetUtf8))
+		return fail(ERROR_NOT_SUPPORTED);
+	std::u16string destination(reinterpret_cast<const char16_t *>(target), targetLength);
+	const DWORD targetAttributes = kernel32::GetFileAttributesW(target);
+	if (operation->wFunc != kRename && targetAttributes != INVALID_FILE_ATTRIBUTES &&
+		(targetAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+		const std::u16string_view sourceText(reinterpret_cast<const char16_t *>(source), sourceLength);
+		const size_t separator = sourceText.find_last_of(u"\\/");
+		if (!destination.empty() && destination.back() != u'\\' && destination.back() != u'/')
+			destination.push_back(u'\\');
+		destination.append(sourceText.substr(separator == std::u16string_view::npos ? 0 : separator + 1));
+	}
+	const auto *destinationPath = reinterpret_cast<const WCHAR *>(destination.c_str());
+	BOOL succeeded = FALSE;
+	switch (operation->wFunc) {
+	case kCopy:
+		if (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			return fail(ERROR_NOT_SUPPORTED);
+		succeeded = kernel32::CopyFileW(source, destinationPath, (operation->fFlags & kNoConfirmation) == 0);
+		break;
+	case kMove:
+		succeeded = kernel32::MoveFileExW(source, destinationPath, (operation->fFlags & kNoConfirmation) ? 1 : 0);
+		break;
+	case kRename:
+		succeeded = kernel32::MoveFileW(source, destinationPath);
+		break;
+	default:
+		return fail(ERROR_INVALID_PARAMETER);
+	}
+	return succeeded ? ERROR_SUCCESS : fail(kernel32::getLastError());
+}
+
 HINSTANCE WINAPI FindExecutableW(LPCWSTR file, LPCWSTR directory, LPWSTR result) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("FindExecutableW(%p, %p, %p)\n", file, directory, result);

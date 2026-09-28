@@ -666,6 +666,9 @@ elif operation == 'user-default-ui-language':
         response = response[:-1]
     elif fault == 'trailing':
         response += b'\0'
+elif operation == 'system-default-lcid':
+    assert not arguments
+    response = header() + number(0x0411)
 elif operation == 'memory-resource-state':
     state_file = os.environ.get('WIBO_FIXTURE_MEMORY_RESOURCE_STATE_FILE')
     state = '0,0'
@@ -730,7 +733,9 @@ elif operation == 'system-query':
 elif operation == 'volume-query':
     path, kind, capacity = arguments
     kind, capacity = int(kind), int(capacity)
-    payloads = {3: struct.pack('<qqII', 4096, 1024, 8, 512),
+    volume_label = 'Fixture'.encode('utf-16-le')
+    payloads = {1: struct.pack('<qIIBx', 0, 0x12345678, len(volume_label), 0) + volume_label,
+                3: struct.pack('<qqII', 4096, 1024, 8, 512),
                 4: struct.pack('<II', 7, 0),
                 5: struct.pack('<III', 3, 255, 18) + 'FixtureFS'.encode('utf-16-le'),
                 7: struct.pack('<qqqII', 4096, 1024, 2048, 8, 512)}

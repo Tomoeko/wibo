@@ -2,8 +2,15 @@
 
 #include "common.h"
 #include "context.h"
+#include "errhandlingapi.h"
 
 namespace kernel32 {
+
+VOID WINAPI DebugBreak() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("DebugBreak()\n");
+	RaiseException(0x80000003u, 0, 0, nullptr);
+}
 
 BOOL WINAPI IsDebuggerPresent() {
 	HOST_CONTEXT_GUARD();

@@ -45,6 +45,7 @@ void wakeSocketIo();
 void cancelSocketIoForThread(pthread_t owner);
 bool getHandleInformation(SOCKET handle, DWORD *flags);
 bool setHandleInformation(SOCKET handle, DWORD mask, DWORD flags);
+void cancelBlockingSocketIoForThread(const Socket &socket);
 int socketError(int error);
 int failSocket(int error);
 void finishSocketSend(Socket &socket);

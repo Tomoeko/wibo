@@ -82,6 +82,7 @@ struct STARTUPINFOEXA {
 
 constexpr DWORD TLS_OUT_OF_INDEXES = 0xFFFFFFFFu;
 constexpr DWORD PROCESS_TERMINATE = 0x0001;
+constexpr DWORD PROCESS_VM_READ = 0x0010;
 constexpr DWORD PROCESS_QUERY_INFORMATION = 0x0400;
 constexpr DWORD PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 constexpr DWORD PROCESS_ALL_ACCESS = STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0xFFFF;
@@ -117,6 +118,7 @@ DWORD WINAPI GetCurrentProcessId();
 DWORD WINAPI GetCurrentThreadId();
 DWORD WINAPI GetCurrentProcessorNumber();
 void WINAPI GetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber);
+WORD WINAPI GetActiveProcessorGroupCount();
 HANDLE WINAPI GetCurrentThread();
 HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId);
 HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId);
@@ -149,6 +151,8 @@ int WINAPI GetThreadPriority(HANDLE hThread);
 DWORD WINAPI GetPriorityClass(HANDLE hProcess);
 BOOL WINAPI GetThreadTimes(HANDLE hThread, FILETIME *lpCreationTime, FILETIME *lpExitTime, FILETIME *lpKernelTime,
 						   FILETIME *lpUserTime);
+BOOL WINAPI GetProcessTimes(HANDLE process, FILETIME *creationTime, FILETIME *exitTime, FILETIME *kernelTime,
+							FILETIME *userTime);
 BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes,
 						   LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags,
 						   LPVOID lpEnvironment, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo,

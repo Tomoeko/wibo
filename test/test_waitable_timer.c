@@ -69,6 +69,10 @@ static void check_legacy_creation(void) {
 	HANDLE duplicate = CreateWaitableTimerExW(NULL, L"wibo.fixture.timer.ansi", 0, TIMER_ALL_ACCESS);
 	TEST_CHECK(duplicate != NULL);
 	TEST_CHECK_EQ(ERROR_ALREADY_EXISTS, GetLastError());
+	HANDLE wide = CreateWaitableTimerW(NULL, TRUE, L"wibo.fixture.timer.ansi");
+	TEST_CHECK(wide != NULL);
+	TEST_CHECK_EQ(ERROR_ALREADY_EXISTS, GetLastError());
+	TEST_CHECK(CloseHandle(wide));
 	DWORD flags = 0;
 	TEST_CHECK(GetHandleInformation(timer, &flags));
 	TEST_CHECK_EQ(0, flags);

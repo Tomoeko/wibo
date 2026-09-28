@@ -87,10 +87,11 @@ int main(void) {
 	operation.hEvent = event;
 	TEST_CHECK(ReadDirectoryChangesW(directory, buffer, sizeof(buffer), FALSE, FILE_NOTIFY_CHANGE_FILE_NAME, NULL,
 									 &operation, NULL));
-	TEST_CHECK(CancelIoEx(directory, &operation));
+	TEST_CHECK(CancelIo(directory));
 	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(event, 5000));
 	TEST_CHECK(!GetOverlappedResult(directory, &operation, &bytes, FALSE));
 	TEST_CHECK_EQ(ERROR_OPERATION_ABORTED, GetLastError());
+	TEST_CHECK(CancelIo(directory));
 	TEST_CHECK(CloseHandle(directory));
 
 	snprintf(child, sizeof(child), "%s\\callback.bin", root);

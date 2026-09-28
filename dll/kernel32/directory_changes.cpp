@@ -227,17 +227,20 @@ class DirectoryWatcher {
 			finish(request, STATUS_HANDLES_CLOSED, 0);
 		requests.clear();
 	}
-	void cancelThread(pthread_t thread) {
+	bool cancelThread(pthread_t thread, bool onThreadExit) {
 		std::lock_guard lock(directory.m);
-		if (std::atomic_load(&directory.completion))
-			return;
+		if (onThreadExit && std::atomic_load(&directory.completion))
+			return false;
+		bool found = false;
 		for (auto it = requests.begin(); it != requests.end();) {
 			if (pthread_equal((*it)->owner, thread)) {
 				finish(*it, STATUS_CANCELLED, 0);
 				it = requests.erase(it);
+				found = true;
 			} else
 				++it;
 		}
+		return found;
 	}
 	bool cancel(OVERLAPPED *operation) {
 		bool found = false;
@@ -291,6 +294,15 @@ bool cancelDirectoryChanges(DirectoryObject &directory, OVERLAPPED *operation) {
 	return directory.watcher && directory.watcher->cancel(operation);
 }
 
+bool cancelDirectoryChangesForThread(DirectoryObject &directory, pthread_t thread) {
+	std::shared_ptr<DirectoryWatcher> watcher;
+	{
+		std::lock_guard lock(directory.m);
+		watcher = directory.watcher;
+	}
+	return watcher && watcher->cancelThread(thread, false);
+}
+
 void cancelDirectoryIoForThread(pthread_t thread) {
 	struct ActiveWatcher {
 		Pin<DirectoryObject> directory;
@@ -308,7 +320,7 @@ void cancelDirectoryIoForThread(pthread_t thread) {
 		}
 	}
 	for (const auto &watcher : watchers)
-		watcher.watcher->cancelThread(thread);
+		watcher.watcher->cancelThread(thread, true);
 }
 
 BOOL WINAPI ReadDirectoryChangesW(HANDLE handle, LPVOID buffer, DWORD length, BOOL subtree, DWORD filter,

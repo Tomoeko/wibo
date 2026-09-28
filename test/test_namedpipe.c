@@ -179,5 +179,16 @@ int main(void) {
 	TEST_CHECK(CloseHandle(ov.hEvent));
 	TEST_CHECK(CloseHandle(overlappedPipe));
 
+	HANDLE widePipe = CreateNamedPipeW(L"\\\\.\\pipe\\wibo_test_namedpipe_\u03b1", PIPE_ACCESS_DUPLEX,
+									   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1024, 1024, 0, NULL);
+	TEST_CHECK(widePipe != INVALID_HANDLE_VALUE);
+	HANDLE wideClient = CreateFileW(L"\\\\.\\pipe\\wibo_test_namedpipe_\u03b1", GENERIC_READ | GENERIC_WRITE, 0, NULL,
+									OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	TEST_CHECK(wideClient != INVALID_HANDLE_VALUE);
+	write_checked(wideClient, "wide");
+	read_checked(widePipe, "wide");
+	TEST_CHECK(CloseHandle(wideClient));
+	TEST_CHECK(CloseHandle(widePipe));
+
 	return 0;
 }

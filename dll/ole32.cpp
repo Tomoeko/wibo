@@ -122,6 +122,18 @@ PVOID WINAPI CoTaskMemAlloc(SIZE_T cb) {
 	return wibo::heap::guestMalloc(cb, false);
 }
 
+PVOID WINAPI CoTaskMemRealloc(PVOID pv, SIZE_T cb) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("CoTaskMemRealloc(%p, %llu)\n", pv, static_cast<unsigned long long>(cb));
+	if (!pv)
+		return wibo::heap::guestMalloc(cb, false);
+	if (!cb) {
+		wibo::heap::guestFree(pv);
+		return nullptr;
+	}
+	return wibo::heap::guestRealloc(pv, cb, false);
+}
+
 void WINAPI CoTaskMemFree(PVOID pv) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("CoTaskMemFree(%p)\n", pv);

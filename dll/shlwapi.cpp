@@ -150,6 +150,67 @@ BOOL WINAPI PathIsDirectoryW(LPCWSTR path) {
 	return attributes == INVALID_FILE_ATTRIBUTES ? FALSE : static_cast<BOOL>(attributes & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+BOOL WINAPI PathIsDirectoryEmptyW(LPCWSTR path) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathIsDirectoryEmptyW(%p)\n", path);
+	if (!PathIsDirectoryW(path))
+		return FALSE;
+	const size_t length = wstrnlen(path, MAX_PATH);
+	std::string pattern;
+	if (length == MAX_PATH ||
+		!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(path), length), pattern)) {
+		kernel32::setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	if (!pattern.empty() && pattern.back() != '\\' && pattern.back() != '/')
+		pattern.push_back('\\');
+	pattern.push_back('*');
+	WIN32_FIND_DATAA entry{};
+	const HANDLE search = kernel32::FindFirstFileA(pattern.c_str(), &entry);
+	if (search == INVALID_HANDLE_VALUE)
+		return kernel32::getLastError() == ERROR_FILE_NOT_FOUND;
+	bool empty = true;
+	do {
+		if (std::strcmp(entry.cFileName, ".") != 0 && std::strcmp(entry.cFileName, "..") != 0) {
+			empty = false;
+			break;
+		}
+	} while (kernel32::FindNextFileA(search, &entry));
+	kernel32::FindClose(search);
+	return empty;
+}
+
+BOOL WINAPI PathIsRelativeW(LPCWSTR path) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathIsRelativeW(%p)\n", path);
+	if (!path || !*path)
+		return FALSE;
+	if (path[0] == '\\' || path[0] == '/')
+		return FALSE;
+	return path[1] != ':';
+}
+
+LPCWSTR WINAPI PathFindFileNameW(LPCWSTR path) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathFindFileNameW(%p)\n", path);
+	if (!path)
+		return nullptr;
+	LPCWSTR name = path;
+	for (LPCWSTR current = path; *current; ++current) {
+		if (*current == '\\' || *current == '/' || *current == ':')
+			name = current + 1;
+	}
+	return name;
+}
+
+BOOL WINAPI PathFileExistsW(LPCWSTR path) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("PathFileExistsW(%p)\n", path);
+	if (!path || !*path)
+		return FALSE;
+	return kernel32::GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
 BOOL WINAPI PathCanonicalizeW(LPWSTR output, LPCWSTR path) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("PathCanonicalizeW(%p, %p)\n", output, path);

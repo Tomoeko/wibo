@@ -38,6 +38,17 @@ void WINAPI SetLastError(DWORD dwErrCode) {
 	currentThreadTeb->LastErrorValue = dwErrCode;
 }
 
+void WINAPI RaiseFailFastException(PEXCEPTION_RECORD pExceptionRecord, PCONTEXT pContextRecord, DWORD dwFlags) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RaiseFailFastException(%p, %p, 0x%x)\n", reinterpret_cast<void *>(pExceptionRecord),
+			  reinterpret_cast<void *>(pContextRecord), dwFlags);
+	(void)pContextRecord;
+	(void)dwFlags;
+	constexpr DWORD kStatusFailFastException = 0xc0000602u;
+	const auto *record = reinterpret_cast<const EXCEPTION_RECORD *>(pExceptionRecord);
+	exitInternal(record ? record->ExceptionCode : kStatusFailFastException);
+}
+
 void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD nNumberOfArguments,
 						   const ULONG_PTR *lpArguments) {
 	HOST_CONTEXT_GUARD();
@@ -62,6 +73,10 @@ SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilt
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("SetUnhandledExceptionFilter(%p)\n", lpTopLevelExceptionFilter);
 	return g_topLevelExceptionFilter.exchange(lpTopLevelExceptionFilter, std::memory_order_acq_rel);
+}
+
+LPTOP_LEVEL_EXCEPTION_FILTER currentUnhandledExceptionFilter() {
+	return g_topLevelExceptionFilter.load(std::memory_order_acquire);
 }
 
 LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo) {

@@ -588,7 +588,9 @@ typedef struct _TEB {
 	GUEST_PTR DeallocationStack;
 	GUEST_PTR TlsSlots[64];
 	LIST_ENTRY TlsLinks;
-	BYTE ReservedToTlsExpansionSlots[0x1780 - 0x1690];
+	BYTE ReservedToGuaranteedStackBytes[0x1748 - 0x1690];
+	ULONG GuaranteedStackBytes;
+	BYTE ReservedToTlsExpansionSlots[0x1780 - 0x174c];
 	GUEST_PTR TlsExpansionSlots;
 	void *CurrentStackPointer;
 	GUEST_PTR HostLocalTimeTsd;
@@ -663,7 +665,7 @@ typedef struct _TEB {
 	GUEST_PTR WinSockData;
 	ULONG GdiBatchCount;
 	ULONG Spare2;
-	ULONG Spare3;
+	ULONG GuaranteedStackBytes;
 	ULONG Spare4;
 	GUEST_PTR ReservedForOle;
 	ULONG WaitingOnLoaderLock;
@@ -699,6 +701,7 @@ static_assert(offsetof(TEB, Peb) == 0x60, "Win64 PEB pointer offset mismatch");
 static_assert(offsetof(TEB, LastErrorValue) == 0x68, "Win64 LastErrorValue offset mismatch");
 static_assert(offsetof(TEB, DeallocationStack) == 0x1478, "Win64 stack allocation offset mismatch");
 static_assert(offsetof(TEB, TlsSlots) == 0x1480, "Win64 TLS slots offset mismatch");
+static_assert(offsetof(TEB, GuaranteedStackBytes) == 0x1748, "Win64 stack guarantee offset mismatch");
 static_assert(offsetof(TEB, TlsExpansionSlots) == 0x1780, "Win64 expanded TLS slots offset mismatch");
 #else
 static_assert(offsetof(PEB, ImageBaseAddress) == 0x08, "Win32 PEB image-base offset mismatch");
@@ -712,6 +715,7 @@ static_assert(offsetof(TEB, LastErrorValue) == 0x34, "LastErrorValue offset mism
 static_assert(offsetof(TEB, GdiTebBatch) == 0x1FC, "GdiTebBatch offset mismatch");
 static_assert(offsetof(TEB, DeallocationStack) == 0xE0C, "DeallocationStack offset mismatch");
 static_assert(offsetof(TEB, TlsSlots) == 0xE10, "TLS slots offset mismatch");
+static_assert(offsetof(TEB, GuaranteedStackBytes) == 0xF78, "Win32 stack guarantee offset mismatch");
 static_assert(offsetof(TEB, CurrentFsSelector) == TEB_FS_SEL);
 static_assert(offsetof(TEB, CurrentGsSelector) == TEB_GS_SEL);
 #ifdef TEB_CS_SEL

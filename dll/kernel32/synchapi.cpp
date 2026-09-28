@@ -821,6 +821,35 @@ HANDLE WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES lpSemaphoreAttributes, LONG
 							lpName ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
 }
 
+HANDLE WINAPI OpenSemaphoreW(DWORD desiredAccess, BOOL inheritHandle, LPCWSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenSemaphoreW(0x%x, %d, %p)\n", desiredAccess, static_cast<int>(inheritHandle), name);
+	if (!name || !*name) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	auto object = wibo::g_namespace.get(makeU16String(name));
+	if (!object) {
+		setLastError(ERROR_FILE_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	auto semaphore = std::move(object).downcast<SemaphoreObject>();
+	if (!semaphore) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return NO_HANDLE;
+	}
+	const uint32_t flags = inheritHandle ? HANDLE_FLAG_INHERIT : 0;
+	return wibo::handles().alloc(std::move(semaphore), desiredAccess, flags);
+}
+
+HANDLE WINAPI OpenSemaphoreA(DWORD desiredAccess, BOOL inheritHandle, LPCSTR name) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("OpenSemaphoreA(0x%x, %d, %p)\n", desiredAccess, static_cast<int>(inheritHandle), name);
+	std::vector<uint16_t> wideName;
+	makeWideNameFromAnsi(name, wideName);
+	return OpenSemaphoreW(desiredAccess, inheritHandle, name ? reinterpret_cast<LPCWSTR>(wideName.data()) : nullptr);
+}
+
 BOOL WINAPI ReleaseSemaphore(HANDLE hSemaphore, LONG lReleaseCount, PLONG lpPreviousCount) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("ReleaseSemaphore(%p, %ld, %p)\n", hSemaphore, lReleaseCount, lpPreviousCount);
@@ -906,6 +935,33 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE hHandle, DWORD dwMilliseconds, BOOL bA
 		return waitAlertable(hHandle, object, dwMilliseconds);
 	}
 	return WaitForSingleObject(hHandle, dwMilliseconds);
+}
+
+DWORD WINAPI SignalObjectAndWait(HANDLE hObjectToSignal, HANDLE hObjectToWaitOn, DWORD dwMilliseconds,
+								 BOOL bAlertable) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SignalObjectAndWait(%p, %p, %u, %d)\n", hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
+	auto object = wibo::handles().get(hObjectToSignal);
+	if (!object) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return WAIT_FAILED;
+	}
+	BOOL signaled = FALSE;
+	switch (object->type) {
+	case ObjectType::Event:
+		signaled = SetEvent(hObjectToSignal);
+		break;
+	case ObjectType::Semaphore:
+		signaled = ReleaseSemaphore(hObjectToSignal, 1, nullptr);
+		break;
+	case ObjectType::Mutex:
+		signaled = ReleaseMutex(hObjectToSignal);
+		break;
+	default:
+		setLastError(ERROR_INVALID_HANDLE);
+		return WAIT_FAILED;
+	}
+	return signaled ? WaitForSingleObjectEx(hObjectToWaitOn, dwMilliseconds, bAlertable) : WAIT_FAILED;
 }
 
 DWORD WINAPI WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {

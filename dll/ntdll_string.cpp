@@ -3,8 +3,10 @@
 #include "common.h"
 #include "context.h"
 #include "errors.h"
+#include "heap.h"
 
 #include <cstddef>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -63,6 +65,36 @@ VOID WINAPI ntdll::RtlInitUnicodeString(UNICODE_STRING *destination, LPCWSTR sou
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RtlInitUnicodeString(%p, %p)\n", destination, source);
 	initializeCountedString(destination, source, kMaximumUnicodeCharacters, false);
+}
+
+BOOLEAN WINAPI ntdll::RtlCreateUnicodeString(UNICODE_STRING *destination, LPCWSTR source) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlCreateUnicodeString(%p, %p)\n", destination, source);
+	if (!destination || !source)
+		return FALSE;
+	std::size_t characters = 0;
+	while (characters <= kMaximumUnicodeCharacters && source[characters] != 0)
+		++characters;
+	if (characters > kMaximumUnicodeCharacters)
+		return FALSE;
+	const std::size_t bytes = (characters + 1) * sizeof(WCHAR);
+	void *buffer = wibo::heap::guestMalloc(bytes);
+	if (!buffer)
+		return FALSE;
+	std::memcpy(buffer, source, bytes);
+	destination->Length = static_cast<USHORT>(characters * sizeof(WCHAR));
+	destination->MaximumLength = static_cast<USHORT>(bytes);
+	destination->Buffer = toGuestPtr(buffer);
+	return TRUE;
+}
+
+VOID WINAPI ntdll::RtlFreeUnicodeString(UNICODE_STRING *destination) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlFreeUnicodeString(%p)\n", destination);
+	if (destination && destination->Buffer) {
+		wibo::heap::guestFree(fromGuestPtr<void>(destination->Buffer));
+		*destination = {};
+	}
 }
 
 NTSTATUS WINAPI ntdll::RtlInitAnsiStringEx(ANSI_STRING *destination, LPCSTR source) {

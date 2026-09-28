@@ -6,6 +6,8 @@
 
 typedef void(WINAPI *initialize_fn)(PSLIST_HEADER);
 typedef PSLIST_ENTRY(WINAPI *pop_fn)(PSLIST_HEADER);
+typedef PSLIST_ENTRY(WINAPI *push_fn)(PSLIST_HEADER, PSLIST_ENTRY);
+typedef USHORT(WINAPI *depth_fn)(PSLIST_HEADER);
 
 struct header_words {
 	ULONG_PTR low;
@@ -26,6 +28,8 @@ static SLIST_HEADER DECLSPEC_ALIGN(16) head;
 static struct node nodes[NODE_COUNT];
 static initialize_fn initialize;
 static pop_fn pop;
+static push_fn push;
+static depth_fn query_depth;
 static HANDLE start, continue_producing, first_consumed;
 static volatile LONG producers_finished, consumed;
 #ifdef _WIN64
@@ -152,6 +156,20 @@ static void check_pop(PSLIST_ENTRY expected_entry) {
 #endif
 }
 
+static void check_push_api(void) {
+	initialize_head();
+	TEST_CHECK_EQ(0, query_depth(&head));
+	SetLastError(0x72);
+	TEST_CHECK(push(&head, &nodes[0].entry) == NULL);
+	TEST_CHECK_EQ(0x72, GetLastError());
+	TEST_CHECK_EQ(1, query_depth(&head));
+	TEST_CHECK(push(&head, &nodes[1].entry) == &nodes[0].entry);
+	TEST_CHECK_EQ(2, query_depth(&head));
+	check_pop(&nodes[1].entry);
+	check_pop(&nodes[0].entry);
+	TEST_CHECK_EQ(0, query_depth(&head));
+}
+
 static DWORD WINAPI producer(PVOID argument) {
 	const unsigned first = (unsigned)(uintptr_t)argument * NODES_PER_PRODUCER;
 	TEST_CHECK_EQ(WAIT_OBJECT_0, WaitForSingleObject(start, 5000));
@@ -231,11 +249,15 @@ int main(void) {
 	TEST_CHECK(module != NULL);
 	initialize = (initialize_fn)(uintptr_t)GetProcAddress(module, "InitializeSListHead");
 	pop = (pop_fn)(uintptr_t)GetProcAddress(module, "InterlockedPopEntrySList");
-	TEST_CHECK(initialize && pop);
+	push = (push_fn)(uintptr_t)GetProcAddress(module, "InterlockedPushEntrySList");
+	query_depth = (depth_fn)(uintptr_t)GetProcAddress(module, "QueryDepthSList");
+	TEST_CHECK(initialize && pop && push && query_depth);
 	TEST_CHECK((uintptr_t)&head % MEMORY_ALLOCATION_ALIGNMENT == 0);
 	TEST_CHECK((uintptr_t)&nodes[0].entry % MEMORY_ALLOCATION_ALIGNMENT == 0);
 	initialize_head();
 	check_empty();
+	check_push_api();
+	initialize_head();
 	for (unsigned i = 0; i < 3; ++i)
 		publish(&nodes[i].entry);
 	for (unsigned i = 3; i-- > 0;)

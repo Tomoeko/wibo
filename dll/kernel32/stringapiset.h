@@ -9,6 +9,7 @@ int WINAPI WideCharToMultiByte(UINT CodePage, DWORD dwFlags, LPCWCH lpWideCharSt
 int WINAPI MultiByteToWideChar(UINT CodePage, DWORD dwFlags, LPCCH lpMultiByteStr, int cbMultiByte,
 								 LPWSTR lpWideCharStr, int cchWideChar);
 BOOL WINAPI GetStringTypeW(DWORD dwInfoType, LPCWCH lpSrcStr, int cchSrc, LPWORD lpCharType);
+BOOL WINAPI GetStringTypeExW(LCID locale, DWORD infoType, LPCWCH source, int count, LPWORD characterTypes);
 BOOL WINAPI GetStringTypeA(LCID Locale, DWORD dwInfoType, LPCSTR lpSrcStr, int cchSrc, LPWORD lpCharType);
 
 } // namespace kernel32

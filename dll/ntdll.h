@@ -14,6 +14,15 @@ typedef struct _IO_STATUS_BLOCK {
 	ULONG_PTR Information;
 } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 
+struct OBJECT_ATTRIBUTES {
+	ULONG Length;
+	GUEST_PTR RootDirectory;
+	GUEST_PTR ObjectName;
+	ULONG Attributes;
+	GUEST_PTR SecurityDescriptor;
+	GUEST_PTR SecurityQualityOfService;
+};
+
 enum PROCESSINFOCLASS {
 	ProcessBasicInformation = 0,
 	ProcessWow64Information = 26,
@@ -80,6 +89,8 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 VOID WINAPI RtlInitString(STRING *destination, LPCSTR source);
 VOID WINAPI RtlInitAnsiString(ANSI_STRING *destination, LPCSTR source);
 VOID WINAPI RtlInitUnicodeString(UNICODE_STRING *destination, LPCWSTR source);
+BOOLEAN WINAPI RtlCreateUnicodeString(UNICODE_STRING *destination, LPCWSTR source);
+VOID WINAPI RtlFreeUnicodeString(UNICODE_STRING *destination);
 NTSTATUS WINAPI RtlInitAnsiStringEx(ANSI_STRING *destination, LPCSTR source);
 NTSTATUS WINAPI RtlInitUnicodeStringEx(UNICODE_STRING *destination, LPCWSTR source);
 
@@ -99,6 +110,11 @@ const char *CDECL __wine_dbg_strdup(const char *str);
 NTSTATUS WINAPI NtReadFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
 						   PIO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length, PLARGE_INTEGER ByteOffset,
 						   PULONG Key);
+NTSTATUS WINAPI NtCreateFile(HANDLE *fileHandle, DWORD desiredAccess, const OBJECT_ATTRIBUTES *objectAttributes,
+							 PIO_STATUS_BLOCK ioStatus, PLARGE_INTEGER allocationSize, ULONG fileAttributes,
+							 ULONG shareAccess, ULONG createDisposition, ULONG createOptions, PVOID eaBuffer,
+							 ULONG eaLength);
+NTSTATUS WINAPI NtClose(HANDLE handle);
 NTSTATUS WINAPI NtWriteFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
 							PIO_STATUS_BLOCK IoStatusBlock, PVOID Buffer, ULONG Length, PLARGE_INTEGER ByteOffset,
 							PULONG Key);

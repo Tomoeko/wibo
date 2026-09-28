@@ -54,6 +54,7 @@ int WINAPI GetDateFormatW(LCID locale, DWORD flags, const SYSTEMTIME *date, LPCW
 int WINAPI GetTimeFormatW(LCID locale, DWORD flags, const SYSTEMTIME *time, LPCWSTR picture, LPWSTR output,
 						  int capacity);
 LANGID WINAPI GetSystemDefaultLangID();
+LCID WINAPI GetSystemDefaultLCID();
 LANGID WINAPI GetUserDefaultUILanguage();
 BOOL WINAPI GetUserPreferredUILanguages(DWORD dwFlags, PULONG pulNumLanguages, LPWSTR pwszLanguagesBuffer,
 										PULONG pcchLanguagesBuffer);
@@ -72,6 +73,8 @@ int WINAPI CompareStringEx(LPCWSTR lpLocaleName, DWORD dwCmpFlags, LPCWCH lpStri
 int WINAPI FindNLSStringEx(LPCWSTR lpLocaleName, DWORD dwFindNLSStringFlags, LPCWSTR lpStringSource, int cchSource,
 						   LPCWSTR lpStringValue, int cchValue, int *pcchFound, LPNLSVERSIONINFO lpVersionInformation,
 						   LPVOID lpReserved, LONG_PTR sortHandle);
+int WINAPI FindStringOrdinal(DWORD flags, LPCWSTR source, int sourceCount, LPCWSTR value, int valueCount,
+							 BOOL ignoreCase);
 BOOL WINAPI IsValidCodePage(UINT CodePage);
 BOOL WINAPI IsValidLocale(LCID Locale, DWORD dwFlags);
 int WINAPI GetLocaleInfoA(LCID Locale, LCTYPE LCType, LPSTR lpLCData, int cchData);

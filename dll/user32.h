@@ -110,6 +110,7 @@ int WINAPI GetSystemMetrics(int index);
 int WINAPI LoadStringA(HMODULE hInstance, UINT uID, LPSTR lpBuffer, int cchBufferMax);
 int WINAPI LoadStringW(HMODULE hInstance, UINT uID, LPWSTR lpBuffer, int cchBufferMax);
 int WINAPI MessageBoxA(HWND hwnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType);
+BOOL WINAPI MessageBeep(UINT type);
 HKL WINAPI GetKeyboardLayout(DWORD idThread);
 BOOL WINAPI GetKeyboardLayoutNameW(LPWSTR name);
 SHORT WINAPI VkKeyScanExW(WCHAR character, HKL requested);
