@@ -352,6 +352,7 @@ add_executable(wibo
     dll/wmi_proxy.cpp
     dll/network_proxy.cpp
     dll/ole32.cpp
+    dll/ole32_guid.cpp
     dll/combase.cpp
     dll/com_context.cpp
     dll/oleaut32.cpp
@@ -362,10 +363,11 @@ add_executable(wibo
     dll/shlwapi.cpp
     dll/shell32.cpp
     dll/user32.cpp
+    dll/user32/accelerator.cpp
     dll/user32/character_case.cpp
     dll/user32/character_navigation.cpp
     dll/user32/image.cpp
-	    dll/user32/keyboard.cpp
+    dll/user32/keyboard.cpp
     dll/user32/menu.cpp
     dll/user32/metrics.cpp
     dll/user32/window_class.cpp
@@ -1050,6 +1052,11 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             ENVIRONMENT "WIBO_EXPECT_NO_WINDOW_BACKEND=1")
         wibo_add_fixture_bin(NAME test_window_query SOURCES test/test_window_query.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_menu_state SOURCES test/test_menu_state.c COMPILE_OPTIONS -luser32)
+        wibo_add_fixture_bin(NAME test_accelerator_table SOURCES test/test_accelerator_table.c COMPILE_OPTIONS -luser32)
+        add_test(NAME wibo.test_accelerator_table_unsupported
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_accelerator_table.exe --unsupported)
+        set_tests_properties(wibo.test_accelerator_table_unsupported PROPERTIES TIMEOUT 15
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test DEPENDS wibo.build_fixtures)
         wibo_add_fixture_bin(NAME test_window_message SOURCES test/test_window_message.c COMPILE_OPTIONS -luser32)
         wibo_add_fixture_bin(NAME test_command_line_to_argv SOURCES test/test_command_line_to_argv.c COMPILE_OPTIONS -lshell32)
         wibo_add_fixture_bin(NAME test_special_folder SOURCES test/test_special_folder.c COMPILE_OPTIONS -lshell32 -lole32)
@@ -1677,6 +1684,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_property(TEST wibo.test_memory_status APPEND PROPERTY ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
+        wibo_add_fixture_bin(NAME test_guid_text SOURCES test/test_guid_text.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_ole_initialize SOURCES test/test_ole_initialize.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_runtime_initialize SOURCES test/test_runtime_initialize.c COMPILE_OPTIONS -lole32)
         set_tests_properties(wibo.test_runtime_initialize PROPERTIES TIMEOUT 15)

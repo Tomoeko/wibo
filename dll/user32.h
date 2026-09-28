@@ -44,6 +44,37 @@ static_assert(sizeof(MENUITEMINFOW) == 80);
 static_assert(sizeof(MENUITEMINFOW) == 48);
 #endif
 
+struct ACCEL {
+	BYTE fVirt;
+	WORD key;
+	WORD cmd;
+};
+static_assert(sizeof(ACCEL) == 6);
+
+struct MSG {
+	HWND hwnd;
+	UINT message;
+	UINT_PTR wParam;
+	LONG_PTR lParam;
+	DWORD time;
+	LONG pointX;
+	LONG pointY;
+	DWORD privateData;
+};
+#ifdef WIBO_GUEST_64
+static_assert(sizeof(MSG) == 48);
+#else
+static_assert(sizeof(MSG) == 32);
+#endif
+
+HANDLE WINAPI CreateAcceleratorTableA(const ACCEL *entries, int count);
+HANDLE WINAPI CreateAcceleratorTableW(const ACCEL *entries, int count);
+BOOL WINAPI DestroyAcceleratorTable(HANDLE table);
+int WINAPI CopyAcceleratorTableA(HANDLE table, ACCEL *entries, int count);
+int WINAPI CopyAcceleratorTableW(HANDLE table, ACCEL *entries, int count);
+int WINAPI TranslateAcceleratorA(HWND window, HANDLE table, const MSG *message);
+int WINAPI TranslateAcceleratorW(HWND window, HANDLE table, const MSG *message);
+
 HANDLE WINAPI CreateMenu();
 HANDLE WINAPI CreatePopupMenu();
 BOOL WINAPI DestroyMenu(HANDLE menu);
