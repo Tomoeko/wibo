@@ -1,6 +1,7 @@
 #pragma once
 
 #include "minwinbase.h"
+#include "processthreadsapi.h"
 #include "types.h"
 
 struct SYSTEM_INFO {
@@ -177,7 +178,11 @@ namespace kernel32 {
 BOOL WINAPI GlobalMemoryStatusEx(MEMORYSTATUSEX *status);
 
 BOOL WINAPI GetNumaHighestNodeNumber(PULONG highestNodeNumber);
+BOOL WINAPI GetNumaProcessorNodeEx(PPROCESSOR_NUMBER processor, WORD *nodeNumber);
+BOOL WINAPI GetThreadGroupAffinity(HANDLE thread, GROUP_AFFINITY *affinity);
+BOOL WINAPI SetThreadGroupAffinity(HANDLE thread, const GROUP_AFFINITY *affinity, GROUP_AFFINITY *previous);
 DWORD WINAPI GetActiveProcessorCount(WORD groupNumber);
+ULONGLONG WINAPI GetEnabledXStateFeatures();
 void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 void WINAPI GetNativeSystemInfo(LPSYSTEM_INFO lpSystemInfo);
 BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer, PDWORD returnLength);

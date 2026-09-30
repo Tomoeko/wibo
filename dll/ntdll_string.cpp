@@ -2,8 +2,11 @@
 
 #include "common.h"
 #include "context.h"
+#include "entry.h"
+#include "entry_trampolines.h"
 #include "errors.h"
 #include "heap.h"
+#include "modules.h"
 
 #include <cstddef>
 #include <cstring>
@@ -107,4 +110,15 @@ NTSTATUS WINAPI ntdll::RtlInitUnicodeStringEx(UNICODE_STRING *destination, LPCWS
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RtlInitUnicodeStringEx(%p, %p)\n", destination, source);
 	return initializeCountedString(destination, source, kMaximumUnicodeCharacters, true);
+}
+
+int CDECL ntdll::_vsnprintf(char *buffer, SIZE_T count, const char *format, PVOID arguments) {
+	HOST_CONTEXT_GUARD();
+	auto *runtime = wibo::loadModule("msvcrt.dll");
+	if (!runtime)
+		return -1;
+	auto *formatter = reinterpret_cast<PNTDLL_FORMATTER>(wibo::findExportByName(runtime, "_vsnprintf"));
+	const int result = formatter ? call_PNTDLL_FORMATTER(formatter, buffer, count, format, arguments) : -1;
+	wibo::freeModule(runtime);
+	return result;
 }

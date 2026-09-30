@@ -42,9 +42,7 @@ int main(void) {
 	TEST_CHECK_EQ(ERROR_MOD_NOT_FOUND, GetLastError());
 	TEST_CHECK(GetModuleHandleA("external_exports.dll") == NULL);
 	if (getenv("WIBO_FIXTURE_RUNTIME")) {
-		const DWORD unsupported[] = {DONT_RESOLVE_DLL_REFERENCES,		 LOAD_LIBRARY_AS_DATAFILE,
-									 LOAD_IGNORE_CODE_AUTHZ_LEVEL,		 LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-									 LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE, 0x80000000};
+		const DWORD unsupported[] = {DONT_RESOLVE_DLL_REFERENCES, LOAD_IGNORE_CODE_AUTHZ_LEVEL, 0x80000000};
 		for (unsigned i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); ++i) {
 			SetLastError(0x71);
 			TEST_CHECK(LoadLibraryExA("external_exports.dll", NULL, unsupported[i]) == NULL);
@@ -71,6 +69,10 @@ int main(void) {
 	HMODULE systemLoaded = LoadLibraryExA("external_exports.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	TEST_CHECK(systemLoaded == module);
 	TEST_CHECK(FreeLibrary(systemLoaded));
+	HMODULE resourceLoaded =
+		LoadLibraryExA("external_exports.dll", NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_SEARCH_SYSTEM32);
+	TEST_CHECK(resourceLoaded == module);
+	TEST_CHECK(FreeLibrary(resourceLoaded));
 	char path[MAX_PATH];
 	DWORD length = GetModuleFileNameA(module, path, sizeof(path));
 	TEST_CHECK(length != 0 && length < sizeof(path));

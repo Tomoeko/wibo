@@ -16,6 +16,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -25,6 +26,10 @@ constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 0x00000004;
 constexpr DWORD GET_MODULE_HANDLE_EX_VALID_FLAGS = GET_MODULE_HANDLE_EX_FLAG_PIN |
 												   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT |
 												   GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+constexpr DWORD kLoadAsDatafile = 0x00000002;
+constexpr DWORD kLoadAsImageResource = 0x00000020;
+constexpr DWORD kLoadAsDatafileExclusive = 0x00000040;
+constexpr DWORD kResourceLoadModes = kLoadAsDatafile | kLoadAsImageResource | kLoadAsDatafileExclusive;
 
 HRSRC findResourceInternal(HMODULE hModule, const wibo::ResourceIdentifier &type, const wibo::ResourceIdentifier &name,
 						   std::optional<uint16_t> language) {
@@ -303,9 +308,14 @@ HMODULE WINAPI LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 			  dwFlags);
 	// The reserved handle does not select a file or change the load mode.
 	(void)hFile;
-	if (dwFlags & ~(wibo::ModuleSearch::AlteredPath | wibo::ModuleSearch::DirectoryMask)) {
+	constexpr DWORD searchModes = wibo::ModuleSearch::AlteredPath | wibo::ModuleSearch::DirectoryMask;
+	if (dwFlags & ~(searchModes | kResourceLoadModes)) {
 		DEBUG_LOG("LoadLibraryExA: unsupported load mode\n");
 		setLastError(ERROR_NOT_SUPPORTED);
+		return NO_HANDLE;
+	}
+	if ((dwFlags & kLoadAsDatafile) && (dwFlags & kLoadAsDatafileExclusive)) {
+		setLastError(ERROR_INVALID_PARAMETER);
 		return NO_HANDLE;
 	}
 	if (!lpLibFileName) {
@@ -324,25 +334,24 @@ HMODULE WINAPI LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 		setLastError(ERROR_MOD_NOT_FOUND);
 		return NO_HANDLE;
 	}
+	if (dwFlags & kResourceLoadModes)
+		return wibo::loadResourceModule(filename.c_str(), dwFlags);
 	const auto *info = wibo::loadModule(filename.c_str(), dwFlags);
 	return info ? info->handle : NO_HANDLE;
 }
 
 HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
 	HOST_CONTEXT_GUARD();
-	(void)hFile;
 	DEBUG_LOG("LoadLibraryExW(%x) -> ", dwFlags);
-	if (dwFlags & (wibo::ModuleSearch::AlteredPath | wibo::ModuleSearch::DirectoryMask)) {
-		if (!lpLibFileName) {
-			setLastError(ERROR_INVALID_PARAMETER);
-			return NO_HANDLE;
-		}
-		auto filename = wideStringToString(lpLibFileName);
-		return LoadLibraryExA(filename.c_str(), hFile, dwFlags);
+	if (!lpLibFileName)
+		return LoadLibraryExA(nullptr, hFile, dwFlags);
+	std::string filename;
+	if (!utf16ToUtf8(std::u16string_view(reinterpret_cast<const char16_t *>(lpLibFileName), wstrlen(lpLibFileName)),
+					 filename)) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
 	}
-	// Other nonzero load modes retain the existing default search behavior.
-	auto filename = wideStringToString(lpLibFileName);
-	return LoadLibraryA(filename.c_str());
+	return LoadLibraryExA(filename.c_str(), hFile, dwFlags);
 }
 
 [[noreturn]] VOID WINAPI FreeLibraryAndExitThread(HMODULE module, DWORD exitCode) {
@@ -356,6 +365,8 @@ HMODULE WINAPI LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags
 BOOL WINAPI FreeLibrary(HMODULE hLibModule) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("FreeLibrary(%p)\n", hLibModule);
+	if (wibo::freeResourceModule(hLibModule))
+		return TRUE;
 	auto *info = wibo::moduleInfoFromHandle(hLibModule);
 	if (!info) {
 		setLastError(ERROR_INVALID_HANDLE);
@@ -391,6 +402,30 @@ FARPROC WINAPI GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 
 BOOL WINAPI K32EnumProcessModules(HANDLE process, HMODULE *modules, DWORD capacity, LPDWORD needed) {
 	return psapi::EnumProcessModules(process, modules, capacity, needed);
+}
+
+DWORD WINAPI K32GetModuleBaseNameA(HANDLE process, HMODULE module, LPSTR name, DWORD size) {
+	return psapi::GetModuleBaseNameA(process, module, name, size);
+}
+
+DWORD WINAPI K32GetModuleBaseNameW(HANDLE process, HMODULE module, LPWSTR name, DWORD size) {
+	return psapi::GetModuleBaseNameW(process, module, name, size);
+}
+
+DWORD WINAPI K32GetModuleFileNameExA(HANDLE process, HMODULE module, LPSTR filename, DWORD size) {
+	return psapi::GetModuleFileNameExA(process, module, filename, size);
+}
+
+DWORD WINAPI K32GetModuleFileNameExW(HANDLE process, HMODULE module, LPWSTR filename, DWORD size) {
+	return psapi::GetModuleFileNameExW(process, module, filename, size);
+}
+
+BOOL WINAPI K32GetModuleInformation(HANDLE process, HMODULE module, LPMODULEINFO information, DWORD size) {
+	return psapi::GetModuleInformation(process, module, information, size);
+}
+
+BOOL WINAPI K32GetProcessMemoryInfo(HANDLE process, PPROCESS_MEMORY_COUNTERS counters, DWORD size) {
+	return psapi::GetProcessMemoryInfo(process, counters, size);
 }
 
 } // namespace kernel32

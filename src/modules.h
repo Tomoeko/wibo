@@ -160,10 +160,14 @@ void releaseModuleTls(ModuleInfo &module);
 
 ModuleInfo *loadModule(const char *name, DWORD flags = 0);
 ModuleInfo *loadModule(const char *name, const ModuleSearch &search);
+HMODULE loadResourceModule(const char *name, DWORD flags);
+bool freeResourceModule(HMODULE module);
 ModuleInfo *loadDependency(ModuleInfo &importer, const char *name, const ModuleSearch &search);
 void freeModule(ModuleInfo *info);
 void *findExportByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search = {},
 					   ModuleInfo *importer = nullptr);
+void *findDirectExportByName(ModuleInfo *info, const char *funcName);
+void *findMappedImageExportByName(const void *imageBase, const char *funcName);
 void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search = {},
 						  ModuleInfo *importer = nullptr);
 void *resolveFuncByName(ModuleInfo *info, const char *funcName, const ModuleSearch &search = {},

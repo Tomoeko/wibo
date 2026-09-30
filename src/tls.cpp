@@ -246,6 +246,11 @@ void initializeTib(TEB *tib) {
 	if (std::find(g_activeTibs.begin(), g_activeTibs.end(), tib) != g_activeTibs.end()) {
 		return;
 	}
+#ifndef WIBO_GUEST_64
+	// Both the main thread and allocated worker TEBs enter through this path.
+	// Repeated TLS initialization above must preserve an existing live chain.
+	tib->Tib.ExceptionList = 0xffffffff;
+#endif
 	g_activeTibs.push_back(tib);
 	// Windows exposes a valid static-TLS vector through TEB::ThreadLocalStoragePointer
 	// even when the image has no TLS directory. CRT startup code may read GS:[0x58]

@@ -12,5 +12,6 @@ LONG invokeVectoredExceptionHandlers(PEXCEPTION_POINTERS exceptionInfo, Vectored
 
 // Nonreturning transfers must not abandon a traversal's retained entry.
 bool hasActiveVectoredExceptionTraversal() noexcept;
+bool hasRegisteredVectoredExceptionHandlers();
 
 } // namespace wibo

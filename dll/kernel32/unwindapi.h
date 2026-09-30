@@ -12,6 +12,7 @@ PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG 
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll);
+BOOLEAN CDECL RtlAddFunctionTable(RUNTIME_FUNCTION *functionTable, DWORD entryCount, ULONGLONG baseAddress);
 BOOLEAN CDECL RtlDeleteFunctionTable(RUNTIME_FUNCTION *functionTable);
 #endif
 } // namespace kernel32

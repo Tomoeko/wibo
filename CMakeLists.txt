@@ -317,6 +317,7 @@ add_executable(wibo
     dll/kernel32/ideal_processor.cpp
     dll/kernel32/thread_description.cpp
     dll/kernel32/thread_control.cpp
+    dll/kernel32/contextapi.cpp
     dll/kernel32/unwindapi.cpp
     dll/kernel32/system_times.cpp
     dll/kernel32/profileapi.cpp
@@ -348,6 +349,8 @@ add_executable(wibo
     dll/function_table.cpp
     dll/virtual_unwind.cpp
     dll/context_x64.S
+    dll/software_exception_x86.cpp
+    dll/software_exception_x86.S
     dll/status_error.cpp
     dll/device_control.cpp
     dll/native_file_set.cpp
@@ -611,6 +614,7 @@ wibo_codegen_module(NAME kernel32 HEADERS
     dll/kernel32/namedpipeapi.h
     dll/kernel32/processenv.h
     dll/kernel32/processthreadsapi.h
+    dll/kernel32/contextapi.h
     dll/kernel32/thread_description.h
     dll/kernel32/profileapi.h
     dll/kernel32/stringapiset.h
@@ -802,6 +806,12 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_process_blocked_stream_inherit PROPERTIES TIMEOUT 40)
         wibo_add_fixture_bin(NAME test_unhandled_filter_registration SOURCES test/test_unhandled_filter_registration.c)
         set_tests_properties(wibo.test_unhandled_filter_registration PROPERTIES TIMEOUT 15)
+        if(NOT WIBO_GUEST_64)
+            wibo_add_fixture_bin(NAME test_software_exception_x86 SOURCES test/test_software_exception_x86.c)
+            wibo_add_fixture_bin(NAME test_software_unwind_x86 SOURCES test/test_software_unwind_x86.c)
+            set_tests_properties(wibo.test_software_exception_x86 wibo.test_software_unwind_x86
+                PROPERTIES TIMEOUT 20)
+        endif()
         wibo_add_fixture_bin(NAME test_reg_enum_keys SOURCES test/test_reg_enum_keys.c
             COMPILE_OPTIONS -ladvapi32)
         set_tests_properties(wibo.test_reg_enum_keys PROPERTIES TIMEOUT 20)
@@ -1190,6 +1200,10 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_ws2 SOURCES test/test_ws2.c COMPILE_OPTIONS -lws2_32)
         wibo_add_fixture_bin(NAME test_winmm SOURCES test/test_winmm.c COMPILE_OPTIONS -lwinmm)
         wibo_add_fixture_bin(NAME test_resources SOURCES test/test_resources.c ${WIBO_TEST_BIN_DIR}/test_resources_res.o COMPILE_OPTIONS -lversion)
+        wibo_add_fixture_dll(NAME resource_only_fixture
+            SOURCES test/resource_only_fixture.c ${WIBO_TEST_BIN_DIR}/resource_only_fixture_res.o)
+        wibo_add_fixture_bin(NAME test_resource_only_loader SOURCES test/test_resource_only_loader.c
+            DEPENDS ${WIBO_TEST_BIN_DIR}/resource_only_fixture.dll)
         wibo_add_fixture_dll(NAME file_version_no_resource SOURCES test/fixture_relocation_anchor.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,0)
         wibo_add_fixture_bin(NAME test_file_version_info_size_ex
@@ -1369,6 +1383,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_gettempfilename SOURCES test/test_gettempfilename.c)
         wibo_add_fixture_bin(NAME test_getprocaddress SOURCES test/test_getprocaddress.c)
         wibo_add_fixture_bin(NAME test_api_set SOURCES test/test_api_set.c)
+        wibo_add_fixture_bin(NAME test_xstate_features SOURCES test/test_xstate_features.c)
+        wibo_add_fixture_bin(NAME test_context_api SOURCES test/test_context_api.c)
         set_tests_properties(wibo.test_api_set PROPERTIES
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py")
         foreach(fault failed truncated trailing path embedded-zero contract-host)
@@ -1551,6 +1567,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_trace_registration SOURCES test/test_trace_registration.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_event_registration SOURCES test/test_event_registration.c COMPILE_OPTIONS -ladvapi32)
         wibo_add_fixture_bin(NAME test_event_log SOURCES test/test_event_log.c COMPILE_OPTIONS -ladvapi32)
+        wibo_add_fixture_bin(NAME test_event_write SOURCES test/test_event_write.c COMPILE_OPTIONS -ladvapi32)
         set_tests_properties(wibo.test_event_log PROPERTIES ENVIRONMENT "WIBO_EVENT_LOG_STDERR=1")
         add_test(NAME wibo.test_event_log_no_sink
             COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_event_log.exe no-sink)
@@ -1627,6 +1644,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         set_tests_properties(wibo.test_runtime_queries PROPERTIES TIMEOUT 20
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_numa_highest_node SOURCES test/test_numa_highest_node.c NO_TEST)
+        wibo_add_fixture_bin(NAME test_runtime_topology SOURCES test/test_runtime_topology.c)
         foreach(mode success failed truncated trailing unavailable)
             add_test(NAME wibo.test_numa_highest_node_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_numa_highest_node.exe)
@@ -1677,6 +1695,8 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         endforeach()
         wibo_add_fixture_bin(NAME test_logical_processor_information SOURCES test/test_logical_processor_information.c)
         wibo_add_fixture_bin(NAME test_ntdll_time SOURCES test/test_ntdll_time.c)
+        wibo_add_fixture_bin(NAME test_ntdll_format SOURCES test/test_ntdll_format.c)
+        wibo_add_fixture_bin(NAME test_crt_api_set SOURCES test/test_crt_api_set.c)
         wibo_add_fixture_bin(NAME test_virtualalloc SOURCES test/test_virtualalloc.c)
         wibo_add_fixture_bin(NAME test_virtual_recommit SOURCES test/test_virtual_recommit.c)
         wibo_add_fixture_bin(NAME test_virtual_release SOURCES test/test_virtual_release.c)
@@ -1736,6 +1756,7 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
         wibo_add_fixture_bin(NAME test_bstr SOURCES test/test_bstr.c COMPILE_OPTIONS -loleaut32)
         wibo_add_fixture_bin(NAME test_clsids SOURCES test/test_clsids.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_guid_text SOURCES test/test_guid_text.c COMPILE_OPTIONS -lole32)
+        wibo_add_fixture_bin(NAME test_progid_registry SOURCES test/test_progid_registry.c COMPILE_OPTIONS -lole32 -ladvapi32)
         wibo_add_fixture_bin(NAME test_ole_initialize SOURCES test/test_ole_initialize.c COMPILE_OPTIONS -lole32)
         wibo_add_fixture_bin(NAME test_runtime_initialize SOURCES test/test_runtime_initialize.c COMPILE_OPTIONS -lole32)
         set_tests_properties(wibo.test_runtime_initialize PROPERTIES TIMEOUT 15)
@@ -1868,6 +1889,15 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             BYPRODUCTS ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a
             COMPILE_OPTIONS -nostdlib -Wl,--entry,0
                 -Wl,--out-implib,${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a)
+        wibo_add_fixture_bin(NAME test_rtl_find_export SOURCES test/test_rtl_find_export.c
+            DEPENDS ${WIBO_TEST_BIN_DIR}/external_exports.dll
+                ${WIBO_TEST_BIN_DIR}/resource_only_fixture.dll
+                ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.dll
+                ${WIBO_TEST_BIN_DIR}/restricted_loader_dependency.dll)
+        add_test(NAME wibo.test_rtl_find_export_bounded
+            COMMAND $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_rtl_find_export.exe bounded)
+        set_tests_properties(wibo.test_rtl_find_export_bounded PROPERTIES DEPENDS wibo.build_fixtures)
+        wibo_add_fixture_bin(NAME test_function_table_add SOURCES test/test_function_table_add.c)
         wibo_add_fixture_dll(NAME restricted_loader_forward_parent SOURCES test/system_loader_parent.c
             COMPILE_OPTIONS -nostdlib -Wl,--entry,0 -DFIXTURE_DEPENDENCY_NAME=forward_value
                 ${WIBO_TEST_BIN_DIR}/system_loader_forwarder.a
@@ -2002,6 +2032,14 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
                     -O coff -o test_resources_res.o
             WORKING_DIRECTORY ${WIBO_TEST_BIN_DIR}
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/test_resources.rc)
+
+        add_custom_command(
+            OUTPUT ${WIBO_TEST_BIN_DIR}/resource_only_fixture_res.o
+            COMMAND ${WIBO_MINGW_WINDRES}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/test/resource_only_fixture.rc
+                    -O coff -o resource_only_fixture_res.o
+            WORKING_DIRECTORY ${WIBO_TEST_BIN_DIR}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test/resource_only_fixture.rc)
 
         # Resource bytes owned by the release fixture executable.
         add_custom_command(

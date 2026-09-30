@@ -39,7 +39,7 @@ void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD 
 						   const ULONG_PTR *lpArguments) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRaiseException64");
 #else
 void WINAPI RaiseException(DWORD dwExceptionCode, DWORD dwExceptionFlags, DWORD nNumberOfArguments,
-						   const ULONG_PTR *lpArguments);
+						   const ULONG_PTR *lpArguments) WIBO_ANNOTATE("GUEST_ENTRY:wiboRaiseException32");
 #endif
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
 ULONG WINAPI RemoveVectoredExceptionHandler(PVOID Handle);

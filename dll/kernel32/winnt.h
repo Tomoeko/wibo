@@ -14,7 +14,8 @@ void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD Excep
 void WINAPI RtlUnwindEx(PVOID targetFrame, PVOID targetIp, EXCEPTION_RECORD *record, PVOID returnValue,
 						CONTEXT64 *context, PVOID historyTable) WIBO_ANNOTATE("GUEST_ENTRY:wiboDispatchRtlUnwindEx64");
 #else
-void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue);
+void WINAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue)
+	WIBO_ANNOTATE("GUEST_ENTRY:wiboRtlUnwind32");
 #endif
 PVOID WINAPI RtlPcToFileHeader(PVOID PcValue, GUEST_PTR *BaseOfImage);
 

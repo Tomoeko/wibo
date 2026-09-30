@@ -89,6 +89,19 @@ ULONG WINAPI EventUnregister(REGHANDLE RegHandle) {
 	return g_providers.erase(RegHandle) ? ERROR_SUCCESS : ERROR_INVALID_HANDLE;
 }
 
+ULONG WINAPI EventWrite(REGHANDLE RegHandle, const EVENT_DESCRIPTOR *EventDescriptor, ULONG UserDataCount,
+						const EVENT_DATA_DESCRIPTOR *UserData) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("EventWrite(0x%llx, %p, %u, %p)\n", RegHandle, EventDescriptor, UserDataCount, UserData);
+	if (!RegHandle)
+		return ERROR_SUCCESS;
+	std::lock_guard lock(g_providerMutex);
+	if (!g_providers.contains(RegHandle))
+		return ERROR_INVALID_HANDLE;
+	// No trace session is enabled, so the documented write result is success without recording an event.
+	return ERROR_SUCCESS;
+}
+
 ULONG WINAPI EventSetInformation(REGHANDLE RegHandle, EVENT_INFO_CLASS InformationClass, PVOID EventInformation,
 								 ULONG InformationLength) {
 	HOST_CONTEXT_GUARD();

@@ -134,7 +134,7 @@ class CodegenDiagnosticsTests(unittest.TestCase):
             self.assertNotEqual(assembly.stat().st_mtime_ns, timestamps[assembly])
             self.assertEqual(header.stat().st_mtime_ns, header_timestamp)
 
-    def test_external_guest_entry_is_direct_only_for_x64(self):
+    def test_external_guest_entry_preserves_guest_registers(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             result = self.generate(directory, DIRECT_ENTRY_PROTOTYPE)
@@ -148,10 +148,22 @@ class CodegenDiagnosticsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs = [directory / "fixture.S", directory / "fixture_trampolines.h"]
             annotated = [output.read_bytes() for output in outputs]
+            assembly = outputs[0].read_text()
+            self.assertIn(".code32\n\tjmp SYMBOL_NAME(fixtureDirectEntry)", assembly)
+            self.assertNotIn("LJMP64", assembly)
+            self.assertNotIn("push ebp", assembly)
             source = DIRECT_ENTRY_PROTOTYPE.replace('annotate("GUEST_ENTRY:fixtureDirectEntry"), ', "")
             result = self.generate(directory, source, ["--guest-arch", "x86"])
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual([output.read_bytes() for output in outputs], annotated)
+            self.assertEqual(outputs[1].read_bytes(), annotated[1])
+            self.assertIn("LJMP64", outputs[0].read_text())
+            self.assertNotEqual(outputs[0].read_bytes(), annotated[0])
+
+            result = self.generate(directory, DIRECT_ENTRY_PROTOTYPE,
+                                   ["--arch", "x86", "--guest-arch", "x86"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(".code32\n\tjmp SYMBOL_NAME(fixtureDirectEntry)", outputs[0].read_text())
+            self.assertNotIn("call", outputs[0].read_text())
 
     def test_guest_entry_annotation_errors_preserve_previous_outputs(self):
         cases = [

@@ -201,6 +201,13 @@ DWORD verifyVersionConditions(const VersionInfo *requested, DWORD fields, ULONGL
 
 namespace kernel32 {
 
+ULONGLONG WINAPI GetEnabledXStateFeatures() {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetEnabledXStateFeatures()\n");
+	// Extended guest context state is not currently exposed.
+	return 0;
+}
+
 BOOL WINAPI GetNumaHighestNodeNumber(PULONG highestNodeNumber) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetNumaHighestNodeNumber(%p)\n", highestNodeNumber);
@@ -225,6 +232,20 @@ BOOL WINAPI GetNumaHighestNodeNumber(PULONG highestNodeNumber) {
 		return FALSE;
 	}
 	*highestNodeNumber = highest;
+	return TRUE;
+}
+
+BOOL WINAPI GetNumaProcessorNodeEx(PPROCESSOR_NUMBER processor, WORD *nodeNumber) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetNumaProcessorNodeEx(%p, %p)\n", processor, nodeNumber);
+	if (!processor || !nodeNumber) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	SYSTEM_INFO system{};
+	GetSystemInfo(&system);
+	*nodeNumber =
+		processor->Group == 0 && processor->Number < system.dwNumberOfProcessors ? 0 : std::numeric_limits<WORD>::max();
 	return TRUE;
 }
 

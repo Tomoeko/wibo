@@ -17,7 +17,11 @@ BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLO
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll) {
 	return ntdll::RtlInstallFunctionTableCallback(tableIdentifier, baseAddress, length, callback, context,
-												  outOfProcessCallbackDll);
+														  outOfProcessCallbackDll);
+}
+
+BOOLEAN CDECL RtlAddFunctionTable(RUNTIME_FUNCTION *functionTable, DWORD entryCount, ULONGLONG baseAddress) {
+	return ntdll::RtlAddFunctionTable(functionTable, entryCount, baseAddress);
 }
 
 BOOLEAN CDECL RtlDeleteFunctionTable(RUNTIME_FUNCTION *functionTable) {

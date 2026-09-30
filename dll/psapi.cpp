@@ -4,7 +4,10 @@
 #include "context.h"
 #include "errors.h"
 #include "kernel32/internal.h"
+#include "kernel32/libloaderapi.h"
+#include "kernel32/processthreadsapi.h"
 #include "modules.h"
+#include "strutil.h"
 
 #include <algorithm>
 #include <cstring>
@@ -23,12 +26,38 @@
 
 namespace {
 
-bool validateCurrentProcess(HANDLE process) {
+enum class ProcessAccess { Modules, Memory };
+
+bool validateCurrentProcess(HANDLE process, ProcessAccess access) {
 	if (kernel32::isPseudoCurrentProcessHandle(process)) {
 		return true;
 	}
-	kernel32::setLastError(ERROR_INVALID_HANDLE);
-	return false;
+	HandleMeta metadata{};
+	auto object = wibo::handles().getAs<kernel32::ProcessObject>(process, &metadata);
+	if (!object || object->pid != getpid()) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return false;
+	}
+	const DWORD granted = metadata.grantedAccess;
+	bool allowed;
+	if (access == ProcessAccess::Modules) {
+		const DWORD required = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+		allowed = (granted & required) == required;
+	} else {
+		allowed = (granted & (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION)) != 0;
+	}
+	if (!allowed) {
+		kernel32::setLastError(ERROR_ACCESS_DENIED);
+	}
+	return allowed;
+}
+
+std::string moduleBaseName(const wibo::ModuleInfo &module) {
+	if (module.moduleStub)
+		return module.normalizedName;
+	if (module.resolvedPath.empty())
+		return module.originalName;
+	return module.resolvedPath.filename().string();
 }
 
 std::vector<wibo::ModulePtr> loadedModules() {
@@ -92,7 +121,7 @@ namespace psapi {
 BOOL WINAPI EnumProcessModules(HANDLE hProcess, HMODULE *lphModule, DWORD cb, LPDWORD lpcbNeeded) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("EnumProcessModules(%p, %p, %u, %p)\n", hProcess, lphModule, cb, lpcbNeeded);
-	if (!validateCurrentProcess(hProcess) || !lpcbNeeded || (cb != 0 && !lphModule)) {
+	if (!validateCurrentProcess(hProcess, ProcessAccess::Modules) || !lpcbNeeded || (cb != 0 && !lphModule)) {
 		if (lpcbNeeded == nullptr || (cb != 0 && lphModule == nullptr)) {
 			kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		}
@@ -114,7 +143,7 @@ BOOL WINAPI EnumProcessModules(HANDLE hProcess, HMODULE *lphModule, DWORD cb, LP
 DWORD WINAPI GetModuleBaseNameA(HANDLE hProcess, HMODULE hModule, LPSTR lpBaseName, DWORD nSize) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetModuleBaseNameA(%p, %p, %p, %u)\n", hProcess, hModule, lpBaseName, nSize);
-	if (!validateCurrentProcess(hProcess) || !lpBaseName || nSize == 0) {
+	if (!validateCurrentProcess(hProcess, ProcessAccess::Modules) || !lpBaseName || nSize == 0) {
 		if (!lpBaseName || nSize == 0) {
 			kernel32::setLastError(ERROR_INVALID_PARAMETER);
 		}
@@ -126,19 +155,58 @@ DWORD WINAPI GetModuleBaseNameA(HANDLE hProcess, HMODULE hModule, LPSTR lpBaseNa
 		kernel32::setLastError(ERROR_INVALID_HANDLE);
 		return 0;
 	}
-	const std::string name = module->moduleStub				? module->normalizedName
-							 : module->resolvedPath.empty() ? module->originalName
-															: module->resolvedPath.filename().string();
+	const std::string name = moduleBaseName(*module);
 	const size_t count = std::min(name.size(), static_cast<size_t>(nSize - 1));
 	std::memcpy(lpBaseName, name.data(), count);
 	lpBaseName[count] = '\0';
 	return static_cast<DWORD>(count);
 }
 
+DWORD WINAPI GetModuleBaseNameW(HANDLE hProcess, HMODULE hModule, LPWSTR lpBaseName, DWORD nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetModuleBaseNameW(%p, %p, %p, %u)\n", hProcess, hModule, lpBaseName, nSize);
+	if (!validateCurrentProcess(hProcess, ProcessAccess::Modules) || !lpBaseName || nSize == 0) {
+		if (!lpBaseName || nSize == 0) {
+			kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		}
+		return 0;
+	}
+
+	wibo::ModuleInfo *module = wibo::moduleInfoFromHandle(hModule);
+	if (!module) {
+		kernel32::setLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	const std::string name = moduleBaseName(*module);
+	const std::u16string wideName = utf8ToUtf16(name).value_or(stringToUtf16(name));
+	const size_t count = std::min(wideName.size(), static_cast<size_t>(nSize - 1));
+	for (size_t i = 0; i < count; ++i) {
+		lpBaseName[i] = wideName[i];
+	}
+	lpBaseName[count] = 0;
+	return static_cast<DWORD>(count);
+}
+
+DWORD WINAPI GetModuleFileNameExA(HANDLE hProcess, HMODULE hModule, LPSTR lpFilename, DWORD nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetModuleFileNameExA(%p, %p, %p, %u)\n", hProcess, hModule, lpFilename, nSize);
+	if (!validateCurrentProcess(hProcess, hModule ? ProcessAccess::Modules : ProcessAccess::Memory))
+		return 0;
+	return kernel32::GetModuleFileNameA(hModule, lpFilename, nSize);
+}
+
+DWORD WINAPI GetModuleFileNameExW(HANDLE hProcess, HMODULE hModule, LPWSTR lpFilename, DWORD nSize) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetModuleFileNameExW(%p, %p, %p, %u)\n", hProcess, hModule, lpFilename, nSize);
+	if (!validateCurrentProcess(hProcess, hModule ? ProcessAccess::Modules : ProcessAccess::Memory))
+		return 0;
+	return kernel32::GetModuleFileNameW(hModule, lpFilename, nSize);
+}
+
 BOOL WINAPI GetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO lpmodinfo, DWORD cb) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetModuleInformation(%p, %p, %p, %u)\n", hProcess, hModule, lpmodinfo, cb);
-	if (!validateCurrentProcess(hProcess) || !lpmodinfo || cb < sizeof(MODULEINFO)) {
+	if (!validateCurrentProcess(hProcess, ProcessAccess::Modules) || !lpmodinfo || cb < sizeof(MODULEINFO)) {
 		if (!lpmodinfo || cb < sizeof(MODULEINFO)) {
 			kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);
 		}
@@ -161,7 +229,7 @@ BOOL WINAPI GetModuleInformation(HANDLE hProcess, HMODULE hModule, LPMODULEINFO 
 BOOL WINAPI GetProcessMemoryInfo(HANDLE process, PPROCESS_MEMORY_COUNTERS counters, DWORD cb) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetProcessMemoryInfo(%p, %p, %u)\n", process, counters, cb);
-	if (!validateCurrentProcess(process))
+	if (!validateCurrentProcess(process, ProcessAccess::Memory))
 		return FALSE;
 	if (!counters || cb < sizeof(PROCESS_MEMORY_COUNTERS)) {
 		kernel32::setLastError(ERROR_INSUFFICIENT_BUFFER);

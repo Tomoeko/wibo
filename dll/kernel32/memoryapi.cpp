@@ -927,6 +927,12 @@ BOOL WINAPI ReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpB
 	return TRUE;
 }
 
+SIZE_T WINAPI GetLargePageMinimum() {
+	HOST_CONTEXT_GUARD();
+	// Large-page allocation is unavailable in the guest address space.
+	return 0;
+}
+
 LPVOID WINAPI VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("VirtualAlloc(%p, %zu, %u, %u)\n", lpAddress, dwSize, flAllocationType, flProtect);
@@ -942,6 +948,32 @@ LPVOID WINAPI VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationTy
 	}
 	DEBUG_LOG("-> success (base=%p, size=%zu)\n", base, size);
 	return base;
+}
+
+LPVOID WINAPI VirtualAllocExNuma(HANDLE process, LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect,
+								 DWORD preferredNode) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("VirtualAllocExNuma(%p, %p, %zu, %u, %u, %u)\n", process, address, size, allocationType, protect,
+			  preferredNode);
+	if (!isPseudoCurrentProcessHandle(process)) {
+		HandleMeta metadata{};
+		auto object = wibo::handles().getAs<ProcessObject>(process, &metadata);
+		if (!object) {
+			setLastError(ERROR_INVALID_HANDLE);
+			return nullptr;
+		}
+		if (!(metadata.grantedAccess & PROCESS_VM_OPERATION)) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return nullptr;
+		}
+		if (object->pid != getpid()) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return nullptr;
+		}
+	}
+	// This guest exposes one memory-placement policy. The preference does not alter the virtual allocation.
+	(void)preferredNode;
+	return VirtualAlloc(address, size, allocationType, protect);
 }
 
 BOOL WINAPI VirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType) {

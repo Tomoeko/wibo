@@ -1055,7 +1055,13 @@ def emit_guest_to_host_thunks(
             details.append(f"sign_extended={arg.sign_extended}")
             lines.append(f"\t# Arg {i} ({', '.join(details)})")
         lines.append(f"ASM_GLOBAL({thunk}, @function)")
-        emit_cc_thunk(f, lines, arch)
+        if f.guest_entry:
+            # Register-sensitive x86 imports must enter guest assembly before
+            # the ordinary trampoline changes registers or switches stacks.
+            lines.append(".code32")
+            lines.append(f"\tjmp SYMBOL_NAME({f.guest_entry})")
+        else:
+            emit_cc_thunk(f, lines, arch)
         lines.append(f"ASM_END({thunk})")
 
 

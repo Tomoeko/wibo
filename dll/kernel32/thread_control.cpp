@@ -377,4 +377,108 @@ BOOL WINAPI GetThreadContext(HANDLE hThread, LPCONTEXT context) {
 	return FALSE;
 #endif
 }
+
+BOOL WINAPI SetThreadContext(HANDLE hThread, const CONTEXT *context) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetThreadContext(%p, %p)\n", hThread, context);
+	if (!context) {
+		setLastError(ERROR_NOACCESS);
+		return FALSE;
+	}
+	constexpr DWORD kSetContextAccess = 0x10;
+	HandleMeta metadata{};
+	if (!isPseudoCurrentThreadHandle(hThread)) {
+		auto processThread = wibo::handles().getAs<ProcessThreadObject>(hThread, &metadata);
+		if (processThread) {
+			setLastError(metadata.grantedAccess & kSetContextAccess ? ERROR_NOT_SUPPORTED : ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+	}
+	auto thread = isPseudoCurrentThreadHandle(hThread) ? currentThreadObject()
+													   : wibo::handles().getAs<ThreadObject>(hThread, &metadata);
+	if (!thread) {
+		setLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (!isPseudoCurrentThreadHandle(hThread) && !(metadata.grantedAccess & kSetContextAccess)) {
+		setLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+#if defined(__APPLE__) && defined(WIBO_GUEST_64)
+	if (reinterpret_cast<uintptr_t>(context) % alignof(CONTEXT)) {
+		setLastError(ERROR_NOACCESS);
+		return FALSE;
+	}
+	const DWORD flags = context->ContextFlags;
+	constexpr DWORD kSupported = 1 | 2 | 8;
+	if ((flags & ~kSupported) != CONTEXT_ARCH) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	std::lock_guard lock(thread->m);
+	if (thread->signaled || !thread->hostSuspended || pthread_equal(thread->thread, pthread_self())) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	const thread_t port = pthread_mach_thread_np(thread->thread);
+	x86_thread_state64_t state{};
+	mach_msg_type_number_t stateCount = x86_THREAD_STATE64_COUNT;
+	kern_return_t result =
+		thread_get_state(port, x86_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state), &stateCount);
+	if (result != KERN_SUCCESS || stateCount != x86_THREAD_STATE64_COUNT) {
+		setLastError(result == KERN_SUCCESS ? ERROR_INVALID_PARAMETER : controlError(result));
+		return FALSE;
+	}
+	if (flags & 1) {
+		state.__rsp = context->Rsp;
+		state.__rip = context->Rip;
+		state.__rflags = context->EFlags;
+	}
+	if (flags & 2) {
+		state.__rax = context->Rax;
+		state.__rcx = context->Rcx;
+		state.__rdx = context->Rdx;
+		state.__rbx = context->Rbx;
+		state.__rbp = context->Rbp;
+		state.__rsi = context->Rsi;
+		state.__rdi = context->Rdi;
+		state.__r8 = context->R8;
+		state.__r9 = context->R9;
+		state.__r10 = context->R10;
+		state.__r11 = context->R11;
+		state.__r12 = context->R12;
+		state.__r13 = context->R13;
+		state.__r14 = context->R14;
+		state.__r15 = context->R15;
+	}
+	if (flags & 8) {
+		x86_float_state64_t floating{};
+		mach_msg_type_number_t floatCount = x86_FLOAT_STATE64_COUNT;
+		result = thread_get_state(port, x86_FLOAT_STATE64, reinterpret_cast<thread_state_t>(&floating), &floatCount);
+		if (result != KERN_SUCCESS || floatCount != x86_FLOAT_STATE64_COUNT) {
+			setLastError(result == KERN_SUCCESS ? ERROR_INVALID_PARAMETER : controlError(result));
+			return FALSE;
+		}
+		std::memcpy(reinterpret_cast<uint8_t *>(&floating) + offsetof(x86_float_state64_t, __fpu_fcw),
+					&context->FltSave, sizeof(context->FltSave));
+		floating.__fpu_mxcsr = context->MxCsr;
+		result = thread_set_state(port, x86_FLOAT_STATE64, reinterpret_cast<thread_state_t>(&floating), floatCount);
+		if (result != KERN_SUCCESS) {
+			setLastError(controlError(result));
+			return FALSE;
+		}
+	}
+	if (flags & (1 | 2)) {
+		result = thread_set_state(port, x86_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state), stateCount);
+		if (result != KERN_SUCCESS) {
+			setLastError(controlError(result));
+			return FALSE;
+		}
+	}
+	return TRUE;
+#else
+	setLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+#endif
+}
 } // namespace kernel32

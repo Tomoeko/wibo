@@ -82,6 +82,7 @@ struct STARTUPINFOEXA {
 
 constexpr DWORD TLS_OUT_OF_INDEXES = 0xFFFFFFFFu;
 constexpr DWORD PROCESS_TERMINATE = 0x0001;
+constexpr DWORD PROCESS_VM_OPERATION = 0x0008;
 constexpr DWORD PROCESS_VM_READ = 0x0010;
 constexpr DWORD PROCESS_QUERY_INFORMATION = 0x0400;
 constexpr DWORD PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -128,6 +129,7 @@ BOOL WINAPI GetProcessAffinityMask(HANDLE hProcess, PDWORD_PTR lpProcessAffinity
 BOOL WINAPI SetProcessAffinityMask(HANDLE hProcess, DWORD_PTR dwProcessAffinityMask);
 DWORD_PTR WINAPI SetThreadAffinityMask(HANDLE hThread, DWORD_PTR dwThreadAffinityMask);
 BOOL WINAPI GetThreadContext(HANDLE hThread, LPCONTEXT context);
+BOOL WINAPI SetThreadContext(HANDLE hThread, const CONTEXT *context);
 DWORD WINAPI SuspendThread(HANDLE hThread);
 DWORD WINAPI ResumeThread(HANDLE hThread);
 void WINAPI ExitProcess(UINT uExitCode);

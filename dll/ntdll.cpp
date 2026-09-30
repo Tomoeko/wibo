@@ -331,6 +331,16 @@ PVOID WINAPI RtlPcToFileHeader(PVOID pcValue, GUEST_PTR *baseOfImage) {
 	return base;
 }
 
+PVOID WINAPI RtlFindExportedRoutineByName(PVOID imageBase, LPCSTR exportName) {
+	HOST_CONTEXT_GUARD();
+	if (!imageBase || !exportName || !*exportName)
+		return nullptr;
+	const HMODULE module = static_cast<HMODULE>(reinterpret_cast<uintptr_t>(imageBase));
+	if (auto *info = wibo::moduleInfoFromHandle(module))
+		return wibo::findDirectExportByName(info, exportName);
+	return wibo::findMappedImageExportByName(imageBase, exportName);
+}
+
 constexpr LARGE_INTEGER FILE_WRITE_TO_END_OF_FILE = {.QuadPart = -1};
 constexpr LARGE_INTEGER FILE_USE_FILE_POINTER_POSITION = {.QuadPart = -2};
 

@@ -1,4 +1,5 @@
 #include "processthreadsapi.h"
+#include "sysinfoapi.h"
 
 #include "context.h"
 #include "errors.h"
@@ -30,6 +31,63 @@ DWORD processorNumberError(DWORD number) {
 	return number < static_cast<DWORD>(online) ? ERROR_SUCCESS : ERROR_INVALID_PARAMETER;
 }
 } // namespace
+
+BOOL WINAPI GetThreadGroupAffinity(HANDLE thread, GROUP_AFFINITY *affinity) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetThreadGroupAffinity(%p, %p)\n", thread, affinity);
+	if (!affinity) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const DWORD error = threadAccessError(thread, THREAD_QUERY_LIMITED_INFORMATION);
+	if (error != ERROR_SUCCESS) {
+		setLastError(error);
+		return FALSE;
+	}
+	if (!isPseudoCurrentThreadHandle(thread) && wibo::handles().getAs<ProcessThreadObject>(thread)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	DWORD_PTR processMask = 0, systemMask = 0;
+	if (!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask))
+		return FALSE;
+	*affinity = {processMask, 0, {0, 0, 0}};
+	return TRUE;
+}
+
+BOOL WINAPI SetThreadGroupAffinity(HANDLE thread, const GROUP_AFFINITY *affinity, GROUP_AFFINITY *previous) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("SetThreadGroupAffinity(%p, %p, %p)\n", thread, affinity, previous);
+	if (!affinity) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	const DWORD error = threadAccessError(thread, THREAD_SET_INFORMATION);
+	if (error != ERROR_SUCCESS) {
+		setLastError(error);
+		return FALSE;
+	}
+	if (!isPseudoCurrentThreadHandle(thread) && wibo::handles().getAs<ProcessThreadObject>(thread)) {
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	DWORD_PTR processMask = 0, systemMask = 0;
+	if (!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask))
+		return FALSE;
+	if (affinity->Group != 0 || affinity->Reserved[0] != 0 || affinity->Reserved[1] != 0 ||
+		affinity->Reserved[2] != 0 || affinity->Mask == 0 || (affinity->Mask & ~processMask) != 0) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (affinity->Mask != processMask) {
+		// A narrower mask requires host scheduling control that is unavailable here.
+		setLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	if (previous)
+		*previous = {processMask, 0, {0, 0, 0}};
+	return TRUE;
+}
 
 BOOL WINAPI GetThreadIdealProcessorEx(HANDLE thread, PPROCESSOR_NUMBER ideal) {
 	HOST_CONTEXT_GUARD();

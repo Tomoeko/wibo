@@ -118,6 +118,31 @@ BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLO
 	return TRUE;
 }
 
+BOOLEAN CDECL RtlAddFunctionTable(RUNTIME_FUNCTION *functionTable, DWORD entryCount, ULONGLONG baseAddress) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("RtlAddFunctionTable(%p, %u, %llx)\n", functionTable, entryCount, baseAddress);
+	if (!functionTable && entryCount)
+		return FALSE;
+	auto *table = static_cast<DynamicFunctionTable *>(std::malloc(sizeof(DynamicFunctionTable)));
+	if (!table)
+		return FALSE;
+	const ULONGLONG end = baseAddress + (entryCount ? functionTable[entryCount - 1].EndAddress : 0);
+	*table = {functionTable,
+			  entryCount,
+			  0,
+			  baseAddress,
+			  end,
+			  static_cast<ULONGLONG>(reinterpret_cast<uintptr_t>(functionTable)),
+			  nullptr,
+			  nullptr,
+			  nullptr,
+			  1,
+			  nullptr};
+	std::unique_lock lock(g_functionTableMutex);
+	appendTable(table);
+	return TRUE;
+}
+
 BOOLEAN CDECL RtlDeleteFunctionTable(RUNTIME_FUNCTION *functionTable) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("RtlDeleteFunctionTable(%p)\n", functionTable);

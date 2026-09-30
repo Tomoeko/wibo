@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -103,8 +104,8 @@ namespace {
 const std::array<std::pair<std::string_view, std::string_view>, 18> kApiSet = {
 	std::pair{"api-ms-win-core-crt-l1-1-0.dll", "msvcrt.dll"},
 	std::pair{"api-ms-win-core-crt-l2-1-0.dll", "msvcrt.dll"},
-	std::pair{"api-ms-win-crt-conio-l1-1-0.dll", "msvcrt.dll"},
-	std::pair{"api-ms-win-crt-convert-l1-1-0.dll", "msvcrt.dll"},
+	std::pair{"api-ms-win-crt-conio-l1-1-0.dll", "ucrtbase.dll"},
+	std::pair{"api-ms-win-crt-convert-l1-1-0.dll", "ucrtbase.dll"},
 	std::pair{"api-ms-win-crt-environment-l1-1-0.dll", "ucrtbase.dll"},
 	std::pair{"api-ms-win-crt-filesystem-l1-1-0.dll", "ucrtbase.dll"},
 	std::pair{"api-ms-win-crt-heap-l1-1-0.dll", "ucrtbase.dll"},
@@ -144,6 +145,128 @@ struct PEExportDirectory {
 	uint32_t addressOfNameOrdinals;
 };
 
+bool readableMappedRange(const void *imageBase, size_t offset, size_t length) {
+	const uintptr_t base = reinterpret_cast<uintptr_t>(imageBase);
+	if (offset > std::numeric_limits<uintptr_t>::max() - base ||
+		length > std::numeric_limits<uintptr_t>::max() - base - offset)
+		return false;
+	uintptr_t cursor = base + offset;
+	const uintptr_t end = cursor + length;
+	while (cursor < end) {
+		MEMORY_BASIC_INFORMATION info{};
+		if (wibo::heap::virtualQuery(reinterpret_cast<const void *>(cursor), &info) != wibo::heap::VmStatus::Success ||
+			info.State != MEM_COMMIT || info.AllocationBase != toGuestPtr(imageBase) || (info.Protect & PAGE_GUARD))
+			return false;
+		switch (info.Protect & 0xff) {
+		case PAGE_READONLY:
+		case PAGE_READWRITE:
+		case PAGE_WRITECOPY:
+		case PAGE_EXECUTE_READ:
+		case PAGE_EXECUTE_READWRITE:
+		case PAGE_EXECUTE_WRITECOPY:
+			break;
+		default:
+			return false;
+		}
+		const uintptr_t regionBase = static_cast<uintptr_t>(info.BaseAddress);
+		if (regionBase > cursor || info.RegionSize > std::numeric_limits<uintptr_t>::max() - regionBase)
+			return false;
+		const uintptr_t regionEnd = regionBase + info.RegionSize;
+		if (regionEnd <= cursor)
+			return false;
+		cursor = std::min(end, regionEnd);
+	}
+	return true;
+}
+
+template <typename T> bool readMappedValue(const void *imageBase, size_t offset, T &value) {
+	if (!readableMappedRange(imageBase, offset, sizeof(value)))
+		return false;
+	std::memcpy(&value, static_cast<const uint8_t *>(imageBase) + offset, sizeof(value));
+	return true;
+}
+
+bool readableImageRange(const void *imageBase, uint32_t imageSize, uint32_t rva, size_t length) {
+	return rva <= imageSize && length <= imageSize - rva && readableMappedRange(imageBase, rva, length);
+}
+
+void *findMappedImageExportByNameInternal(const void *imageBase, const char *funcName) {
+	if (!imageBase || !funcName || !*funcName)
+		return nullptr;
+	uint16_t dosMagic = 0;
+	int32_t peOffset = 0;
+	if (!readMappedValue(imageBase, 0, dosMagic) || dosMagic != 0x5a4d || !readMappedValue(imageBase, 0x3c, peOffset) ||
+		peOffset < 0)
+		return nullptr;
+	const size_t ntOffset = static_cast<size_t>(peOffset);
+	uint32_t peMagic = 0;
+	uint16_t optionalSize = 0;
+	if (!readMappedValue(imageBase, ntOffset, peMagic) || peMagic != 0x00004550 ||
+		!readMappedValue(imageBase, ntOffset + 20, optionalSize))
+		return nullptr;
+	const size_t optionalOffset = ntOffset + 24;
+	uint16_t optionalMagic = 0;
+	if (!readMappedValue(imageBase, optionalOffset, optionalMagic))
+		return nullptr;
+	const size_t directoryOffset = optionalMagic == 0x10b ? 96 : optionalMagic == 0x20b ? 112 : 0;
+	if (!directoryOffset || optionalSize < directoryOffset + 8)
+		return nullptr;
+	uint32_t imageSize = 0;
+	uint32_t directoryCount = 0;
+	uint32_t exportRva = 0;
+	uint32_t exportSize = 0;
+	if (!readMappedValue(imageBase, optionalOffset + 56, imageSize) ||
+		!readMappedValue(imageBase, optionalOffset + directoryOffset - 4, directoryCount) || !directoryCount ||
+		optionalOffset + directoryOffset + 8 > imageSize ||
+		!readMappedValue(imageBase, optionalOffset + directoryOffset, exportRva) ||
+		!readMappedValue(imageBase, optionalOffset + directoryOffset + 4, exportSize) ||
+		!readableImageRange(imageBase, imageSize, exportRva, sizeof(PEExportDirectory)) ||
+		exportSize < sizeof(PEExportDirectory) || exportSize > imageSize - exportRva)
+		return nullptr;
+	PEExportDirectory directory{};
+	std::memcpy(&directory, static_cast<const uint8_t *>(imageBase) + exportRva, sizeof(directory));
+	if (!directory.numberOfFunctions || !directory.numberOfNames ||
+		!readableImageRange(imageBase, imageSize, directory.addressOfFunctions,
+							static_cast<size_t>(directory.numberOfFunctions) * sizeof(uint32_t)) ||
+		!readableImageRange(imageBase, imageSize, directory.addressOfNames,
+							static_cast<size_t>(directory.numberOfNames) * sizeof(uint32_t)) ||
+		!readableImageRange(imageBase, imageSize, directory.addressOfNameOrdinals,
+							static_cast<size_t>(directory.numberOfNames) * sizeof(uint16_t)))
+		return nullptr;
+	const auto *bytes = static_cast<const uint8_t *>(imageBase);
+	const size_t nameLength = std::strlen(funcName);
+	if (nameLength >= imageSize)
+		return nullptr;
+	size_t low = 0;
+	size_t high = directory.numberOfNames;
+	while (low < high) {
+		const size_t middle = low + (high - low) / 2;
+		uint32_t nameRva = 0;
+		std::memcpy(&nameRva, bytes + directory.addressOfNames + middle * sizeof(nameRva), sizeof(nameRva));
+		if (!readableImageRange(imageBase, imageSize, nameRva, nameLength + 1))
+			return nullptr;
+		const int comparison = std::strncmp(reinterpret_cast<const char *>(bytes + nameRva), funcName, nameLength + 1);
+		if (comparison < 0)
+			low = middle + 1;
+		else if (comparison > 0)
+			high = middle;
+		else {
+			uint16_t index = 0;
+			std::memcpy(&index, bytes + directory.addressOfNameOrdinals + middle * sizeof(index), sizeof(index));
+			if (index >= directory.numberOfFunctions)
+				return nullptr;
+			uint32_t functionRva = 0;
+			std::memcpy(&functionRva, bytes + directory.addressOfFunctions + index * sizeof(functionRva),
+						sizeof(functionRva));
+			if (!functionRva || functionRva >= imageSize ||
+				(functionRva >= exportRva && functionRva - exportRva < exportSize))
+				return nullptr;
+			return const_cast<uint8_t *>(bytes) + functionRva;
+		}
+	}
+	return nullptr;
+}
+
 #ifdef WIBO_GUEST_64
 using StubFuncType = void(__attribute__((ms_abi)) *)();
 #else
@@ -159,6 +282,16 @@ std::array<std::string, MAX_STUBS> stubDlls;
 std::array<std::string, MAX_STUBS> stubFuncNames;
 std::unordered_map<std::string, StubFuncType> stubCache;
 std::unordered_map<HANDLE, std::shared_ptr<wibo::ModuleInfo>> g_modules;
+struct ResourceModule {
+	std::unique_ptr<wibo::Executable> image;
+	void *rawBase = nullptr;
+	std::shared_ptr<files::FileShareLease> shareLease;
+	~ResourceModule() {
+		if (rawBase)
+			wibo::heap::virtualFree(rawBase, 0, MEM_RELEASE);
+	}
+};
+std::unordered_map<HMODULE, std::unique_ptr<ResourceModule>> g_resourceModules;
 HANDLE g_nextStubHandle = 1;
 
 // Windows serializes loader notifications, but the data-structure lock that
@@ -1385,6 +1518,7 @@ void shutdownModuleRegistry() {
 		g_threadNotificationSnapshot.reset();
 	}
 	g_modules.clear();
+	g_resourceModules.clear();
 	g_collectingModules = collecting;
 }
 
@@ -2042,15 +2176,14 @@ static ModuleInfo *loadModuleWithReference(const char *dllName, const ModuleSear
 	return nullptr;
 }
 
-ModuleInfo *loadModule(const char *dllName, DWORD flags) {
-	std::lock_guard loaderLock(g_loaderNotificationMutex);
+static bool prepareModuleSearch(const char *dllName, DWORD flags, ModuleSearch &search) {
 	if (flags & ~(ModuleSearch::AlteredPath | ModuleSearch::DirectoryMask)) {
 		kernel32::setLastError(ERROR_NOT_SUPPORTED);
-		return nullptr;
+		return false;
 	}
 	if ((flags & ModuleSearch::AlteredPath) && (flags & ModuleSearch::DirectoryMask)) {
 		kernel32::setLastError(ERROR_INVALID_PARAMETER);
-		return nullptr;
+		return false;
 	}
 	std::filesystem::path topDirectory;
 	if (flags & (ModuleSearch::AlteredPath | ModuleSearch::DllDirectory)) {
@@ -2060,19 +2193,125 @@ ModuleInfo *loadModule(const char *dllName, DWORD flags) {
 			!name.empty() && (name.front() == '\\' || (name.size() > 2 && name[1] == ':' && name[2] == '\\'));
 		if (!absolute && ((flags & ModuleSearch::DllDirectory) || name.find('\\') != std::string::npos)) {
 			kernel32::setLastError(ERROR_INVALID_PARAMETER);
-			return nullptr;
+			return false;
 		}
 		if (absolute)
 			topDirectory = files::pathFromWindows(name.c_str()).parent_path();
 	}
-	ModuleSearch search;
 	search.flags = flags;
 	search.directoriesResolved = true;
 	{
 		auto reg = registry();
 		search.directories = collectSearchDirectories(*reg, flags, topDirectory);
 	}
+	return true;
+}
+
+ModuleInfo *loadModule(const char *dllName, DWORD flags) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	ModuleSearch search;
+	if (!prepareModuleSearch(dllName, flags, search))
+		return nullptr;
 	return loadModule(dllName, search);
+}
+
+HMODULE loadResourceModule(const char *dllName, DWORD flags) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	constexpr DWORD kLoadAsDatafile = 0x2;
+	constexpr DWORD kLoadAsImageResource = 0x20;
+	constexpr DWORD kLoadAsDatafileExclusive = 0x40;
+	const DWORD searchFlags = flags & (ModuleSearch::AlteredPath | ModuleSearch::DirectoryMask);
+	const DWORD resourceFlags = flags & (kLoadAsDatafile | kLoadAsImageResource | kLoadAsDatafileExclusive);
+	if (!dllName || !*dllName) {
+		kernel32::setLastError(ERROR_INVALID_PARAMETER);
+		return NO_HANDLE;
+	}
+	ModuleSearch search;
+	if (!prepareModuleSearch(dllName, searchFlags, search))
+		return NO_HANDLE;
+	if (HMODULE loaded = findLoadedModuleHandle(dllName)) {
+		ModuleInfo *info = moduleInfoFromHandle(loaded);
+		if (info && info->moduleStub == nullptr) {
+			retainModuleReference(*info, false);
+			return loaded;
+		}
+	}
+	auto reg = registry();
+	auto resolved = resolveModuleOnDisk(*reg, dllName, search);
+	if (!resolved) {
+		kernel32::setLastError(ERROR_MOD_NOT_FOUND);
+		return NO_HANDLE;
+	}
+	const auto existing = reg->modulesByKey.find(storageKeyForPath(*resolved));
+	if (existing != reg->modulesByKey.end() && existing->second->moduleStub == nullptr) {
+		retainModuleReference(*existing->second, false);
+		return existing->second->handle;
+	}
+	FILE *file = fopen(resolved->c_str(), "rb");
+	if (!file) {
+		kernel32::setLastErrorFromErrno();
+		return NO_HANDLE;
+	}
+	auto resource = std::make_unique<ResourceModule>();
+	kernel32::FileObject openedFile(fileno(file));
+	files::FileOpenAdmission admission;
+	const DWORD sharing = FILE_SHARE_READ | FILE_SHARE_DELETE |
+						  (resourceFlags & (kLoadAsDatafileExclusive | kLoadAsImageResource) ? 0 : FILE_SHARE_WRITE);
+	const DWORD admissionError = admission.admit(openedFile, FILE_READ_DATA, sharing, false);
+	openedFile.fd = -1; // The stream retains ownership of its descriptor.
+	if (admissionError != ERROR_SUCCESS) {
+		kernel32::setLastError(admissionError);
+		fclose(file);
+		return NO_HANDLE;
+	}
+	resource->shareLease = std::move(openedFile.shareLease);
+	resource->image = std::make_unique<Executable>();
+	const bool mapped = resource->image->mapImage(file);
+	if (mapped && !(resourceFlags & kLoadAsImageResource)) {
+		if (fseeko(file, 0, SEEK_END) != 0) {
+			kernel32::setLastErrorFromErrno();
+			fclose(file);
+			return NO_HANDLE;
+		}
+		const auto length = ftello(file);
+		if (length <= 0 || static_cast<uint64_t>(length) > SIZE_MAX || fseeko(file, 0, SEEK_SET) != 0) {
+			kernel32::setLastError(ERROR_BAD_EXE_FORMAT);
+			fclose(file);
+			return NO_HANDLE;
+		}
+		size_t size = static_cast<size_t>(length);
+		const auto status =
+			wibo::heap::virtualAlloc(&resource->rawBase, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		if (status != wibo::heap::VmStatus::Success) {
+			kernel32::setLastError(wibo::heap::win32ErrorFromVmStatus(status));
+			fclose(file);
+			return NO_HANDLE;
+		}
+		if (fread(resource->rawBase, 1, static_cast<size_t>(length), file) != static_cast<size_t>(length)) {
+			kernel32::setLastError(ERROR_BAD_EXE_FORMAT);
+			fclose(file);
+			return NO_HANDLE;
+		}
+		const auto protectedStatus = wibo::heap::virtualProtect(resource->rawBase, size, PAGE_READONLY, nullptr);
+		if (protectedStatus != wibo::heap::VmStatus::Success) {
+			kernel32::setLastError(wibo::heap::win32ErrorFromVmStatus(protectedStatus));
+			fclose(file);
+			return NO_HANDLE;
+		}
+	}
+	fclose(file);
+	if (!mapped)
+		return NO_HANDLE;
+	const HMODULE handle = static_cast<HMODULE>(
+		toGuestPtr(resourceFlags & kLoadAsImageResource ? resource->image->imageBase : resource->rawBase) |
+		(resourceFlags & kLoadAsImageResource ? 2 : 1));
+	g_resourceModules.emplace(handle, std::move(resource));
+	return handle;
+}
+
+bool freeResourceModule(HMODULE module) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	return g_resourceModules.erase(module) != 0;
 }
 
 ModuleInfo *loadModule(const char *dllName, const ModuleSearch &search) {
@@ -2114,6 +2353,28 @@ void *findExportByName(ModuleInfo *info, const char *funcName, const ModuleSearc
 	ForwarderLookup lookup;
 	lookup.staticImport = importer != nullptr;
 	return findExportByNameInternal(info, funcName, search, importer, lookup);
+}
+
+void *findDirectExportByName(ModuleInfo *info, const char *funcName) {
+	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (!info || !funcName || !*funcName)
+		return nullptr;
+	if (info->moduleStub && info->moduleStub->byName) {
+		if (void *address = info->moduleStub->byName(funcName))
+			return address;
+	}
+	ensureExportsInitialized(*info);
+	const auto named = info->exportNameToOrdinal.find(funcName);
+	if (named == info->exportNameToOrdinal.end() || named->second < info->exportOrdinalBase)
+		return nullptr;
+	const size_t index = named->second - info->exportOrdinalBase;
+	if (index >= info->exportsByOrdinal.size() || info->exportForwarders.contains(index))
+		return nullptr;
+	return info->exportsByOrdinal[index];
+}
+
+void *findMappedImageExportByName(const void *imageBase, const char *funcName) {
+	return findMappedImageExportByNameInternal(imageBase, funcName);
 }
 
 void *findExportByOrdinal(ModuleInfo *info, uint16_t ordinal, const ModuleSearch &search, ModuleInfo *importer) {
@@ -2161,6 +2422,8 @@ void *resolveMissingImportByOrdinal(const char *dllName, uint16_t ordinal) {
 
 Executable *executableFromModule(HMODULE module) {
 	std::lock_guard loaderLock(g_loaderNotificationMutex);
+	if (auto resource = g_resourceModules.find(module); resource != g_resourceModules.end())
+		return resource->second->image.get();
 	auto reg = registry();
 	ModuleInfo *info = moduleInfoFromHandle(module);
 	if (!info) {

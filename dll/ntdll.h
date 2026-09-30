@@ -75,6 +75,7 @@ void WINAPI RtlRaiseException(EXCEPTION_RECORD *record) WIBO_ANNOTATE("GUEST_ENT
 BOOLEAN CDECL RtlInstallFunctionTableCallback(ULONGLONG tableIdentifier, ULONGLONG baseAddress, DWORD length,
 											  PGET_RUNTIME_FUNCTION_CALLBACK callback, PVOID context,
 											  LPCWSTR outOfProcessCallbackDll);
+BOOLEAN CDECL RtlAddFunctionTable(RUNTIME_FUNCTION *functionTable, DWORD entryCount, ULONGLONG baseAddress);
 BOOLEAN CDECL RtlDeleteFunctionTable(RUNTIME_FUNCTION *functionTable);
 NTSTATUS WINAPI RtlAddGrowableFunctionTable(GUEST_PTR *dynamicTable, RUNTIME_FUNCTION *functionTable, DWORD entryCount,
 											DWORD maximumEntryCount, ULONG_PTR rangeBase, ULONG_PTR rangeEnd);
@@ -84,6 +85,12 @@ RUNTIME_FUNCTION *WINAPI RtlLookupFunctionEntry(ULONGLONG controlPc, ULONGLONG *
 PVOID WINAPI RtlVirtualUnwind(DWORD handlerType, ULONGLONG imageBase, ULONGLONG controlPc,
 							  RUNTIME_FUNCTION *functionEntry, CONTEXT64 *context, PVOID *handlerData, ULONGLONG *frame,
 							  KNONVOLATILE_CONTEXT_POINTERS *pointers);
+#endif
+
+#ifndef WIBO_GUEST_64
+void WINAPI RtlRaiseException(PVOID record) WIBO_ANNOTATE("GUEST_ENTRY:wiboRtlRaiseException32");
+void WINAPI RtlUnwind(PVOID targetFrame, PVOID targetIp, PVOID record, PVOID returnValue)
+	WIBO_ANNOTATE("GUEST_ENTRY:wiboRtlUnwind32");
 #endif
 
 VOID WINAPI RtlInitString(STRING *destination, LPCSTR source);
@@ -96,6 +103,7 @@ NTSTATUS WINAPI RtlInitUnicodeStringEx(UNICODE_STRING *destination, LPCWSTR sour
 
 ULONG WINAPI RtlNtStatusToDosError(NTSTATUS status);
 PVOID WINAPI RtlPcToFileHeader(PVOID pcValue, GUEST_PTR *baseOfImage);
+PVOID WINAPI RtlFindExportedRoutineByName(PVOID imageBase, LPCSTR exportName);
 NTSTATUS WINAPI NtQuerySystemInformation(ULONG informationClass, PVOID information, ULONG length,
 										 PULONG returnedLength);
 NTSTATUS WINAPI NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
@@ -103,6 +111,7 @@ NTSTATUS WINAPI NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUTINE
 									  PVOID output, ULONG outputLength);
 
 PVOID CDECL memset(PVOID dest, int ch, SIZE_T count);
+int CDECL _vsnprintf(char *buffer, SIZE_T count, const char *format, PVOID arguments);
 BYTE CDECL __wine_dbg_get_channel_flags(WINE_DEBUG_CHANNEL *channel);
 int CDECL __wine_dbg_header(WINE_DEBUG_CLASS debugClass, WINE_DEBUG_CHANNEL *channel, const char *function);
 int CDECL __wine_dbg_output(const char *str);

@@ -74,6 +74,15 @@ LONG invokeVectoredExceptionHandlers(PEXCEPTION_POINTERS exceptionInfo, Vectored
 
 bool hasActiveVectoredExceptionTraversal() noexcept { return g_vectoredExceptionTraversalDepth != 0; }
 
+bool hasRegisteredVectoredExceptionHandlers() {
+	std::lock_guard lock(g_vectoredExceptionMutex);
+	for (auto *entry = g_vectoredExceptionFirst; entry; entry = entry->next) {
+		if (entry->registered)
+			return true;
+	}
+	return false;
+}
+
 } // namespace wibo
 
 namespace kernel32 {

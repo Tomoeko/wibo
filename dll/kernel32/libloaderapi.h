@@ -1,5 +1,6 @@
 #pragma once
 
+#include "psapi.h"
 #include "types.h"
 
 namespace kernel32 {
@@ -28,5 +29,11 @@ BOOL WINAPI FreeLibrary(HMODULE hLibModule);
 FARPROC WINAPI GetProcAddress(HMODULE hModule, LPCSTR lpProcName);
 
 BOOL WINAPI K32EnumProcessModules(HANDLE process, HMODULE *modules, DWORD capacity, LPDWORD needed);
+DWORD WINAPI K32GetModuleBaseNameA(HANDLE process, HMODULE module, LPSTR name, DWORD size);
+DWORD WINAPI K32GetModuleBaseNameW(HANDLE process, HMODULE module, LPWSTR name, DWORD size);
+DWORD WINAPI K32GetModuleFileNameExA(HANDLE process, HMODULE module, LPSTR filename, DWORD size);
+DWORD WINAPI K32GetModuleFileNameExW(HANDLE process, HMODULE module, LPWSTR filename, DWORD size);
+BOOL WINAPI K32GetModuleInformation(HANDLE process, HMODULE module, LPMODULEINFO information, DWORD size);
+BOOL WINAPI K32GetProcessMemoryInfo(HANDLE process, PPROCESS_MEMORY_COUNTERS counters, DWORD size);
 
 } // namespace kernel32

@@ -13,6 +13,7 @@
 #include "kernel32/namedpipeapi.h"		// IWYU pragma: export
 #include "kernel32/processenv.h"		// IWYU pragma: export
 #include "kernel32/processthreadsapi.h" // IWYU pragma: export
+#include "kernel32/contextapi.h"          // IWYU pragma: export
 #include "kernel32/profileapi.h"		// IWYU pragma: export
 #include "kernel32/stringapiset.h"		// IWYU pragma: export
 #include "kernel32/synchapi.h"			// IWYU pragma: export

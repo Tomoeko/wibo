@@ -20,7 +20,10 @@ BOOL WINAPI FlushViewOfFile(LPCVOID lpBaseAddress, SIZE_T dwNumberOfBytesToFlush
 BOOL WINAPI ReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize,
 							  PSIZE_T lpNumberOfBytesRead);
 
+SIZE_T WINAPI GetLargePageMinimum();
 LPVOID WINAPI VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
+LPVOID WINAPI VirtualAllocExNuma(HANDLE process, LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect,
+								 DWORD preferredNode);
 BOOL WINAPI VirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType);
 BOOL WINAPI VirtualLock(LPVOID address, SIZE_T size);
 BOOL WINAPI VirtualUnlock(LPVOID address, SIZE_T size);

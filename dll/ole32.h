@@ -20,6 +20,8 @@ void WINAPI OleUninitialize();
 HRESULT WINAPI CoCreateInstance(const GUID *rclsid, LPVOID pUnkOuter, DWORD dwClsContext, const GUID *riid,
 								GUEST_PTR *ppv);
 HRESULT WINAPI CLSIDFromString(LPCWSTR lpsz, GUID *pclsid);
+HRESULT WINAPI CLSIDFromProgID(LPCWSTR progId, GUID *guid);
+HRESULT WINAPI ProgIDFromCLSID(const GUID *guid, GUEST_PTR *output);
 int WINAPI StringFromGUID2(const GUID *guid, LPWSTR output, int capacity);
 HRESULT WINAPI StringFromCLSID(const GUID *guid, GUEST_PTR *output);
 HRESULT WINAPI StringFromIID(const GUID *guid, GUEST_PTR *output);
