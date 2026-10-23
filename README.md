@@ -86,6 +86,8 @@ wibo path [subcommand options] <path> [path...]
 | `WIBO_DEBUG_HEAP` | Enable guest-heap diagnostics when set |
 | `WIBO_CRASH_LOG` | Append a minimal fatal-signal record on supported macOS PE32+ builds |
 
+Compiler hosts may load `d3d9.dll` and `gdi32.dll` for unused imports. These modules do not implement graphics operations; calling an unresolved entry point exits with a missing-import diagnostic. Console shared-state scratch files use `TMPDIR`, falling back to `/tmp` when it is unset or empty.
+
 ### Subcommands
 
 | Subcommand | Description                                                                       |

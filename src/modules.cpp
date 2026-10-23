@@ -36,6 +36,8 @@
 extern const wibo::ModuleStub lib_advapi32;
 extern const wibo::ModuleStub lib_bcrypt;
 extern const wibo::ModuleStub lib_combase;
+extern const wibo::ModuleStub lib_d3d9;
+extern const wibo::ModuleStub lib_gdi32;
 extern const wibo::ModuleStub lib_dbghelp;
 extern const wibo::ModuleStub lib_kernel32;
 extern const wibo::ModuleStub lib_iphlpapi;
@@ -489,6 +491,8 @@ LockedRegistry registry() {
 			&lib_advapi32,
 			&lib_bcrypt,
 			&lib_combase,
+			&lib_d3d9,
+			&lib_gdi32,
 			&lib_dbghelp,
 			&lib_kernel32,
 			&lib_iphlpapi,

@@ -12,15 +12,17 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <utility>
-#include <fcntl.h>
+#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 namespace kernel32 {
 
@@ -127,11 +129,17 @@ DWORD initializeConsoleSession(uint16_t imageSubsystem, bool detached, int inher
 	int descriptor = inheritedDescriptor;
 	bool created = descriptor < 0;
 	if (created) {
-		char name[] = "/tmp/wibo-console-XXXXXX";
-		descriptor = mkostemp(name, O_CLOEXEC);
+		const char *temporaryDirectory = std::getenv("TMPDIR");
+		std::string path = temporaryDirectory && temporaryDirectory[0] ? temporaryDirectory : "/tmp";
+		if (path.back() != '/')
+			path.push_back('/');
+		path += "wibo-console-XXXXXX";
+		std::vector<char> name(path.begin(), path.end());
+		name.push_back('\0');
+		descriptor = mkostemp(name.data(), O_CLOEXEC);
 		if (descriptor < 0)
 			return wibo::winErrorFromErrno(errno);
-		if (unlink(name) != 0 || ftruncate(descriptor, sizeof(ConsoleSharedState)) != 0) {
+		if (unlink(name.data()) != 0 || ftruncate(descriptor, sizeof(ConsoleSharedState)) != 0) {
 			const DWORD error = wibo::winErrorFromErrno(errno);
 			close(descriptor);
 			return error;
@@ -160,8 +168,8 @@ DWORD initializeConsoleSession(uint16_t imageSubsystem, bool detached, int inher
 	g_consoleSession.descriptor = descriptor;
 	g_consoleSession.state = state;
 	g_consoleState.store(state, std::memory_order_release);
-	DEBUG_LOG("Console session initialized (inherited=%u, input=%u, output=%u)\n", !created,
-			  state->inputCodePage, state->outputCodePage);
+	DEBUG_LOG("Console session initialized (inherited=%u, input=%u, output=%u)\n", !created, state->inputCodePage,
+			  state->outputCodePage);
 	return 0;
 }
 

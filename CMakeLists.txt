@@ -291,6 +291,7 @@ add_executable(wibo
     dll/advapi32/wincrypt.cpp
     dll/advapi32/winreg.cpp
     dll/bcrypt.cpp
+    dll/graphics_imports.cpp
     dll/dbghelp.cpp
     dll/kernel32.cpp
     dll/kernel32/debugapi.cpp
@@ -1075,6 +1076,20 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             set_tests_properties(wibo.test_bcrypt_property PROPERTIES ENVIRONMENT "WIBO_EXPECT_BCRYPT_LIMITS=1")
             set_tests_properties(wibo.test_bcrypt_hash PROPERTIES
                 ENVIRONMENT "WIBO_EXPECT_BCRYPT_STATE=1;WIBO_EXPECT_BCRYPT_LIMITS=1")
+        endif()
+        wibo_add_fixture_bin(NAME test_graphics_import_only SOURCES test/test_graphics_import_only.c COMPILE_OPTIONS -ld3d9 -lgdi32)
+        set_tests_properties(wibo.test_graphics_import_only PROPERTIES TIMEOUT 15)
+        add_test(NAME wibo.test_graphics_import_only_called
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_graphics_import_only.py
+                $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_graphics_import_only.exe)
+        set_tests_properties(wibo.test_graphics_import_only_called PROPERTIES TIMEOUT 20
+            DEPENDS wibo.build_fixtures)
+        if(APPLE)
+            add_test(NAME wibo.test_console_temporary_directory
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_console_temporary_directory.py
+                    $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_graphics_import_only.exe)
+            set_tests_properties(wibo.test_console_temporary_directory PROPERTIES TIMEOUT 30
+                DEPENDS wibo.build_fixtures)
         endif()
         wibo_add_fixture_bin(NAME test_dbghelp SOURCES test/test_dbghelp.c COMPILE_OPTIONS -ldbghelp)
         set_tests_properties(wibo.test_dbghelp PROPERTIES TIMEOUT 15)
