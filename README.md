@@ -88,6 +88,33 @@ wibo path [subcommand options] <path> [path...]
 
 Compiler hosts may load `d3d9.dll` and `gdi32.dll` for unused imports. These modules do not implement graphics operations; calling an unresolved entry point exits with a missing-import diagnostic. Console shared-state scratch files use `TMPDIR`, falling back to `/tmp` when it is unset or empty.
 
+### Managed command-line programs
+
+Images with a validated CLR header and metadata signature use an explicitly
+configured external CLR runner. Set `WIBO_MANAGED_RUNTIME` to one executable path,
+such as `wine` for a compatible Windows .NET runtime or `mono` for supported pure
+managed applications. The runner receives the resolved image path followed by
+the parsed guest arguments. No shell command is constructed.
+
+```sh
+WIBO_MANAGED_RUNTIME=wine ./build/release64/wibo64 managed-program.exe arguments
+```
+
+This replaces the standalone Wibo process, preserving standard streams, working
+directory, environment, and the runtime's exit status. The selected runtime owns Windows path mapping and
+runtime dependencies. It validates and executes managed code; Wibo does not implement a CLR or accelerate its execution.
+The native loader path remains unchanged for images without a CLR directory.
+Malformed CLR ranges fail before delegation, and a missing runner produces an
+explicit diagnostic. Bootstrapped Windows child-process delegation is currently
+unsupported. Use the runner matching the image's PE architecture.
+
+`test/managed_cli.cs` is an original optional CLR integration fixture. Compile it
+with a compatible C# compiler and establish its behavior under Wine first. It
+checks quoted and empty arguments, a working directory named `managed work`, and
+the exit status selected by `--exit37`. The regular CTest regression uses original
+synthetic headers and a host fixture to test classification and process handoff
+without requiring a CLR installation.
+
 ### Subcommands
 
 | Subcommand | Description                                                                       |

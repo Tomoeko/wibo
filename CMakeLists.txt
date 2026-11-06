@@ -404,6 +404,7 @@ add_executable(wibo
     src/heap.cpp
     src/loader.cpp
     src/main.cpp
+    src/managed_runtime.cpp
     src/diagnostics.cpp
     src/token_identity.cpp
     src/modules.cpp
@@ -634,6 +635,11 @@ wibo_codegen_module(NAME kernel32 HEADERS
 
 if (WIBO_ENABLE_FIXTURE_TESTS)
     include(CTest)
+    add_test(NAME wibo.test_managed_runtime
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_managed_runtime.py
+            $<TARGET_FILE:wibo> --machine ${WIBO_GUEST_ARCH})
+    set_tests_properties(wibo.test_managed_runtime PROPERTIES TIMEOUT 30)
+
     add_test(NAME wibo.test_codegen_diagnostics
         COMMAND ${CMAKE_COMMAND} -E env LIBCLANG_PATH=${LIBCLANG_LIBRARY}
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_codegen_diagnostics.py)

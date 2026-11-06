@@ -395,6 +395,7 @@ void resetExecutableState(wibo::Executable &executable) {
 	executable.tlsDirectorySize = 0;
 	executable.exceptionDirectoryRVA = 0;
 	executable.exceptionDirectorySize = 0;
+	executable.managedImage = false;
 	executable.execMapped = false;
 	executable.importsResolved = false;
 	executable.importsResolving = false;
@@ -574,10 +575,10 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 
 	executable.preferredImageBase =
 		header32.imageBase <= std::numeric_limits<uintptr_t>::max() ? static_cast<uintptr_t>(header32.imageBase) : 0;
-	executable.stackReserveSize = static_cast<size_t>(std::min<uint64_t>(
-		static_cast<uint64_t>(header32.sizeOfStackReserve), std::numeric_limits<size_t>::max()));
-	executable.stackCommitSize = static_cast<size_t>(std::min<uint64_t>(
-		static_cast<uint64_t>(header32.sizeOfStackCommit), std::numeric_limits<size_t>::max()));
+	executable.stackReserveSize = static_cast<size_t>(
+		std::min<uint64_t>(static_cast<uint64_t>(header32.sizeOfStackReserve), std::numeric_limits<size_t>::max()));
+	executable.stackCommitSize = static_cast<size_t>(
+		std::min<uint64_t>(static_cast<uint64_t>(header32.sizeOfStackCommit), std::numeric_limits<size_t>::max()));
 	executable.exportDirectoryRVA = header32.exportTable.virtualAddress;
 	executable.exportDirectorySize = header32.exportTable.size;
 	executable.relocationDirectoryRVA = header32.baseRelocationTable.virtualAddress;
@@ -624,7 +625,7 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 	std::unique_ptr<void, ImageMemoryDeleter> imageGuard(allocatedBase, ImageMemoryDeleter{&executable});
 	executable.imageBase = allocatedBase;
 	executable.relocationDelta = static_cast<intptr_t>(reinterpret_cast<uintptr_t>(executable.imageBase) -
-												   static_cast<uintptr_t>(header32.imageBase));
+													   static_cast<uintptr_t>(header32.imageBase));
 	std::memset(executable.imageBase, 0, header32.sizeOfImage);
 	if (!source.read(0, executable.imageBase, header32.sizeOfHeaders)) {
 		DEBUG_LOG("loadPE: headers exceed available image or source data\n");
@@ -692,6 +693,40 @@ bool loadPEFromSource(wibo::Executable &executable, const PeInputView &source, b
 				executable.sections.push_back(sectionInfo);
 			}
 		}
+	}
+
+	const auto &clr = header32.clrRuntimeHeader;
+	if (clr.virtualAddress != 0 || clr.size != 0) {
+		const auto contains = [&](uint32_t address, uint32_t size) {
+			return address <= executable.imageSize && size <= executable.imageSize - address;
+		};
+		if (clr.virtualAddress == 0 || clr.size < 72 || !contains(clr.virtualAddress, clr.size)) {
+			DEBUG_LOG("loadPE: invalid CLR header range\n");
+			kernel32::setLastError(ERROR_BAD_EXE_FORMAT);
+			return false;
+		}
+		const auto word = [&](uint32_t offset) {
+			uint32_t value = 0;
+			std::memcpy(&value, executable.fromRVA<uint8_t>(clr.virtualAddress) + offset, sizeof(value));
+			return value;
+		};
+		const uint32_t headerSize = word(0);
+		const uint32_t metadataRva = word(8);
+		const uint32_t metadataSize = word(12);
+		uint32_t metadataMagic = 0;
+		if (headerSize < 72 || headerSize > clr.size || metadataRva == 0 || metadataSize < 16 ||
+			!contains(metadataRva, metadataSize)) {
+			DEBUG_LOG("loadPE: invalid CLR metadata range\n");
+			kernel32::setLastError(ERROR_BAD_EXE_FORMAT);
+			return false;
+		}
+		std::memcpy(&metadataMagic, executable.fromRVA<uint8_t>(metadataRva), sizeof(metadataMagic));
+		if (metadataMagic != 0x424A5342) {
+			DEBUG_LOG("loadPE: invalid CLR metadata signature\n");
+			kernel32::setLastError(ERROR_BAD_EXE_FORMAT);
+			return false;
+		}
+		executable.managedImage = true;
 	}
 
 	std::sort(executable.sections.begin(), executable.sections.end(),

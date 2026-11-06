@@ -83,6 +83,7 @@ class Executable {
 	uint32_t tlsDirectorySize = 0;
 	uint32_t exceptionDirectoryRVA = 0;
 	uint32_t exceptionDirectorySize = 0;
+	bool managedImage = false;
 	bool execMapped = false;
 	bool importsResolved = false;
 	bool importsResolving = false;

@@ -7,6 +7,7 @@
 #include "kernel32/heapapi.h"
 #include "kernel32/internal.h"
 #include "kernel32/wincon.h"
+#include "managed_runtime.h"
 #include "modules.h"
 #include "processes.h"
 #include "setup.h"
@@ -101,7 +102,7 @@ void installDarwinSignalPolicy() {
 	// A closed diagnostic pipe is not a guest crash. Ignoring SIGPIPE makes the
 	// underlying write report EPIPE and prevents a bounded log consumer from
 	// terminating a long-running guest process.
-	struct sigaction pipeAction{};
+	struct sigaction pipeAction {};
 	pipeAction.sa_handler = SIG_IGN;
 	sigemptyset(&pipeAction.sa_mask);
 	(void)sigaction(SIGPIPE, &pipeAction, nullptr);
@@ -120,7 +121,7 @@ void installDarwinSignalPolicy() {
 	if (gDarwinCrashLogFd < 0) {
 		return;
 	}
-	struct sigaction faultAction{};
+	struct sigaction faultAction {};
 	faultAction.sa_sigaction = recordDarwinFatalSignal;
 	sigemptyset(&faultAction.sa_mask);
 	faultAction.sa_flags = SA_SIGINFO | SA_RESETHAND;
@@ -459,7 +460,8 @@ int main(int argc, char **argv) {
 	wibo::ConsoleBootstrap inheritedConsole;
 	DWORD bootstrapError = 0;
 	if (bootstrapFd >= 0) {
-		bootstrapError = wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles, inheritedConsole);
+		bootstrapError =
+			wibo::initializeChildProcess(bootstrapFd, controlFd, inheritedStandardHandles, inheritedConsole);
 	}
 	wibo::initializeDiagnostics();
 	if (bootstrapError) {
@@ -610,6 +612,14 @@ int main(int argc, char **argv) {
 	}
 	fclose(f);
 
+	if (executable->managedImage) {
+		if (bootstrapFd >= 0) {
+			wibo::diagnosticLog("Managed runtime delegation is unavailable for bootstrapped child processes\n");
+			return 1;
+		}
+		return wibo::execManagedProgram(resolvedGuestPath, guestArgs);
+	}
+
 	const auto entryPoint = reinterpret_cast<EntryProc>(executable->entryPoint);
 	if (!entryPoint) {
 		wibo::diagnosticLog("Executable %s has no entry point\n", resolvedGuestPath.c_str());
@@ -624,8 +634,8 @@ int main(int argc, char **argv) {
 	}
 	// Dependency initialization can inspect the process image through the PEB.
 	peb->ImageBaseAddress = toGuestPtr(wibo::mainModule->executable->imageBase);
-	const DWORD consoleError = kernel32::initializeConsoleSession(wibo::mainModule->executable->subsystem,
-											  inheritedConsole.detached, inheritedConsole.inheritedDescriptor);
+	const DWORD consoleError = kernel32::initializeConsoleSession(
+		wibo::mainModule->executable->subsystem, inheritedConsole.detached, inheritedConsole.inheritedDescriptor);
 	if (consoleError) {
 		wibo::diagnosticLog("Failed to initialize process console: %u\n", consoleError);
 		return 1;
