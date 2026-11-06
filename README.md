@@ -88,6 +88,27 @@ wibo path [subcommand options] <path> [path...]
 
 Compiler hosts may load `d3d9.dll` and `gdi32.dll` for unused imports. These modules do not implement graphics operations; calling an unresolved entry point exits with a missing-import diagnostic. Console shared-state scratch files use `TMPDIR`, falling back to `/tmp` when it is unset or empty.
 
+### Compiler file and topology queries
+
+`GetProcessGroupAffinity` reports the current process's single exposed processor
+group, consistent with the supported thread affinity APIs. It checks process
+query rights and output capacity; queries for other processes are unsupported.
+
+`SetFileInformationByHandle` supports `FileDispositionInfo` for tracked regular
+files opened with `DELETE` access. Deletion can be canceled, duplicated handles
+retain the pending file until final close, and new opens are denied while deletion
+is pending. Enabling deletion with other independently opened handles is currently
+unsupported. Other information classes return `ERROR_CALL_NOT_IMPLEMENTED` so
+callers can select their documented fallback. Cleanup checks the open file's
+identity before unlinking its recorded name; this check is not atomic against
+external filesystem changes.
+
+`GetVolumePathNameW` supports the mapped `C:` and `Z:` logical drive roots,
+including extended drive prefixes and the documented one-character-short output
+buffer behavior. Other drives, relative paths, UNC paths, Windows junctions,
+and mounted-folder resolution are unsupported. This API describes the mapped
+Windows drives rather than host filesystem mount topology.
+
 ### Managed command-line programs
 
 Images with a validated CLR header and metadata signature use an explicitly

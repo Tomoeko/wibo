@@ -302,6 +302,7 @@ add_executable(wibo
     dll/kernel32/fibersapi.cpp
     dll/kernel32/directory_changes.cpp
     dll/kernel32/fileapi.cpp
+    dll/kernel32/file_information_set.cpp
     dll/kernel32/handleapi.cpp
     dll/kernel32/heapapi.cpp
     dll/kernel32/interlockedapi.cpp
@@ -309,6 +310,7 @@ add_executable(wibo
     dll/kernel32/libloaderapi.cpp
     dll/kernel32/memoryapi.cpp
     dll/kernel32/volumeapi.cpp
+    dll/kernel32/volume_path.cpp
     dll/kernel32/memoryresourceapi.cpp
     dll/kernel32/memorystatus.cpp
     dll/kernel32/namedpipeapi.cpp
@@ -1666,6 +1668,17 @@ if (WIBO_ENABLE_FIXTURE_TESTS)
             ENVIRONMENT "WIBO_SYSTEM_PROVIDER=${CMAKE_CURRENT_SOURCE_DIR}/test/provider_fixture.py;WIBO_FIXTURE_PROVIDER=1")
         wibo_add_fixture_bin(NAME test_numa_highest_node SOURCES test/test_numa_highest_node.c NO_TEST)
         wibo_add_fixture_bin(NAME test_runtime_topology SOURCES test/test_runtime_topology.c)
+        wibo_add_fixture_bin(NAME test_process_group_affinity SOURCES test/test_process_group_affinity.c)
+        wibo_add_fixture_bin(NAME test_file_disposition SOURCES test/test_file_disposition.c)
+        set_tests_properties(wibo.test_file_disposition PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
+        wibo_add_fixture_bin(NAME test_delete_disposition_identity SOURCES test/test_delete_disposition_identity.c NO_TEST)
+        add_test(NAME wibo.test_delete_disposition_identity
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_delete_disposition_identity.py
+                $<TARGET_FILE:wibo> ${WIBO_TEST_BIN_DIR}/test_delete_disposition_identity.exe)
+        set_tests_properties(wibo.test_delete_disposition_identity PROPERTIES
+            DEPENDS wibo.build_fixtures TIMEOUT 30)
+        wibo_add_fixture_bin(NAME test_volume_path SOURCES test/test_volume_path.c)
+        set_tests_properties(wibo.test_volume_path PROPERTIES ENVIRONMENT "WIBO_FIXTURE_RUNTIME=1")
         foreach(mode success failed truncated trailing unavailable)
             add_test(NAME wibo.test_numa_highest_node_${mode}
                 COMMAND $<TARGET_FILE:wibo> ${CMAKE_CURRENT_BINARY_DIR}/test/test_numa_highest_node.exe)

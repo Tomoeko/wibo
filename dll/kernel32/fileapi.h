@@ -95,8 +95,8 @@ constexpr DWORD INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
 constexpr DWORD INVALID_FILE_SIZE = 0xFFFFFFFF;
 
 typedef void(_CC_STDCALL *LPOVERLAPPED_COMPLETION_ROUTINE)(DWORD, DWORD, LPOVERLAPPED);
-typedef DWORD(_CC_STDCALL *LPPROGRESS_ROUTINE)(LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER,
-											 DWORD, DWORD, HANDLE, HANDLE, LPVOID);
+typedef DWORD(_CC_STDCALL *LPPROGRESS_ROUTINE)(LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, DWORD, DWORD,
+											   HANDLE, HANDLE, LPVOID);
 
 constexpr DWORD COPY_FILE_FAIL_IF_EXISTS = 0x00000001;
 constexpr DWORD COPY_FILE_COPY_SYMLINK = 0x00000800;
@@ -160,9 +160,9 @@ BOOL WINAPI DeleteFileW(LPCWSTR lpFileName);
 BOOL WINAPI CopyFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, BOOL bFailIfExists);
 BOOL WINAPI CopyFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, BOOL bFailIfExists);
 BOOL WINAPI CopyFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
-						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
+						LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
 BOOL WINAPI CopyFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, LPPROGRESS_ROUTINE lpProgressRoutine,
-						 LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
+						LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags);
 BOOL WINAPI MoveFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName);
 BOOL WINAPI MoveFileExA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName, DWORD dwFlags);
 BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD dwFlags);
@@ -186,10 +186,13 @@ BOOL WINAPI GetFileTime(HANDLE hFile, LPFILETIME lpCreationTime, LPFILETIME lpLa
 BOOL WINAPI SetFileTime(HANDLE hFile, const FILETIME *lpCreationTime, const FILETIME *lpLastAccessTime,
 						const FILETIME *lpLastWriteTime);
 BOOL WINAPI GetFileInformationByHandle(HANDLE hFile, LPBY_HANDLE_FILE_INFORMATION lpFileInformation);
+BOOL WINAPI SetFileInformationByHandle(HANDLE file, FILE_INFO_BY_HANDLE_CLASS informationClass, LPVOID information,
+									   DWORD length);
 BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
 										 LPVOID lpFileInformation, DWORD dwBufferSize);
 DWORD WINAPI GetFileType(HANDLE hFile);
 LONG WINAPI CompareFileTime(const FILETIME *lpFileTime1, const FILETIME *lpFileTime2);
+BOOL WINAPI GetVolumePathNameW(LPCWSTR fileName, LPWSTR volumePathName, DWORD bufferLength);
 BOOL WINAPI GetVolumeInformationA(LPCSTR lpRootPathName, LPSTR lpVolumeNameBuffer, DWORD nVolumeNameSize,
 								  LPDWORD lpVolumeSerialNumber, LPDWORD lpMaximumComponentLength,
 								  LPDWORD lpFileSystemFlags, LPSTR lpFileSystemNameBuffer, DWORD nFileSystemNameSize);

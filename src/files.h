@@ -60,6 +60,7 @@ DWORD queryPositionLocked(FileObject &file, off_t &position);
 DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t &position,
 						 uint64_t maximumPosition = INT64_MAX);
 DWORD truncateAtPositionLocked(FileObject &file);
+DWORD setDeleteDispositionLocked(FileObject &file, bool enabled);
 std::filesystem::path pathFromWindows(const char *inStr);
 SystemSearchDirectories systemSearchDirectories();
 std::string pathToWindows(const std::filesystem::path &path);

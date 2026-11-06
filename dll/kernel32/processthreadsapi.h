@@ -107,9 +107,9 @@ BOOL WINAPI QueueUserWorkItem(LPTHREAD_START_ROUTINE function, PVOID context, UL
 DWORD WINAPI QueueUserAPC(PAPCFUNC callback, HANDLE thread, ULONG_PTR argument);
 
 BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwAttributeCount,
-											 DWORD dwFlags, SIZE_T *lpSize);
+											  DWORD dwFlags, SIZE_T *lpSize);
 BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList, DWORD dwFlags, DWORD_PTR Attribute,
-									 PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize);
+									  PVOID lpValue, SIZE_T cbSize, PVOID lpPreviousValue, SIZE_T *lpReturnSize);
 void WINAPI DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList);
 
 HANDLE WINAPI GetCurrentProcess();
@@ -120,6 +120,7 @@ DWORD WINAPI GetCurrentThreadId();
 DWORD WINAPI GetCurrentProcessorNumber();
 void WINAPI GetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber);
 WORD WINAPI GetActiveProcessorGroupCount();
+BOOL WINAPI GetProcessGroupAffinity(HANDLE process, USHORT *count, USHORT *groups);
 HANDLE WINAPI GetCurrentThread();
 HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD threadId);
 HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD processId);

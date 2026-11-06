@@ -39,6 +39,7 @@ struct FileShareLease {
 	uint32_t access;
 	uint32_t sharing;
 	bool registered = false;
+	bool deletePending = false;
 
 	FileShareLease(std::shared_ptr<FileShareRegistry> owner, const struct stat &metadata, uint32_t access,
 				   uint32_t sharing)
@@ -78,7 +79,7 @@ void removeFileShareLocked(files::FileShareLease &lease) {
 int cursorRecordLock(int fd, short type) {
 	if (fd < 0)
 		return 0;
-	struct flock request{};
+	struct flock request {};
 	request.l_type = type;
 	request.l_whence = SEEK_SET;
 	request.l_len = 1;
@@ -130,15 +131,18 @@ DWORD files::FileOpenAdmission::admit(kernel32::FsObject &file, uint32_t granted
 									  bool truncate) {
 	if (!mLock.owns_lock())
 		mLock.lock();
-	struct stat metadata{};
+	struct stat metadata {};
 	if (fstat(file.fd, &metadata) != 0)
 		return wibo::winErrorFromErrno(errno);
 	const uint32_t access = sharingAccess(grantedAccess);
 	std::shared_ptr<FileShareLease> lease;
 	if (S_ISREG(metadata.st_mode) || S_ISDIR(metadata.st_mode)) {
 		for (const auto *existing : mRegistry->opens) {
-			if (existing->device != metadata.st_dev || existing->inode != metadata.st_ino || !existing->access ||
-				!access)
+			if (existing->device != metadata.st_dev || existing->inode != metadata.st_ino)
+				continue;
+			if (existing->deletePending)
+				return ERROR_ACCESS_DENIED;
+			if (!existing->access || !access)
 				continue;
 			if ((access & ~existing->sharing) || (existing->access & ~sharing))
 				return ERROR_SHARING_VIOLATION;
@@ -159,6 +163,33 @@ DWORD files::FileOpenAdmission::admit(kernel32::FsObject &file, uint32_t granted
 	}
 	// The lease reserves this open before handle allocation can release its owner.
 	mLock.unlock();
+	return ERROR_SUCCESS;
+}
+
+DWORD files::setDeleteDispositionLocked(FileObject &file, bool enabled) {
+	auto lease = file.shareLease;
+	if (!lease || file.canonicalPath.empty())
+		return ERROR_NOT_SUPPORTED;
+	std::lock_guard lock(lease->registry->mutex);
+	if (enabled) {
+		struct stat opened {
+		}, named{};
+		if (fstat(file.fd, &opened) != 0)
+			return wibo::winErrorFromErrno(errno);
+		if (!S_ISREG(opened.st_mode))
+			return ERROR_NOT_SUPPORTED;
+		if ((opened.st_mode & 0222) == 0)
+			return ERROR_ACCESS_DENIED;
+		if (lstat(file.canonicalPath.c_str(), &named) != 0 || opened.st_dev != named.st_dev ||
+			opened.st_ino != named.st_ino)
+			return ERROR_NOT_SUPPORTED;
+		for (const auto *other : lease->registry->opens) {
+			if (other != lease.get() && other->device == opened.st_dev && other->inode == opened.st_ino)
+				return ERROR_NOT_SUPPORTED;
+		}
+	}
+	file.deletePending = enabled;
+	lease->deletePending = enabled;
 	return ERROR_SUCCESS;
 }
 
@@ -192,7 +223,7 @@ int kernel32::FileCursor::prepareTransferLocked() {
 int kernel32::FileCursor::adoptControlDescriptor(int fd) {
 	if (mControlFd >= 0 || fd < 0)
 		return EINVAL;
-	struct stat metadata{};
+	struct stat metadata {};
 	if (fstat(fd, &metadata) == -1)
 		return errno ? errno : EIO;
 	const int flags = fcntl(fd, F_GETFL);
@@ -224,10 +255,19 @@ kernel32::FsObject::~FsObject() {
 	if (share)
 		shareLock = std::unique_lock(share->registry->mutex);
 	int fd = std::exchange(this->fd, -1);
+	bool deleteOwned = false;
+	if (deletePending && !canonicalPath.empty() && fd >= 0) {
+		struct stat opened {
+		}, named{};
+		deleteOwned = fstat(fd, &opened) == 0 && lstat(canonicalPath.c_str(), &named) == 0 &&
+					  opened.st_dev == named.st_dev && opened.st_ino == named.st_ino;
+		if (!deleteOwned)
+			DEBUG_LOG("Skipped delete-on-close after file identity changed\n");
+	}
 	if (fd >= 0 && closeOnDestroy) {
 		close(fd);
 	}
-	if (deletePending && !canonicalPath.empty()) {
+	if (deleteOwned) {
 		if (unlink(canonicalPath.c_str()) != 0) {
 			perror("Failed to delete file on close");
 		}
@@ -244,7 +284,7 @@ DWORD prepareInheritanceLocked(FileObject &file) {
 	if (file.type != ObjectType::File || file.overlapped || std::atomic_load(&file.completion) || file.deletePending ||
 		!file.rangeLocks.empty() || file.pipeMessageMode)
 		return ERROR_NOT_SUPPORTED;
-	struct stat metadata{};
+	struct stat metadata {};
 	if (fstat(file.fd, &metadata) == -1)
 		return wibo::winErrorFromErrno(errno);
 	if (!S_ISREG(metadata.st_mode) && !S_ISFIFO(metadata.st_mode) && !S_ISCHR(metadata.st_mode))
@@ -257,7 +297,8 @@ DWORD prepareInheritanceLocked(FileObject &file) {
 }
 
 bool isNullDevice(const FileObject &file) {
-	struct stat descriptor{}, device{};
+	struct stat descriptor {
+	}, device{};
 	return file.valid() && fstat(file.fd, &descriptor) == 0 && S_ISCHR(descriptor.st_mode) &&
 		   stat("/dev/null", &device) == 0 && descriptor.st_rdev == device.st_rdev;
 }
@@ -297,7 +338,7 @@ DWORD seekPositionLocked(FileObject &file, int64_t distance, DWORD method, off_t
 		if (base == -1)
 			error = wibo::winErrorFromErrno(errno);
 	} else if (method == FILE_END) {
-		struct stat metadata{};
+		struct stat metadata {};
 		if (fstat(file.fd, &metadata) == -1)
 			error = wibo::winErrorFromErrno(errno);
 		else
@@ -706,7 +747,7 @@ IOResult write(FileObject *file, const void *buffer, size_t bytesToWrite, const 
 			result.unixError = errno ? errno : EIO;
 			return result;
 		}
-		struct stat info{};
+		struct stat info {};
 		if (fstat(file->fd, &info) != 0) {
 			result.unixError = errno;
 			return result;

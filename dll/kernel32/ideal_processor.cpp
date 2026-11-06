@@ -32,6 +32,44 @@ DWORD processorNumberError(DWORD number) {
 }
 } // namespace
 
+BOOL WINAPI GetProcessGroupAffinity(HANDLE process, USHORT *count, USHORT *groups) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("GetProcessGroupAffinity(%p, %p, %p)\n", process, count, groups);
+	if (!count) {
+		setLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	if (!isPseudoCurrentProcessHandle(process)) {
+		HandleMeta metadata{};
+		auto object = wibo::handles().getAs<ProcessObject>(process, &metadata);
+		if (!object) {
+			setLastError(ERROR_INVALID_HANDLE);
+			return FALSE;
+		}
+		if (!(metadata.grantedAccess & (PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION))) {
+			setLastError(ERROR_ACCESS_DENIED);
+			return FALSE;
+		}
+		if (object->pid != getpid()) {
+			setLastError(ERROR_NOT_SUPPORTED);
+			return FALSE;
+		}
+	}
+	if (*count == 0) {
+		*count = 1;
+		setLastError(ERROR_INSUFFICIENT_BUFFER);
+		return FALSE;
+	}
+	if (!groups) {
+		setLastError(ERROR_NOACCESS);
+		return FALSE;
+	}
+	// All supported thread affinities belong to the process's single exposed group.
+	groups[0] = 0;
+	*count = 1;
+	return TRUE;
+}
+
 BOOL WINAPI GetThreadGroupAffinity(HANDLE thread, GROUP_AFFINITY *affinity) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("GetThreadGroupAffinity(%p, %p)\n", thread, affinity);
