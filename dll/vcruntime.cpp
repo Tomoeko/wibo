@@ -8,6 +8,24 @@
 
 namespace vcruntime {
 
+PVOID CDECL memchr(LPCVOID buffer, int ch, SIZE_T count) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("memchr(%p, %d, %zu)\n", buffer, ch, count);
+	return const_cast<PVOID>(::memchr(buffer, ch, count));
+}
+
+LPSTR CDECL strstr(LPCSTR text, LPCSTR needle) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("strstr(%p, %p)\n", static_cast<const void *>(text), static_cast<const void *>(needle));
+	return const_cast<LPSTR>(::strstr(text, needle));
+}
+
+LPSTR CDECL strrchr(LPCSTR text, int ch) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("strrchr(%p, %d)\n", static_cast<const void *>(text), ch);
+	return const_cast<LPSTR>(::strrchr(text, ch));
+}
+
 PVOID CDECL memcpy(PVOID dest, LPCVOID src, SIZE_T count) {
 	HOST_CONTEXT_GUARD();
 	return ::memcpy(dest, src, count);
