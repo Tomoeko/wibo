@@ -6,6 +6,7 @@
 typedef void *(__cdecl *MemchrFn)(const void *buffer, int value, size_t count);
 typedef char *(__cdecl *StrstrFn)(const char *text, const char *needle);
 typedef char *(__cdecl *StrrchrFn)(const char *text, int value);
+typedef char *(__cdecl *StrchrFn)(const char *text, int value);
 
 int main(void) {
 	HMODULE runtime = LoadLibraryA("vcruntime140.dll");
@@ -56,6 +57,39 @@ int main(void) {
 	TEST_CHECK(findLast(text, 'z') == NULL);
 	TEST_CHECK(findLast(empty, 0) == empty);
 	TEST_CHECK(findLast(empty, 'a') == NULL);
+	procedure = GetProcAddress(runtime, "strchr");
+	TEST_CHECK(procedure != NULL);
+	StrchrFn findFirst;
+	TEST_CHECK(sizeof(findFirst) == sizeof(procedure));
+	memcpy(&findFirst, &procedure, sizeof(findFirst));
+	TEST_CHECK(findFirst(text, 'a') == text);
+	TEST_CHECK(findFirst(text, 'b') == text + 1);
+	TEST_CHECK(findFirst(text, 0) == text + 5);
+	TEST_CHECK(findFirst(text, 0x161) == text);
+	TEST_CHECK(findFirst(text, 0x100) == text + 5);
+	TEST_CHECK(findFirst(text, 'h') == NULL);
+	TEST_CHECK(findFirst(empty, 0) == empty);
+	TEST_CHECK(findFirst(empty, 'a') == NULL);
+	const char highBytes[] = {(char)0x80, (char)0xff, (char)0x80, 0};
+	TEST_CHECK(findFirst(highBytes, -128) == highBytes);
+	TEST_CHECK(findFirst(highBytes, 0x180) == highBytes);
+	TEST_CHECK(findFirst(highBytes, 0x1ff) == highBytes + 1);
+	TEST_CHECK(findFirst(highBytes, 0) == highBytes + 3);
+	SYSTEM_INFO systemInfo;
+	GetSystemInfo(&systemInfo);
+	SIZE_T pageSize = systemInfo.dwPageSize;
+	char *guarded = VirtualAlloc(NULL, pageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	TEST_CHECK(guarded != NULL);
+	DWORD previousProtection;
+	TEST_CHECK(VirtualProtect(guarded + pageSize, pageSize, PAGE_NOACCESS, &previousProtection));
+	guarded[pageSize - 2] = 'x';
+	guarded[pageSize - 1] = 0;
+	TEST_CHECK(findFirst(guarded + pageSize - 2, 'x') == guarded + pageSize - 2);
+	TEST_CHECK(findFirst(guarded + pageSize - 2, 'y') == NULL);
+	TEST_CHECK(findFirst(guarded + pageSize - 2, 0) == guarded + pageSize - 1);
+	TEST_CHECK(findFirst(guarded + pageSize - 1, 'x') == NULL);
+	TEST_CHECK(findFirst(guarded + pageSize - 1, 0) == guarded + pageSize - 1);
+	TEST_CHECK(VirtualFree(guarded, 0, MEM_RELEASE));
 	TEST_CHECK(FreeLibrary(runtime));
 	return 0;
 }

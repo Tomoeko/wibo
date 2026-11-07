@@ -26,6 +26,12 @@ LPSTR CDECL strrchr(LPCSTR text, int ch) {
 	return const_cast<LPSTR>(::strrchr(text, ch));
 }
 
+LPSTR CDECL strchr(LPCSTR text, int ch) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("strchr(%p, %d)\n", static_cast<const void *>(text), ch);
+	return const_cast<LPSTR>(::strchr(text, ch));
+}
+
 PVOID CDECL memcpy(PVOID dest, LPCVOID src, SIZE_T count) {
 	HOST_CONTEXT_GUARD();
 	return ::memcpy(dest, src, count);
