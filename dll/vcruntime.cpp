@@ -10,6 +10,18 @@
 
 namespace vcruntime {
 
+namespace {
+thread_local GUEST_PTR g_seTranslator{};
+}
+
+GUEST_PTR CDECL _set_se_translator(GUEST_PTR translator) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("_set_se_translator(0x%llx)\n", static_cast<unsigned long long>(translator));
+	const GUEST_PTR previous = g_seTranslator;
+	g_seTranslator = translator;
+	return previous;
+}
+
 void CDECL __std_exception_copy(const ExceptionData *source, ExceptionData *destination) {
 	HOST_CONTEXT_GUARD();
 	DEBUG_LOG("__std_exception_copy(%p, %p)\n", static_cast<const void *>(source), static_cast<void *>(destination));

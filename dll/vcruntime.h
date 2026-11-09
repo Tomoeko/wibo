@@ -12,6 +12,7 @@ struct ExceptionData {
 static_assert(offsetof(ExceptionData, doFree) == sizeof(GUEST_PTR));
 static_assert(sizeof(ExceptionData) == sizeof(GUEST_PTR) * 2);
 
+GUEST_PTR CDECL _set_se_translator(GUEST_PTR translator);
 void CDECL __std_exception_copy(const ExceptionData *source, ExceptionData *destination);
 void CDECL __std_exception_destroy(ExceptionData *data);
 
