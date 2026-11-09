@@ -4,6 +4,17 @@
 
 namespace vcruntime {
 
+struct ExceptionData {
+	GUEST_PTR what;
+	bool doFree;
+};
+
+static_assert(offsetof(ExceptionData, doFree) == sizeof(GUEST_PTR));
+static_assert(sizeof(ExceptionData) == sizeof(GUEST_PTR) * 2);
+
+void CDECL __std_exception_copy(const ExceptionData *source, ExceptionData *destination);
+void CDECL __std_exception_destroy(ExceptionData *data);
+
 PVOID CDECL memchr(LPCVOID buffer, int ch, SIZE_T count);
 LPSTR CDECL strstr(LPCSTR text, LPCSTR needle);
 LPSTR CDECL strrchr(LPCSTR text, int ch);

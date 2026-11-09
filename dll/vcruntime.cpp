@@ -2,11 +2,44 @@
 
 #include "common.h"
 #include "context.h"
+#include "heap.h"
 #include "modules.h"
 
 #include <cstring>
+#include <limits>
 
 namespace vcruntime {
+
+void CDECL __std_exception_copy(const ExceptionData *source, ExceptionData *destination) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("__std_exception_copy(%p, %p)\n", static_cast<const void *>(source), static_cast<void *>(destination));
+	ExceptionData result{};
+	if (source->what != GUEST_NULL) {
+		if (source->doFree) {
+			const char *text = fromGuestPtr<const char>(source->what);
+			const size_t length = std::strlen(text);
+			if (length != std::numeric_limits<size_t>::max()) {
+				auto *message = static_cast<char *>(wibo::heap::guestMalloc(length + 1));
+				if (message != nullptr) {
+					std::memcpy(message, text, length + 1);
+					result = {toGuestPtr(message), true};
+				}
+			}
+		} else {
+			result.what = source->what;
+		}
+	}
+	*destination = result;
+}
+
+void CDECL __std_exception_destroy(ExceptionData *data) {
+	HOST_CONTEXT_GUARD();
+	DEBUG_LOG("__std_exception_destroy(%p)\n", static_cast<void *>(data));
+	if (data->doFree) {
+		wibo::heap::guestFree(fromGuestPtr<void>(data->what));
+	}
+	*data = {};
+}
 
 PVOID CDECL memchr(LPCVOID buffer, int ch, SIZE_T count) {
 	HOST_CONTEXT_GUARD();
